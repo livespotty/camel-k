@@ -6,6 +6,9 @@
 
 **Closed issues:**
 
+- Build artifact checksum not working [\#3007](https://github.com/apache/camel-k/issues/3007)
+- kamel client for macOS from release 1.8.0 is really 1.0.0-M4 [\#3006](https://github.com/apache/camel-k/issues/3006)
+- SEDA multiple threads not working [\#3001](https://github.com/apache/camel-k/issues/3001)
 - Errored status Kamelet cannot be reconciled to Ready status [\#2988](https://github.com/apache/camel-k/issues/2988)
 - Kamel install failure [\#2987](https://github.com/apache/camel-k/issues/2987)
 - Configure Maven: Artifact Repository is not recognized [\#2966](https://github.com/apache/camel-k/issues/2966)
@@ -15,10 +18,10 @@
 - Stale bot is setting issue `stale` where marked as `never-stale` [\#2893](https://github.com/apache/camel-k/issues/2893)
 - camel-k-client binary is missing in the latest release assets [\#2892](https://github.com/apache/camel-k/issues/2892)
 - Release 1.8.0 [\#2848](https://github.com/apache/camel-k/issues/2848)
+- Error: unknown flag: --trait on local build [\#2776](https://github.com/apache/camel-k/issues/2776)
 - Kamelet with MQTT Broker Mosquitto [\#2690](https://github.com/apache/camel-k/issues/2690)
 - Unable to access MongoDB [\#2684](https://github.com/apache/camel-k/issues/2684)
 - KAMEL\_INSTALL\_DEFAULT\_KAMELETS behavior [\#2560](https://github.com/apache/camel-k/issues/2560)
-- Documentation for `kamel local run`? [\#2490](https://github.com/apache/camel-k/issues/2490)
 - Log warnings with kamelets [\#2395](https://github.com/apache/camel-k/issues/2395)
 - Json marshalling is needed for Rest route and uncommented code seems to be executed [\#2341](https://github.com/apache/camel-k/issues/2341)
 - build: use golangci/golangci-lint-action [\#2334](https://github.com/apache/camel-k/issues/2334)
@@ -27,6 +30,9 @@
 
 **Merged pull requests:**
 
+- chore\(ci\): revert nolint [\#3015](https://github.com/apache/camel-k/pull/3015) ([squakez](https://github.com/squakez))
+- fix\(build\): incremental build [\#3008](https://github.com/apache/camel-k/pull/3008) ([squakez](https://github.com/squakez))
+- Update tekton documentation [\#3000](https://github.com/apache/camel-k/pull/3000) ([livespotty](https://github.com/livespotty))
 - fix\(cmd/run\): allow multiple resources [\#2997](https://github.com/apache/camel-k/pull/2997) ([squakez](https://github.com/squakez))
 - fix\(kamelet\): reconcile when errored [\#2993](https://github.com/apache/camel-k/pull/2993) ([squakez](https://github.com/squakez))
 - fix\(yaml\): also consider toD while parsing YAML DSL steps [\#2989](https://github.com/apache/camel-k/pull/2989) ([toonalbers](https://github.com/toonalbers))
@@ -918,7 +924,6 @@
 - Building with buildah not working [\#2685](https://github.com/apache/camel-k/issues/2685)
 - Flaky TestKameletBindingScale test? [\#2660](https://github.com/apache/camel-k/issues/2660)
 - CloudEvent header mapping is confusing [\#2501](https://github.com/apache/camel-k/issues/2501)
-- `Kamel local` chokes on traits [\#2499](https://github.com/apache/camel-k/issues/2499)
 - Revisit saga example [\#2472](https://github.com/apache/camel-k/issues/2472)
 - kamel run command creates 2 pods [\#2469](https://github.com/apache/camel-k/issues/2469)
 - Trying to use bean method call \#class:com.mongodb.client.MongoClients\#create\("mongodb://foo"\) throws ClassNotFoundException [\#2444](https://github.com/apache/camel-k/issues/2444)
