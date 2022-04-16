@@ -19,8 +19,10 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"testing"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
@@ -46,6 +48,17 @@ func initializeRunCmdOptions(t *testing.T) (*runCmdOptions, *cobra.Command, Root
 	return runCmdOptions, rootCmd, *options
 }
 
+// nolint: unparam
+func initializeRunCmdOptionsWithOutput(t *testing.T) (*runCmdOptions, *cobra.Command, RootCmdOptions) {
+	t.Helper()
+
+	options, rootCmd := kamelTestPreAddCommandInit()
+	runCmdOptions := addTestRunCmdWithOutput(*options, rootCmd)
+	kamelTestPostAddCommandInit(t, rootCmd)
+
+	return runCmdOptions, rootCmd, *options
+}
+
 func addTestRunCmd(options RootCmdOptions, rootCmd *cobra.Command) *runCmdOptions {
 	// add a testing version of run Command
 	runCmd, runOptions := newCmdRun(&options)
@@ -53,6 +66,17 @@ func addTestRunCmd(options RootCmdOptions, rootCmd *cobra.Command) *runCmdOption
 		return nil
 	}
 	runCmd.PostRunE = func(c *cobra.Command, args []string) error {
+		return nil
+	}
+	runCmd.Args = test.ArbitraryArgs
+	rootCmd.AddCommand(runCmd)
+	return runOptions
+}
+
+func addTestRunCmdWithOutput(options RootCmdOptions, rootCmd *cobra.Command) *runCmdOptions {
+	// add a testing version of run Command with output
+	runCmd, runOptions := newCmdRun(&options)
+	runCmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
 		return nil
 	}
 	runCmd.Args = test.ArbitraryArgs
@@ -85,18 +109,6 @@ func TestRunCompressionFlag(t *testing.T) {
 	_, err := test.ExecuteCommand(rootCmd, cmdRun, "--compression", integrationSource)
 	assert.Nil(t, err)
 	assert.Equal(t, true, runCmdOptions.Compression)
-}
-
-func TestRunConfigMapFlag(t *testing.T) {
-	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdRun,
-		"--configmap", "configMap1",
-		"--configmap", "configMap2",
-		integrationSource)
-	assert.Nil(t, err)
-	assert.Len(t, runCmdOptions.ConfigMaps, 2)
-	assert.Equal(t, "configMap1", runCmdOptions.ConfigMaps[0])
-	assert.Equal(t, "configMap2", runCmdOptions.ConfigMaps[1])
 }
 
 func TestRunDependencyFlag(t *testing.T) {
@@ -236,15 +248,6 @@ func TestRunPropertyFlag(t *testing.T) {
 	assert.Equal(t, "property3", runCmdOptions.Properties[2])
 }
 
-func TestRunPropertyFileFlagMissingFileExtension(t *testing.T) {
-	_, rootCmd, _ := initializeRunCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdRun,
-		"--property-file", "file1",
-		"--property-file", "file2",
-		integrationSource)
-	assert.NotNil(t, err)
-}
-
 const TestPropertyFileContent = `
 a=b
 # There's an issue in the properties lib: https://github.com/magiconair/properties/issues/59
@@ -274,25 +277,6 @@ func TestAddPropertyFile(t *testing.T) {
 	assert.Equal(t, `trait.properties=i = j\nk`, properties[2])
 }
 
-func TestRunPropertyFileFlag(t *testing.T) {
-	var tmpFile *os.File
-	var err error
-	if tmpFile, err = ioutil.TempFile("", "camel-k-*.properties"); err != nil {
-		t.Error(err)
-	}
-
-	assert.Nil(t, tmpFile.Close())
-	assert.Nil(t, ioutil.WriteFile(tmpFile.Name(), []byte(TestPropertyFileContent), 0o400))
-
-	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
-	_, errExecute := test.ExecuteCommand(rootCmd, cmdRun,
-		"--property-file", tmpFile.Name(),
-		integrationSource)
-	assert.Nil(t, errExecute)
-	assert.Len(t, runCmdOptions.PropertyFiles, 1)
-	assert.Equal(t, tmpFile.Name(), runCmdOptions.PropertyFiles[0])
-}
-
 func TestRunProperty(t *testing.T) {
 	properties, err := convertToTraitParameter(`key=value\nnewline`, "trait.properties")
 	assert.Nil(t, err)
@@ -319,18 +303,6 @@ func TestRunSaveFlag(t *testing.T) {
 	assert.Equal(t, true, runCmdOptions.Save)
 }
 
-func TestRunSecretFlag(t *testing.T) {
-	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdRun,
-		"--secret", "secret1",
-		"--secret", "secret2",
-		integrationSource)
-	assert.Nil(t, err)
-	assert.Len(t, runCmdOptions.Secrets, 2)
-	assert.Equal(t, "secret1", runCmdOptions.Secrets[0])
-	assert.Equal(t, "secret2", runCmdOptions.Secrets[1])
-}
-
 func TestRunSourceFlag(t *testing.T) {
 	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
 	_, err := test.ExecuteCommand(rootCmd, cmdRun, "--source", "source1", integrationSource)
@@ -346,16 +318,27 @@ func TestRunSyncFlag(t *testing.T) {
 	assert.Equal(t, true, runCmdOptions.Sync)
 }
 
-func TestRunTraitFlag(t *testing.T) {
+func TestRunExistingTraitFlag(t *testing.T) {
 	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
 	_, err := test.ExecuteCommand(rootCmd, cmdRun,
-		"--trait", "trait1",
-		"--trait", "trait2",
+		"--trait", "jvm.enabled",
+		"--trait", "logging.enabled",
 		integrationSource)
 	assert.Nil(t, err)
 	assert.Len(t, runCmdOptions.Traits, 2)
-	assert.Equal(t, "trait1", runCmdOptions.Traits[0])
-	assert.Equal(t, "trait2", runCmdOptions.Traits[1])
+	assert.Equal(t, "jvm.enabled", runCmdOptions.Traits[0])
+	assert.Equal(t, "logging.enabled", runCmdOptions.Traits[1])
+}
+
+func TestRunMissingTraitFlag(t *testing.T) {
+	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdRun,
+		"--trait", "bogus.missing",
+		integrationSource)
+	assert.NotNil(t, err)
+	assert.Equal(t, "bogus.missing is not a valid trait property", err.Error())
+	assert.Len(t, runCmdOptions.Traits, 1)
+	assert.Equal(t, "bogus.missing", runCmdOptions.Traits[0])
 }
 
 func TestConfigureTraits(t *testing.T) {
@@ -425,9 +408,9 @@ func TestTraitsNestedConfig(t *testing.T) {
 		"--trait", "custom.slice-of-map[3].f=h",
 		"--trait", "custom.slice-of-map[2].f=i",
 		"example.js")
-	if err != nil {
-		t.Error(err)
-	}
+	// We will have an error because those traits are not existing
+	// however we want to test how those properties are mapped in the configuration
+	assert.NotNil(t, err)
 	catalog := &customTraitFinder{}
 	traits, err := configureTraits(runCmdOptions.Traits, catalog)
 
@@ -500,51 +483,6 @@ func TestRunValidateArgs(t *testing.T) {
 	assert.Equal(t, "One of the provided sources is not reachable: missing file or unsupported scheme in missing_file", err.Error())
 }
 
-//
-// This test does work when running as single test but fails
-// otherwise as we are using a global viper instance
-//
-
-/*
-const TestKamelConfigContent = `
-kamel:
-  install:
-    olm: false
-  run:
-    integration:
-      route:
-        sources:
-        - examples/dns.js
-        - examples/Sample.java
-`
-
-func TestRunWithSavedValues(t *testing.T) {
-	dir, err := ioutil.TempDir("", "run-")
-	assert.Nil(t, err)
-
-	defer func() {
-		_ = os.RemoveAll(dir)
-	}()
-
-	assert.Nil(t, os.Setenv("KAMEL_CONFIG_PATH", dir))
-	defer func() {
-		_ = os.Unsetenv("KAMEL_CONFIG_PATH")
-	}()
-
-	assert.Nil(t, ioutil.WriteFile(path.Join(dir, "kamel-config.yaml"), []byte(TestKamelConfigContent), 0644))
-
-	options, rootCmd := kamelTestPreAddCommandInit()
-
-	runCmdOptions := addTestRunCmd(options, rootCmd)
-
-	kamelTestPostAddCommandInit(t, rootCmd)
-
-	_, err = test.ExecuteCommand(rootCmd, "run", "route.java")
-
-	assert.Nil(t, err)
-	assert.Len(t, runCmdOptions.Sources, 2)
-}*/
-
 func TestRunBinaryResource(t *testing.T) {
 	binaryResourceSpec, err := binaryOrTextResource("file.ext", []byte{1, 2, 3, 4}, "application/octet-stream", false, v1.ResourceTypeData, "")
 	assert.Nil(t, err)
@@ -590,7 +528,7 @@ func TestRunTextCompressedResource(t *testing.T) {
 }
 
 func TestResolvePodTemplate(t *testing.T) {
-	// runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
+	_, rootCmd, _ := initializeRunCmdOptions(t)
 	templateText := `
 containers:
   - name: integration
@@ -606,7 +544,7 @@ volumes:
 `
 
 	integrationSpec := v1.IntegrationSpec{}
-	err := resolvePodTemplate(context.TODO(), templateText, &integrationSpec)
+	err := resolvePodTemplate(context.TODO(), rootCmd, templateText, &integrationSpec)
 	assert.Nil(t, err)
 	assert.NotNil(t, integrationSpec.PodTemplate)
 	assert.Equal(t, 1, len(integrationSpec.PodTemplate.Spec.Containers))
@@ -614,10 +552,11 @@ volumes:
 }
 
 func TestResolveJsonPodTemplate(t *testing.T) {
+	_, rootCmd, _ := initializeRunCmdOptions(t)
 	integrationSpec := v1.IntegrationSpec{}
 	minifiedYamlTemplate := `{"containers": [{"name": "second"}, {"name": "integration", "env": [{"name": "CAMEL_K_DIGEST", "value": "new_value"}]}]}`
 
-	err := resolvePodTemplate(context.TODO(), minifiedYamlTemplate, &integrationSpec)
+	err := resolvePodTemplate(context.TODO(), rootCmd, minifiedYamlTemplate, &integrationSpec)
 
 	assert.Nil(t, err)
 	assert.NotNil(t, integrationSpec.PodTemplate)
@@ -630,4 +569,104 @@ func TestFilterBuildPropertyFiles(t *testing.T) {
 
 	assert.Equal(t, len(outputValues), 1)
 	assert.Equal(t, outputValues[0], "/tmp/test")
+}
+
+const TestSrcContent = `
+import org.apache.camel.builder.RouteBuilder;
+
+public class Sample extends RouteBuilder {
+  @Override
+  public void configure() throws Exception {
+	  from("timer:tick")
+        .log("Hello Camel K!");
+  }
+}
+`
+
+func TestOutputYaml(t *testing.T) {
+	var tmpFile *os.File
+	var err error
+	if tmpFile, err = ioutil.TempFile("", "camel-k-"); err != nil {
+		t.Error(err)
+	}
+
+	assert.Nil(t, tmpFile.Close())
+	assert.Nil(t, ioutil.WriteFile(tmpFile.Name(), []byte(TestSrcContent), 0o400))
+	fileName := filepath.Base(tmpFile.Name())
+
+	buildCmdOptions, runCmd, _ := initializeRunCmdOptionsWithOutput(t)
+	output, err := test.ExecuteCommand(runCmd, cmdRun, tmpFile.Name(), "-o", "yaml")
+	assert.Equal(t, "yaml", buildCmdOptions.OutputFormat)
+
+	assert.Nil(t, err)
+	assert.Equal(t, fmt.Sprintf(`apiVersion: camel.apache.org/v1
+kind: Integration
+metadata:
+  creationTimestamp: null
+  name: %s
+spec:
+  sources:
+  - content: "\nimport org.apache.camel.builder.RouteBuilder;\n\npublic class Sample
+      extends RouteBuilder {\n  @Override\n  public void configure() throws Exception
+      {\n\t  from(\"timer:tick\")\n        .log(\"Hello Camel K!\");\n  }\n}\n"
+    name: %s
+status: {}
+`, fileName, fileName), output)
+}
+
+func TestTrait(t *testing.T) {
+	var tmpFile *os.File
+	var err error
+	if tmpFile, err = ioutil.TempFile("", "camel-k-"); err != nil {
+		t.Error(err)
+	}
+
+	assert.Nil(t, tmpFile.Close())
+	assert.Nil(t, ioutil.WriteFile(tmpFile.Name(), []byte(TestSrcContent), 0o400))
+	fileName := filepath.Base(tmpFile.Name())
+
+	buildCmdOptions, runCmd, _ := initializeRunCmdOptionsWithOutput(t)
+	output, err := test.ExecuteCommand(runCmd, cmdRun, tmpFile.Name(), "-o", "yaml", "-t", "mount.configs=configmap:my-cm", "--connect", "my-service-binding")
+	assert.Equal(t, "yaml", buildCmdOptions.OutputFormat)
+
+	assert.Nil(t, err)
+	assert.Equal(t, fmt.Sprintf(`apiVersion: camel.apache.org/v1
+kind: Integration
+metadata:
+  creationTimestamp: null
+  name: %s
+spec:
+  sources:
+  - content: "\nimport org.apache.camel.builder.RouteBuilder;\n\npublic class Sample
+      extends RouteBuilder {\n  @Override\n  public void configure() throws Exception
+      {\n\t  from(\"timer:tick\")\n        .log(\"Hello Camel K!\");\n  }\n}\n"
+    name: %s
+  traits:
+    mount:
+      configuration:
+        configs:
+        - configmap:my-cm
+    service-binding:
+      configuration:
+        services:
+        - my-service-binding
+status: {}
+`, fileName, fileName), output)
+}
+
+func TestMissingTrait(t *testing.T) {
+	var tmpFile *os.File
+	var err error
+	if tmpFile, err = ioutil.TempFile("", "camel-k-"); err != nil {
+		t.Error(err)
+	}
+
+	assert.Nil(t, tmpFile.Close())
+	assert.Nil(t, ioutil.WriteFile(tmpFile.Name(), []byte(TestSrcContent), 0o400))
+
+	buildCmdOptions, runCmd, _ := initializeRunCmdOptionsWithOutput(t)
+	output, err := test.ExecuteCommand(runCmd, cmdRun, tmpFile.Name(), "-o", "yaml", "-t", "bogus.fail=i-must-fail")
+	assert.Equal(t, "yaml", buildCmdOptions.OutputFormat)
+	assert.Equal(t, "Error: bogus.fail=i-must-fail is not a valid trait property\n", output)
+	assert.NotNil(t, err)
 }

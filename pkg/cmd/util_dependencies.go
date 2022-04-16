@@ -27,6 +27,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/scylladb/go-set/strset"
+	"github.com/spf13/cobra"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/builder"
@@ -203,7 +204,7 @@ func generateCatalog(ctx context.Context) (*camel.RuntimeCatalog, error) {
 		Provider: v1.RuntimeProviderQuarkus,
 	}
 	var providerDependencies []maven.Dependency
-	var caCert []byte
+	var caCert [][]byte
 	catalog, err := camel.GenerateCatalogCommon(ctx, nil, nil, caCert, mvn, runtime, providerDependencies)
 	if err != nil {
 		return nil, err
@@ -230,37 +231,37 @@ func createCamelCatalog(ctx context.Context) (*camel.RuntimeCatalog, error) {
 	return catalog, nil
 }
 
-func outputDependencies(dependencies []string, format string) error {
+func outputDependencies(dependencies []string, format string, cmd *cobra.Command) error {
 	if format != "" {
-		err := printDependencies(format, dependencies)
+		err := printDependencies(format, dependencies, cmd)
 		if err != nil {
 			return err
 		}
 	} else {
 		// Print output in text form
-		fmt.Println("dependencies:")
+		fmt.Fprintln(cmd.OutOrStdout(), "dependencies:")
 		for _, dep := range dependencies {
-			fmt.Printf("%v\n", dep)
+			fmt.Fprintln(cmd.OutOrStdout(), dep)
 		}
 	}
 
 	return nil
 }
 
-func printDependencies(format string, dependencies []string) error {
+func printDependencies(format string, dependencies []string, cmd *cobra.Command) error {
 	switch format {
 	case "yaml":
 		data, err := util.DependenciesToYAML(dependencies)
 		if err != nil {
 			return err
 		}
-		fmt.Print(string(data))
+		fmt.Fprint(cmd.OutOrStdout(), string(data))
 	case "json":
 		data, err := util.DependenciesToJSON(dependencies)
 		if err != nil {
 			return err
 		}
-		fmt.Print(string(data))
+		fmt.Fprint(cmd.OutOrStdout(), string(data))
 	default:
 		return errors.New("unknown output format: " + format)
 	}
@@ -497,54 +498,33 @@ func getCustomRoutesDir(integrationDirectory string) string {
 	return path.Join(integrationDirectory, "routes")
 }
 
-func getCustomQuarkusDir() (string, error) {
-	currentDir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return path.Join(currentDir, "quarkus"), nil
+func getCustomQuarkusDir(integrationDirectory string) string {
+	parentDir := path.Dir(strings.TrimSuffix(integrationDirectory, "/"))
+	return path.Join(parentDir, "quarkus")
 }
 
-func getCustomLibDir() (string, error) {
-	currentDir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return path.Join(currentDir, "lib/main"), nil
+func getCustomLibDir(integrationDirectory string) string {
+	parentDir := path.Dir(strings.TrimSuffix(integrationDirectory, "/"))
+	return path.Join(parentDir, "lib/main")
 }
 
-func getCustomAppDir() (string, error) {
-	currentDir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return path.Join(currentDir, "app"), nil
+func getCustomAppDir(integrationDirectory string) string {
+	parentDir := path.Dir(strings.TrimSuffix(integrationDirectory, "/"))
+	return path.Join(parentDir, "app")
 }
 
-func deleteLocalIntegrationDirs() error {
-	directory, err := getCustomQuarkusDir()
-	if err != nil {
-		return err
+func deleteLocalIntegrationDirs(integrationDirectory string) error {
+	dirs := []string{
+		getCustomQuarkusDir(integrationDirectory),
+		getCustomLibDir(integrationDirectory),
+		getCustomAppDir(integrationDirectory),
 	}
 
-	err = os.RemoveAll(directory)
-	if err != nil {
-		return err
-	}
-
-	err = os.RemoveAll("lib")
-	if err != nil {
-		return err
-	}
-
-	directory, err = getCustomAppDir()
-	if err != nil {
-		return err
-	}
-
-	err = os.RemoveAll(directory)
-	if err != nil {
-		return err
+	for _, dir := range dirs {
+		err := os.RemoveAll(dir)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil

@@ -23,6 +23,7 @@ import (
 
 	yaml2 "gopkg.in/yaml.v2"
 
+	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
@@ -93,22 +94,34 @@ func GenerateCatalog(
 		return nil, err
 	}
 
-	var caCert []byte
-	if mvn.CASecret != nil {
-		caCert, err = kubernetes.GetSecretRefData(ctx, client, namespace, mvn.CASecret)
+	var caCerts [][]byte
+	// nolint: staticcheck
+	secrets := mergeSecrets(mvn.CASecrets, mvn.CASecret)
+	if secrets != nil {
+		caCerts, err = kubernetes.GetSecretsRefData(ctx, client, namespace, secrets)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return GenerateCatalogCommon(ctx, globalSettings, []byte(userSettings), caCert, mvn, runtime, providerDependencies)
+	return GenerateCatalogCommon(ctx, globalSettings, []byte(userSettings), caCerts, mvn, runtime, providerDependencies)
+}
+
+func mergeSecrets(secrets []corev1.SecretKeySelector, secret *corev1.SecretKeySelector) []corev1.SecretKeySelector {
+	if secrets == nil && secret == nil {
+		return nil
+	}
+	if secret == nil {
+		return secrets
+	}
+	return append(secrets, *secret)
 }
 
 func GenerateCatalogCommon(
 	ctx context.Context,
 	globalSettings []byte,
 	userSettings []byte,
-	caCert []byte,
+	caCert [][]byte,
 	mvn v1.MavenSpec,
 	runtime v1.RuntimeSpec,
 	providerDependencies []maven.Dependency) (*RuntimeCatalog, error) {

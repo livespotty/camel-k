@@ -19,6 +19,9 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -37,14 +40,27 @@ func newCmdLocalRun(rootCmdOptions *RootCmdOptions) (*cobra.Command, *localRunCm
 		Long:    `Run integration locally using the input integration files.`,
 		PreRunE: decode(&options),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := options.validate(args); err != nil {
+			if err := options.validate(cmd, args); err != nil {
 				return err
 			}
 			if err := options.init(); err != nil {
 				return err
 			}
+
+			// make sure cleanup is done when process is stopped externally
+			cs := make(chan os.Signal, 1)
+			signal.Notify(cs, os.Interrupt, syscall.SIGTERM)
+			go func() {
+				<-cs
+				if err := options.deinit(); err != nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), err)
+					os.Exit(1)
+				}
+				os.Exit(0)
+			}()
+
 			if err := options.run(cmd, args); err != nil {
-				fmt.Println(err.Error())
+				fmt.Fprintln(cmd.ErrOrStderr(), err.Error())
 			}
 			if err := options.deinit(); err != nil {
 				return err
@@ -67,6 +83,12 @@ func newCmdLocalRun(rootCmdOptions *RootCmdOptions) (*cobra.Command, *localRunCm
 	cmd.Flags().StringArrayP("dependency", "d", nil, additionalDependencyUsageMessage)
 	cmd.Flags().StringArray("maven-repository", nil, "Use a maven repository")
 
+	// hidden flags for compatibility with kamel run
+	cmd.Flags().StringArrayP("trait", "t", nil, "")
+	if err := cmd.Flags().MarkHidden("trait"); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err.Error())
+	}
+
 	return &cmd, &options
 }
 
@@ -81,9 +103,10 @@ type localRunCmdOptions struct {
 	Properties             []string `mapstructure:"properties"`
 	AdditionalDependencies []string `mapstructure:"dependencies"`
 	MavenRepositories      []string `mapstructure:"maven-repositories"`
+	Traits                 []string `mapstructure:"traits"`
 }
 
-func (command *localRunCmdOptions) validate(args []string) error {
+func (command *localRunCmdOptions) validate(cmd *cobra.Command, args []string) error {
 	// Validate integration files when no image is provided and we are
 	// not running an already locally-built integration.
 	if command.Image == "" && command.IntegrationDirectory == "" {
@@ -109,6 +132,8 @@ func (command *localRunCmdOptions) validate(args []string) error {
 	if command.Containerize && command.Image == "" {
 		return errors.New("containerization is active but no image name has been provided")
 	}
+
+	warnTraitUsages(cmd, command.Traits)
 
 	return nil
 }
@@ -160,34 +185,25 @@ func (command *localRunCmdOptions) run(cmd *cobra.Command, args []string) error 
 		localDependenciesDirectory := getCustomDependenciesDir(command.IntegrationDirectory)
 
 		// The quarkus application files need to be at a specific location i.e.:
-		// <current_working_folder>/quarkus/quarkus-application.dat
-		// <current_working_folder>/quarkus/generated-bytecode.jar
-		localQuarkusDir, err := getCustomQuarkusDir()
-		if err != nil {
-			return err
-		}
+		// <integration_directory>/../quarkus/quarkus-application.dat
+		// <integration_directory>/../quarkus/generated-bytecode.jar
+		localQuarkusDir := getCustomQuarkusDir(command.IntegrationDirectory)
 		err = util.CopyQuarkusAppFiles(localDependenciesDirectory, localQuarkusDir)
 		if err != nil {
 			return err
 		}
 
 		// The dependency jar files need to be at a specific location i.e.:
-		// <current_working_folder>/lib/main/*.jar
-		localLibDirectory, err := getCustomLibDir()
-		if err != nil {
-			return err
-		}
+		// <integration_directory>/../lib/main/*.jar
+		localLibDirectory := getCustomLibDir(command.IntegrationDirectory)
 		err = util.CopyLibFiles(localDependenciesDirectory, localLibDirectory)
 		if err != nil {
 			return err
 		}
 
-		// The Camel-K jar file needs to be at a specific location i.e.:
-		// <current_working_folder>/app/camel-k-integration-X.X.X{-SNAPSHOT}.jar
-		localAppDirectory, err := getCustomAppDir()
-		if err != nil {
-			return err
-		}
+		// The Camel K jar file needs to be at a specific location i.e.:
+		// <integration_directory>/../app/camel-k-integration-X.X.X{-SNAPSHOT}.jar
+		localAppDirectory := getCustomAppDir(command.IntegrationDirectory)
 		err = util.CopyAppFile(localDependenciesDirectory, localAppDirectory)
 		if err != nil {
 			return err
@@ -268,7 +284,7 @@ func (command *localRunCmdOptions) deinit() error {
 	}
 
 	if command.IntegrationDirectory != "" {
-		err := deleteLocalIntegrationDirs()
+		err := deleteLocalIntegrationDirs(command.IntegrationDirectory)
 		if err != nil {
 			return err
 		}

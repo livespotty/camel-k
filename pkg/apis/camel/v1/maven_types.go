@@ -18,8 +18,9 @@ limitations under the License.
 package v1
 
 import (
+	"encoding/xml"
+
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // MavenSpec --
@@ -31,6 +32,7 @@ type MavenSpec struct {
 	// A reference to the ConfigMap or Secret key that contains
 	// the Maven settings.
 	Settings ValueSource `json:"settings,omitempty"`
+	// Deprecated: use CASecrets
 	// The Secret name and key, containing the CA certificate(s) used to connect
 	// to remote Maven repositories.
 	// It can contain X.509 certificates, and PKCS#7 formatted certificate chains.
@@ -38,8 +40,13 @@ type MavenSpec struct {
 	// and configured to be used as a trusted certificate(s) by the Maven commands.
 	// Note that the root CA certificates are also imported into the created keystore.
 	CASecret *corev1.SecretKeySelector `json:"caSecret,omitempty"`
-	// Deprecated: use IntegrationPlatform.Spec.Build.Timeout instead
-	Timeout *metav1.Duration `json:"timeout,omitempty"`
+	// The Secrets name and key, containing the CA certificate(s) used to connect
+	// to remote Maven repositories.
+	// It can contain X.509 certificates, and PKCS#7 formatted certificate chains.
+	// A JKS formatted keystore is automatically created to store the CA certificate(s),
+	// and configured to be used as a trusted certificate(s) by the Maven commands.
+	// Note that the root CA certificates are also imported into the created keystore.
+	CASecrets []corev1.SecretKeySelector `json:"caSecrets,omitempty"`
 	// The Maven build extensions.
 	// See https://maven.apache.org/guides/mini/guide-using-extensions.html.
 	Extension []MavenArtifact `json:"extension,omitempty"`
@@ -51,23 +58,47 @@ type MavenSpec struct {
 
 // Repository defines a Maven repository
 type Repository struct {
-	ID        string           `xml:"id" json:"id"`
-	Name      string           `xml:"name,omitempty" json:"name,omitempty"`
-	URL       string           `xml:"url" json:"url"`
+	// identifies the repository
+	ID string `xml:"id" json:"id"`
+	// name of the repository
+	Name string `xml:"name,omitempty" json:"name,omitempty"`
+	// location of the repository
+	URL string `xml:"url" json:"url"`
+	// can use snapshot
 	Snapshots RepositoryPolicy `xml:"snapshots,omitempty" json:"snapshots,omitempty"`
-	Releases  RepositoryPolicy `xml:"releases,omitempty" json:"releases,omitempty"`
+	// can use stable releases
+	Releases RepositoryPolicy `xml:"releases,omitempty" json:"releases,omitempty"`
 }
 
 // RepositoryPolicy defines the policy associated to a Maven repository
 type RepositoryPolicy struct {
-	Enabled        bool   `xml:"enabled" json:"enabled"`
-	UpdatePolicy   string `xml:"updatePolicy,omitempty" json:"updatePolicy,omitempty"`
+	// is the policy activated or not
+	Enabled bool `xml:"enabled" json:"enabled"`
+	// This element specifies how often updates should attempt to occur.
+	// Maven will compare the local POM's timestamp (stored in a repository's maven-metadata file) to the remote.
+	// The choices are: `always`, `daily` (default), `interval:X` (where X is an integer in minutes) or `never`
+	UpdatePolicy string `xml:"updatePolicy,omitempty" json:"updatePolicy,omitempty"`
+	// When Maven deploys files to the repository, it also deploys corresponding checksum files.
+	// Your options are to `ignore`, `fail`, or `warn` on missing or incorrect checksums.
 	ChecksumPolicy string `xml:"checksumPolicy,omitempty" json:"checksumPolicy,omitempty"`
 }
 
-// MavenArtifact defines a Maven artifact
+// MavenArtifact defines a GAV (Group:Artifact:Version) Maven artifact
 type MavenArtifact struct {
-	GroupID    string `json:"groupId" yaml:"groupId" xml:"groupId"`
+	// Maven Group
+	GroupID string `json:"groupId" yaml:"groupId" xml:"groupId"`
+	// Maven Artifact
 	ArtifactID string `json:"artifactId" yaml:"artifactId" xml:"artifactId"`
-	Version    string `json:"version,omitempty" yaml:"version,omitempty" xml:"version,omitempty"`
+	// Maven Version
+	Version string `json:"version,omitempty" yaml:"version,omitempty" xml:"version,omitempty"`
 }
+
+type Server struct {
+	XMLName       xml.Name   `xml:"server" json:"-"`
+	ID            string     `xml:"id,omitempty" json:"id,omitempty"`
+	Username      string     `xml:"username,omitempty" json:"username,omitempty"`
+	Password      string     `xml:"password,omitempty" json:"password,omitempty"`
+	Configuration Properties `xml:"configuration,omitempty" json:"configuration,omitempty"`
+}
+
+type Properties map[string]string

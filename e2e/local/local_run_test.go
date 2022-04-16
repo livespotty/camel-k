@@ -23,13 +23,16 @@ package local
 import (
 	"context"
 	"io"
+	"os"
+	"strings"
 	"testing"
 
-	"github.com/golangplus/testing/assert"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
 
 	. "github.com/apache/camel-k/e2e/support"
-	"github.com/apache/camel-k/e2e/support/util"
+	testutil "github.com/apache/camel-k/e2e/support/util"
+	"github.com/apache/camel-k/pkg/util"
 )
 
 func TestLocalRun(t *testing.T) {
@@ -41,12 +44,12 @@ func TestLocalRun(t *testing.T) {
 	defer pipew.Close()
 	defer piper.Close()
 
-	file := util.MakeTempCopy(t, "files/yaml.yaml")
+	file := testutil.MakeTempCopy(t, "files/yaml.yaml")
 
 	kamelRun := KamelWithContext(ctx, "local", "run", file)
 	kamelRun.SetOut(pipew)
 
-	logScanner := util.NewLogScanner(ctx, piper, "Magicstring!")
+	logScanner := testutil.NewLogScanner(ctx, piper, "Magicstring!")
 
 	go func() {
 		err := kamelRun.Execute()
@@ -57,7 +60,7 @@ func TestLocalRun(t *testing.T) {
 	Eventually(logScanner.IsFound("Magicstring!"), TestTimeoutMedium).Should(BeTrue())
 }
 
-func TestLocalContainerRun(t *testing.T) {
+func TestLocalRunContainerize(t *testing.T) {
 	RegisterTestingT(t)
 
 	ctx, cancel := context.WithCancel(TestContext)
@@ -66,18 +69,69 @@ func TestLocalContainerRun(t *testing.T) {
 	defer pipew.Close()
 	defer piper.Close()
 
-	file := util.MakeTempCopy(t, "files/yaml.yaml")
+	file := testutil.MakeTempCopy(t, "files/yaml.yaml")
+	image := "test/test-" + strings.ToLower(util.RandomString(10))
 
-	kamelRun := KamelWithContext(ctx, "local", "run", file, "--image", "test/test", "--containerize")
+	kamelRun := KamelWithContext(ctx, "local", "run", file, "--image", image, "--containerize")
 	kamelRun.SetOut(pipew)
 
-	logScanner := util.NewLogScanner(ctx, piper, "Magicstring!")
+	logScanner := testutil.NewLogScanner(ctx, piper, "Magicstring!")
 
+	defer StopDockerContainers()
 	go func() {
 		err := kamelRun.Execute()
 		assert.NoError(t, err)
 		cancel()
 	}()
 
+	Eventually(logScanner.IsFound("Magicstring!"), TestTimeoutMedium).Should(BeTrue())
+	Eventually(DockerImages, TestTimeoutShort).Should(ContainSubstring(image))
+}
+
+func TestLocalRunIntegrationDirectory(t *testing.T) {
+	RegisterTestingT(t)
+
+	if os.Getenv("CI") == "true" {
+		t.Skip("TODO: Temporarily disabled as this test is flaky and hangs the test process")
+	}
+
+	ctx1, cancel1 := context.WithCancel(TestContext)
+	defer cancel1()
+
+	file := testutil.MakeTempCopy(t, "files/yaml.yaml")
+	dir := testutil.MakeTempDir(t)
+
+	kamelBuild := KamelWithContext(ctx1, "local", "build", file, "--integration-directory", dir)
+
+	go func() {
+		err := kamelBuild.Execute()
+		assert.NoError(t, err)
+		cancel1()
+	}()
+
+	Eventually(dir+"/dependencies", TestTimeoutShort).Should(BeADirectory())
+	Eventually(dir+"/properties", TestTimeoutShort).Should(BeADirectory())
+	Eventually(dir+"/routes/yaml.yaml", TestTimeoutShort).Should(BeAnExistingFile())
+
+	ctx2, cancel2 := context.WithCancel(TestContext)
+	defer cancel2()
+	piper, pipew := io.Pipe()
+	defer pipew.Close()
+	defer piper.Close()
+
+	kamelRun := KamelWithContext(ctx2, "local", "run", "--integration-directory", dir)
+	kamelRun.SetOut(pipew)
+
+	logScanner := testutil.NewLogScanner(ctx2, piper, "Magicstring!")
+
+	go func() {
+		err := kamelRun.Execute()
+		assert.NoError(t, err)
+		cancel2()
+	}()
+
+	Eventually(dir+"/../quarkus", TestTimeoutShort).Should(BeADirectory())
+	Eventually(dir+"/../app", TestTimeoutShort).Should(BeADirectory())
+	Eventually(dir+"/../lib", TestTimeoutShort).Should(BeADirectory())
 	Eventually(logScanner.IsFound("Magicstring!"), TestTimeoutMedium).Should(BeTrue())
 }

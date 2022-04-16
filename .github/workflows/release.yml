@@ -18,9 +18,8 @@
 name: release
 
 on:
-  push:
-    tags:
-      - '*nightly*'
+  schedule:
+  - cron: "59 23 * * *"
 
 jobs:
   release:
@@ -43,90 +42,56 @@ jobs:
         key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
         restore-keys: |
           ${{ runner.os }}-go-
-
+    - name: Get nightly version
+      shell: bash
+      run: |
+        V=$(make get-version | sed s/-SNAPSHOT/-nightly/)
+        echo "VERSION=$V" >> $GITHUB_ENV
     - name: Global Env
       env:
         TEST_DOCKER_HUB_USERNAME: ${{ secrets.TEST_DOCKER_HUB_USERNAME }}
         TEST_DOCKER_HUB_PASSWORD: ${{ secrets.TEST_DOCKER_HUB_PASSWORD }}
       run: |
-        TAG=${GITHUB_REF##*/}
-        VERSION=${TAG:1}
-        echo "Using VERSION=$VERSION"
-        echo "::set-env name=VERSION::$VERSION"
+        echo "Using VERSION=${{ env.VERSION }}"
 
         IMAGE_NAME=docker.io/${TEST_DOCKER_HUB_USERNAME:-testcamelk}/camel-k
         echo "Using IMAGE_NAME=$IMAGE_NAME"
-        echo "::set-env name=IMAGE_NAME::$IMAGE_NAME"
+        echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
 
         MAVEN_REPOSITORY=$(make get-staging-repo)
         echo "Using MAVEN_REPOSITORY=$MAVEN_REPOSITORY"
-        echo "::set-env name=MAVEN_REPOSITORY::$MAVEN_REPOSITORY"
+        echo "MAVEN_REPOSITORY=$MAVEN_REPOSITORY" >> $GITHUB_ENV
 
         docker login -u $TEST_DOCKER_HUB_USERNAME -p $TEST_DOCKER_HUB_PASSWORD
-
+        
     - name: Codegen
       run: |
-        make VERSION=$VERSION IMAGE_NAME=$IMAGE_NAME codegen set-version build-resources
+        make VERSION=${{ env.VERSION }} IMAGE_NAME=${{ env.IMAGE_NAME }} codegen set-version build-resources
 
     - name: Build
       run: |
-        make VERSION=$VERSION IMAGE_NAME=$IMAGE_NAME release-nightly
+        make VERSION=${{ env.VERSION }} IMAGE_NAME=${{ env.IMAGE_NAME }} release-nightly
 
     - name: Check
       run: ls -l
 
     - name: Create Release
       id: create_release
-      uses: actions/create-release@latest
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: ncipollo/release-action@v1
       with:
-        tag_name: ${{ env.VERSION }}
-        release_name: Release ${{ env.VERSION }}
+        artifacts: "./camel-k-client*.tar.gz"
         body: |
-          Apache Camel K nightly build for testing (unstable).
+          Apache Camel K ${{ env.VERSION }} build for testing (unstable). This nightly release is using 
+          an **unsupported** operator image published as `${{ env.IMAGE_NAME }}:${{ env.VERSION }}`
 
           To test it, download the client for your OS and run:
 
           ```
           kamel install --olm=false --maven-repository=${{ env.MAVEN_REPOSITORY }}
           ```
-
+        token: ${{ secrets.GITHUB_TOKEN }}
         draft: false
         prerelease: true
-    - name: Upload Client Linux
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./camel-k-client-${{ env.VERSION }}-linux-64bit.tar.gz
-        asset_name: camel-k-client-${{ env.VERSION }}-linux-64bit.tar.gz
-        asset_content_type: application/tar+gzip
-    - name: Upload Client Mac
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./camel-k-client-${{ env.VERSION }}-mac-64bit.tar.gz
-        asset_name: camel-k-client-${{ env.VERSION }}-mac-64bit.tar.gz
-        asset_content_type: application/tar+gzip
-    - name: Upload Client Windows
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./camel-k-client-${{ env.VERSION }}-windows-64bit.tar.gz
-        asset_name: camel-k-client-${{ env.VERSION }}-windows-64bit.tar.gz
-        asset_content_type: application/tar+gzip
-    - name: Upload Examples
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./camel-k-examples-${{ env.VERSION }}.tar.gz
-        asset_name: camel-k-examples-${{ env.VERSION }}.tar.gz
-        asset_content_type: application/tar+gzip
+        allowUpdates: true
+        replaceArtifacts: true
+

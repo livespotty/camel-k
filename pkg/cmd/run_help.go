@@ -29,6 +29,7 @@ import (
 	"github.com/apache/camel-k/pkg/util/kubernetes"
 	"github.com/apache/camel-k/pkg/util/resource"
 	"github.com/magiconair/properties"
+	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -43,21 +44,19 @@ func hashFrom(contents ...[]byte) string {
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
-func parseConfigAndGenCm(ctx context.Context, c client.Client, config *resource.Config, integration *v1.Integration, enableCompression bool) (*corev1.ConfigMap, error) {
+func parseConfigAndGenCm(ctx context.Context, cmd *cobra.Command, c client.Client, config *resource.Config, integration *v1.Integration, enableCompression bool) (*corev1.ConfigMap, error) {
 	switch config.StorageType() {
 	case resource.StorageTypeConfigmap:
 		cm := kubernetes.LookupConfigmap(ctx, c, integration.Namespace, config.Name())
 		if cm == nil {
-			fmt.Printf("Warn: %s Configmap not found in %s namespace, make sure to provide it before the Integration can run\n",
-				config.Name(), integration.Namespace)
+			fmt.Fprintln(cmd.ErrOrStderr(), "Warn:", config.Name(), "Configmap not found in", integration.Namespace, "namespace, make sure to provide it before the Integration can run")
 		} else if config.ContentType() != resource.ContentTypeData && cm.BinaryData != nil {
 			return nil, fmt.Errorf("you cannot provide a binary config, use a text file instead")
 		}
 	case resource.StorageTypeSecret:
 		secret := kubernetes.LookupSecret(ctx, c, integration.Namespace, config.Name())
 		if secret == nil {
-			fmt.Printf("Warn: %s Secret not found in %s namespace, make sure to provide it before the Integration can run\n",
-				config.Name(), integration.Namespace)
+			fmt.Fprintln(cmd.ErrOrStderr(), "Warn:", config.Name(), "Secret not found in", integration.Namespace, "namespace, make sure to provide it before the Integration can run")
 		}
 	case resource.StorageTypeFile:
 		// Don't allow a binary non compressed resource

@@ -65,10 +65,6 @@ func NewKamelCommand(ctx context.Context) (*cobra.Command, error) {
 		return cmd, err
 	}
 
-	if err := addLocalSubCommands(cmd, &options); err != nil {
-		return cmd, err
-	}
-
 	err = kamelPostAddCommandInit(cmd)
 
 	return cmd, err
@@ -211,7 +207,7 @@ func checkAndShowCompatibilityWarning(ctx context.Context, cmd *cobra.Command, c
 			fmt.Fprintf(cmd.ErrOrStderr(), "Unable to retrieve the operator version: %s\n", err.Error())
 		}
 	} else {
-		if operatorVersion != "" && !compatibleVersions(operatorVersion, defaults.Version) {
+		if operatorVersion != "" && !compatibleVersions(operatorVersion, defaults.Version, cmd) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "You're using Camel K %s client with a %s cluster operator, it's recommended to use the same version to improve compatibility.\n\n", defaults.Version, operatorVersion)
 		}
 	}

@@ -18,12 +18,12 @@ limitations under the License.
 package cmd
 
 import (
-	"github.com/pkg/errors"
+	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
-// NewCmdLocal -- Add local kamel subcommand with several other subcommands of its own.
-// nolint: unparam
+// newCmdLocal -- Add local kamel subcommand with several other subcommands of its own.
 func newCmdLocal(rootCmdOptions *RootCmdOptions) *cobra.Command {
 	cmd := cobra.Command{
 		Use:   "local [sub-command]",
@@ -34,25 +34,15 @@ func newCmdLocal(rootCmdOptions *RootCmdOptions) *cobra.Command {
 		},
 	}
 
+	cmd.AddCommand(cmdOnly(newCmdLocalBuild(rootCmdOptions)))
+	cmd.AddCommand(cmdOnly(newCmdLocalInspect(rootCmdOptions)))
+	cmd.AddCommand(cmdOnly(newCmdLocalRun(rootCmdOptions)))
+
 	return &cmd
 }
 
-func addLocalSubCommands(cmd *cobra.Command, options *RootCmdOptions) error {
-	var localCmd *cobra.Command
-	for _, c := range cmd.Commands() {
-		if c.Name() == "local" {
-			localCmd = c
-			break
-		}
+func warnTraitUsages(cmd *cobra.Command, traits []string) {
+	if len(traits) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "Warning: traits are specified but don't take effect for local run: %v\n", traits)
 	}
-
-	if localCmd == nil {
-		return errors.New("could not find any configured local command")
-	}
-
-	localCmd.AddCommand(cmdOnly(newCmdLocalBuild(options)))
-	localCmd.AddCommand(cmdOnly(newCmdLocalInspect(options)))
-	localCmd.AddCommand(cmdOnly(newCmdLocalRun(options)))
-
-	return nil
 }

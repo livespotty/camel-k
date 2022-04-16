@@ -18,21 +18,21 @@
 apiVersion: camel.apache.org/v1
 kind: CamelCatalog
 metadata:
-  name: camel-catalog-1.10.0
+  name: camel-catalog-1.13.0
   labels:
     app: camel-k
-    camel.apache.org/catalog.loader.version: 3.12.0
-    camel.apache.org/catalog.version: 3.12.0
-    camel.apache.org/runtime.version: 1.10.0
+    camel.apache.org/catalog.loader.version: 3.16.0
+    camel.apache.org/catalog.version: 3.16.0
+    camel.apache.org/runtime.version: 1.13.0
 spec:
   runtime:
-    version: 1.10.0
+    version: 1.13.0
     provider: quarkus
     applicationClass: io.quarkus.bootstrap.runner.QuarkusEntryPoint
     metadata:
-      camel-quarkus.version: 2.4.0
-      camel.version: 3.12.0
-      quarkus.version: 2.4.0.Final
+      camel-quarkus.version: 2.8.0
+      camel.version: 3.16.0
+      quarkus.version: 2.8.0.Final
     dependencies:
     - groupId: org.apache.camel.k
       artifactId: camel-k-runtime
@@ -440,6 +440,15 @@ spec:
         passive: false
       javaTypes:
       - org.apache.camel.component.azure.eventhubs.EventHubsComponent
+    camel-quarkus-azure-servicebus:
+      groupId: org.apache.camel.quarkus
+      artifactId: camel-quarkus-azure-servicebus
+      schemes:
+      - id: azure-servicebus
+        http: false
+        passive: false
+      javaTypes:
+      - org.apache.camel.component.azure.servicebus.ServiceBusComponent
     camel-quarkus-azure-storage-blob:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-azure-storage-blob
@@ -526,9 +535,9 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-bindy
       dataformats:
-      - bindy-csv
-      - bindy-fixed
-      - bindy-kvp
+      - bindyCsv
+      - bindyFixed
+      - bindyKvp
       javaTypes:
       - org.apache.camel.dataformat.bindy.csv.BindyCsvDataFormat
       - org.apache.camel.dataformat.bindy.fixed.BindyFixedLengthDataFormat
@@ -952,7 +961,7 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-fastjson
       dataformats:
-      - json-fastjson
+      - fastjson
       javaTypes:
       - org.apache.camel.component.fastjson.FastjsonDataFormat
     camel-quarkus-fhir:
@@ -1145,6 +1154,15 @@ spec:
         passive: false
       javaTypes:
       - org.apache.camel.component.google.pubsub.GooglePubsubComponent
+    camel-quarkus-google-secret-manager:
+      groupId: org.apache.camel.quarkus
+      artifactId: camel-quarkus-google-secret-manager
+      schemes:
+      - id: google-secret-manager
+        http: false
+        passive: false
+      javaTypes:
+      - org.apache.camel.component.google.secret.manager.GoogleSecretManagerComponent
     camel-quarkus-google-sheets:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-google-sheets
@@ -1203,7 +1221,7 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-gson
       dataformats:
-      - json-gson
+      - gson
       javaTypes:
       - org.apache.camel.component.gson.GsonDataFormat
     camel-quarkus-guava-eventbus:
@@ -1393,15 +1411,6 @@ spec:
         passive: false
       javaTypes:
       - org.apache.camel.component.iota.IOTAComponent
-    camel-quarkus-ipfs:
-      groupId: org.apache.camel.quarkus
-      artifactId: camel-quarkus-ipfs
-      schemes:
-      - id: ipfs
-        http: false
-        passive: false
-      javaTypes:
-      - org.apache.camel.component.ipfs.IPFSComponent
     camel-quarkus-irc:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-irc
@@ -1415,28 +1424,28 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-jackson
       dataformats:
-      - json-jackson
+      - jackson
       javaTypes:
       - org.apache.camel.component.jackson.JacksonDataFormat
     camel-quarkus-jackson-avro:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-jackson-avro
       dataformats:
-      - avro-jackson
+      - avroJackson
       javaTypes:
       - org.apache.camel.component.jackson.avro.JacksonAvroDataFormat
     camel-quarkus-jackson-protobuf:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-jackson-protobuf
       dataformats:
-      - protobuf-jackson
+      - protobufJackson
       javaTypes:
       - org.apache.camel.component.jackson.protobuf.JacksonProtobufDataFormat
     camel-quarkus-jacksonxml:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-jacksonxml
       dataformats:
-      - jacksonxml
+      - jacksonXml
       javaTypes:
       - org.apache.camel.component.jacksonxml.JacksonXMLDataFormat
     camel-quarkus-jaxb:
@@ -1540,7 +1549,7 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-johnzon
       dataformats:
-      - json-johnzon
+      - johnzon
       javaTypes:
       - org.apache.camel.component.johnzon.JohnzonDataFormat
     camel-quarkus-jolt:
@@ -1595,6 +1604,15 @@ spec:
         passive: false
       javaTypes:
       - org.apache.camel.component.jslt.JsltComponent
+    camel-quarkus-json-patch:
+      groupId: org.apache.camel.quarkus
+      artifactId: camel-quarkus-json-patch
+      schemes:
+      - id: json-patch
+        http: false
+        passive: false
+      javaTypes:
+      - org.apache.camel.component.jsonpatch.JsonPatchComponent
     camel-quarkus-json-validator:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-json-validator
@@ -1624,7 +1642,7 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-jsonb
       dataformats:
-      - json-jsonb
+      - jsonb
       javaTypes:
       - org.apache.camel.component.jsonb.JsonbDataFormat
     camel-quarkus-jsonpath:
@@ -1661,15 +1679,6 @@ spec:
         passive: false
       javaTypes:
       - org.apache.camel.component.kamelet.KameletComponent
-    camel-quarkus-kamelet-reify:
-      groupId: org.apache.camel.quarkus
-      artifactId: camel-quarkus-kamelet-reify
-      schemes:
-      - id: kamelet-reify
-        http: false
-        passive: false
-      javaTypes:
-      - org.apache.camel.component.kameletreify.KameletReifyComponent
     camel-quarkus-kubernetes:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-kubernetes
@@ -1836,7 +1845,7 @@ spec:
         http: false
         passive: false
       dataformats:
-      - mime-multipart
+      - mimeMultipart
       javaTypes:
       - org.apache.camel.component.mail.MailComponent
       - org.apache.camel.dataformat.mime.multipart.MimeMultipartDataFormat
@@ -1871,6 +1880,9 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-milo
       schemes:
+      - id: milo-browse
+        http: false
+        passive: false
       - id: milo-client
         http: false
         passive: false
@@ -1878,6 +1890,7 @@ spec:
         http: false
         passive: false
       javaTypes:
+      - org.apache.camel.component.milo.browse.MiloBrowseComponent
       - org.apache.camel.component.milo.client.MiloClientComponent
       - org.apache.camel.component.milo.server.MiloServerComponent
     camel-quarkus-minio:
@@ -2409,7 +2422,7 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-snakeyaml
       dataformats:
-      - yaml-snakeyaml
+      - snakeYaml
       javaTypes:
       - org.apache.camel.component.snakeyaml.SnakeYAMLDataFormat
     camel-quarkus-snmp:
@@ -2425,9 +2438,9 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-soap
       dataformats:
-      - soapjaxb
+      - soap
       javaTypes:
-      - org.apache.camel.dataformat.soap.SoapJaxbDataFormat
+      - org.apache.camel.dataformat.soap.SoapDataFormat
     camel-quarkus-solr:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-solr
@@ -2582,7 +2595,7 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-tarfile
       dataformats:
-      - tarfile
+      - tarFile
       javaTypes:
       - org.apache.camel.dataformat.tarfile.TarFileDataFormat
     camel-quarkus-telegram:
@@ -2654,12 +2667,12 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-univocity-parsers
       dataformats:
-      - univocity-csv
-      - univocity-fixed
-      - univocity-tsv
+      - univocityCsv
+      - univocityFixed
+      - univocityTsv
       javaTypes:
       - org.apache.camel.dataformat.univocity.UniVocityCsvDataFormat
-      - org.apache.camel.dataformat.univocity.UniVocityFixedWidthDataFormat
+      - org.apache.camel.dataformat.univocity.UniVocityFixedDataFormat
       - org.apache.camel.dataformat.univocity.UniVocityTsvDataFormat
     camel-quarkus-validator:
       groupId: org.apache.camel.quarkus
@@ -2697,15 +2710,6 @@ spec:
         passive: false
       javaTypes:
       - org.apache.camel.component.vertx.http.VertxHttpComponent
-    camel-quarkus-vertx-kafka:
-      groupId: org.apache.camel.quarkus
-      artifactId: camel-quarkus-vertx-kafka
-      schemes:
-      - id: vertx-kafka
-        http: false
-        passive: false
-      javaTypes:
-      - org.apache.camel.component.vertx.kafka.VertxKafkaComponent
     camel-quarkus-vertx-websocket:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-vertx-websocket
@@ -2742,15 +2746,6 @@ spec:
         passive: false
       javaTypes:
       - org.apache.camel.component.web3j.Web3jComponent
-    camel-quarkus-weka:
-      groupId: org.apache.camel.quarkus
-      artifactId: camel-quarkus-weka
-      schemes:
-      - id: weka
-        http: false
-        passive: false
-      javaTypes:
-      - org.apache.camel.component.weka.WekaComponent
     camel-quarkus-wordpress:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-wordpress
@@ -2805,7 +2800,7 @@ spec:
         http: false
         passive: false
       dataformats:
-      - secureXML
+      - xmlSecurity
       javaTypes:
       - org.apache.camel.component.xmlsecurity.XmlSignerComponent
       - org.apache.camel.component.xmlsecurity.XmlVerifierComponent
@@ -2848,8 +2843,8 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-xstream
       dataformats:
-      - json-xstream
       - xstream
+      - xstreamJson
       javaTypes:
       - org.apache.camel.dataformat.xstream.JsonDataFormat
       - org.apache.camel.dataformat.xstream.XStreamDataFormat
@@ -2875,8 +2870,8 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-zip-deflater
       dataformats:
-      - gzipdeflater
-      - zipdeflater
+      - gzipDeflater
+      - zipDeflater
       javaTypes:
       - org.apache.camel.dataformat.deflater.GzipDeflaterDataFormat
       - org.apache.camel.dataformat.deflater.ZipDeflaterDataFormat
@@ -2884,7 +2879,7 @@ spec:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-zipfile
       dataformats:
-      - zipfile
+      - zipFile
       javaTypes:
       - org.apache.camel.dataformat.zipfile.ZipFileDataFormat
     camel-quarkus-zookeeper:
@@ -2935,13 +2930,6 @@ spec:
       - js
       metadata:
         native: "true"
-    jsh:
-      groupId: org.apache.camel.k
-      artifactId: camel-k-loader-jsh
-      languages:
-      - jsh
-      metadata:
-        native: "false"
     kts:
       groupId: org.apache.camel.quarkus
       artifactId: camel-quarkus-kotlin-dsl

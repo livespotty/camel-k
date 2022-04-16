@@ -15,28 +15,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -e
-
 location=$(dirname $0)
-cd $location/..
+rootdir=$location/../
 
-version=$1
-repo=$2
+if [ "$#" -lt 1 ]; then
+  echo "usage: $0 <Camel K runtime version> [<staging repository>]"
+  exit 1
+fi
 
-[ -d "./tmpschema" ] && rm -r ./tmpschema
-mkdir  tmpschema
+if [ -z $2 ]; then
+  mvn -q dependency:copy -Dartifact="org.apache.camel.k:camel-k-catalog:$1:yaml:catalog" -DoutputDirectory=${rootdir}/resources/
+  mv ${rootdir}/resources/camel-k-catalog-$1-catalog.yaml ${rootdir}/resources/camel-catalog-$1.yaml
+else
+  # TODO: fix this workaround to use the above mvn statement with the staging repository as well
+  echo "INFO: extracting a catalog from staging repository $2"
+  wget -q $2/org/apache/camel/k/camel-k-catalog/$1/camel-k-catalog-$1-catalog.yaml -O ${rootdir}/resources/camel-catalog-$1.yaml
+fi
 
-./mvnw dependency:copy \
-  -f build/maven/pom-catalog.xml \
-  -Dartifact=org.apache.camel.k:camel-k-loader-yaml-impl:$version:json:json-schema \
-  -DoutputDirectory=../../tmpschema \
-  -Dmdep.stripVersion \
-  -Druntime.version=$1 \
-  -Dstaging.repo=$repo
 
-schema=./tmpschema/camel-k-loader-yaml-impl-json-schema.json
-
-go run ./cmd/util/json-schema-gen ./config/crd/bases/camel.apache.org_kamelets.yaml $schema .spec.flow false ./docs/modules/ROOT/assets/attachments/schema/kamelet-schema.json
-go run ./cmd/util/json-schema-gen ./config/crd/bases/camel.apache.org_integrations.yaml $schema .spec.flows true ./docs/modules/ROOT/assets/attachments/schema/integration-schema.json
-
-rm -r ./tmpschema

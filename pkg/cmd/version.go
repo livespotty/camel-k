@@ -171,15 +171,15 @@ func operatorVersion(ctx context.Context, c client.Client, namespace string) (st
 	return infos[infoVersion], nil
 }
 
-func compatibleVersions(aVersion, bVersion string) bool {
+func compatibleVersions(aVersion, bVersion string, cmd *cobra.Command) bool {
 	a, err := semver.NewVersion(aVersion)
 	if err != nil {
-		fmt.Printf("Could not parse %s (error: %s)\n", a, err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "Could not parse '"+aVersion+"' (error:", err.Error()+")")
 		return false
 	}
 	b, err := semver.NewVersion(bVersion)
 	if err != nil {
-		fmt.Printf("Could not parse %s (error: %s)\n", b, err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "Could not parse '"+bVersion+"' (error:", err.Error()+")")
 		return false
 	}
 	// We consider compatible when major and minor are equals

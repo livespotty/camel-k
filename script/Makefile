@@ -17,8 +17,8 @@ VERSIONFILE := pkg/util/defaults/defaults.go
 VERSION ?= 1.9.0-SNAPSHOT
 OPERATOR_VERSION := $(subst -SNAPSHOT,,$(VERSION))
 LAST_RELEASED_IMAGE_NAME := camel-k-operator
-LAST_RELEASED_VERSION := 1.8.0
-RUNTIME_VERSION := 1.11.0
+LAST_RELEASED_VERSION := 1.8.2
+RUNTIME_VERSION := 1.13.0
 BUILDAH_VERSION := 1.14.0
 KANIKO_VERSION := 0.17.1
 INSTALL_DEFAULT_KAMELETS := true
@@ -41,14 +41,14 @@ CUSTOM_VERSION ?= $(VERSION)
 
 METADATA_IMAGE_NAME := $(CUSTOM_IMAGE)-metadata
 BUNDLE_IMAGE_NAME ?= $(CUSTOM_IMAGE)-bundle
-RELEASE_GIT_REMOTE := upstream
+RELEASE_GIT_REMOTE := origin
 GIT_COMMIT := $(shell git rev-list -1 HEAD)
 LINT_GOGC := 10
 LINT_DEADLINE := 10m
 
 
 # olm bundle vars
-CHANNELS ?= $(OPERATOR_VERSION)
+CHANNELS ?= $(OPERATOR_VERSION),candidate,stable,latest
 DEFAULT_CHANNEL ?= $(OPERATOR_VERSION)
 PACKAGE := camel-k
 CSV_VERSION := $(CUSTOM_VERSION:-SNAPSHOT=)
@@ -61,16 +61,12 @@ CSV_PATH := config/manifests/bases/$(CSV_FILENAME)
 # Used to push pre-release artifacts
 STAGING_IMAGE_NAME := docker.io/camelk/camel-k
 
-STAGING_RUNTIME_REPO :=
+STAGING_RUNTIME_REPO := https://repository.apache.org/content/repositories/orgapachecamel-1425
 
 # Define here the repo containing the default Kamelet catalog (if any)
 KAMELET_CATALOG_REPO := https://github.com/apache/camel-kamelets.git
 # Optional branch for the default Kamelet catalog (change this to a tag before release)
-KAMELET_CATALOG_REPO_BRANCH := v0.7.0
-
-# When packaging artifacts into the docker image, you can "copy" them from local maven
-# or "download" them from Apache Snapshots and Maven Central
-PACKAGE_ARTIFACTS_STRATEGY := copy
+KAMELET_CATALOG_REPO_BRANCH := v0.8.0
 
 # OLM (Operator Lifecycle Manager and Operator Hub): uncomment to override operator settings at build time
 #GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/olm.DefaultOperatorName=camel-k-operator
@@ -162,7 +158,7 @@ codegen:
 
 	gofmt -w pkg/util/defaults/defaults.go
 
-generate: generate-deepcopy generate-crd generate-client generate-doc generate-json-schema generate-keda generate-strimzi
+generate: generate-deepcopy generate-crd generate-client generate-doc generate-keda generate-strimzi
 
 generate-client:
 	./script/gen_client.sh
@@ -175,10 +171,6 @@ generate-doc:
 
 generate-deepcopy: controller-gen
 	cd pkg/apis/camel && $(CONTROLLER_GEN) paths="./..." object
-
-generate-json-schema:
-	# Skip since the YAML DSL schema has been moved to apache/camel
-	#./script/gen_json_schema.sh $(RUNTIME_VERSION) $(STAGING_RUNTIME_REPO)
 
 generate-keda:
 	cd addons/keda/duck && $(CONTROLLER_GEN) paths="./..." object
@@ -211,7 +203,7 @@ test-builder: build
 
 test-local: build
 	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/local -tags=integration $(TEST_LOCAL_RUN)
+	go test -timeout 30m -v ./e2e/local -tags=integration $(TEST_LOCAL_RUN)
 
 test-kamel-cli: build
 	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
@@ -233,6 +225,10 @@ test-upgrade: build
 	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
 	go test -timeout 60m -v ./e2e/upgrade -tags=integration $(TEST_UPGRADE_RUN)
 
+test-registry-maven-wagon: build
+	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
+	go test -timeout 60m -v ./e2e/registry -tags=integration $(TEST_REGISTRY_MAVEN_WAGON_RUN)
+
 build-kamel:
 # Ensure the binary is statically linked when building on Linux due to ABI changes in newer glibc 2.32, otherwise
 # it would not run on older versions. See https://github.com/apache/camel-k/pull/2141#issuecomment-800990117
@@ -243,7 +239,7 @@ else
 endif
 
 build-resources:
-	./script/build_catalog.sh $(RUNTIME_VERSION) -Dcatalog.file=camel-catalog-$(RUNTIME_VERSION).yaml -Dcatalog.runtime=quarkus -Dstaging.repo="$(STAGING_RUNTIME_REPO)"
+	./script/get_catalog.sh $(RUNTIME_VERSION) $(STAGING_RUNTIME_REPO)
 	go generate ./pkg/...
 
 bundle-kamelets:
@@ -295,6 +291,7 @@ check-licenses:
 check-platform:
 	./script/check_platform.sh
 
+# The below are dependencies needed for maven structured logs. We must bundle into the final container image.
 maven-overlay:
 	mkdir -p build/_maven_overlay
 	./script/maven_overlay.sh build/_maven_overlay
@@ -356,7 +353,8 @@ package-examples:
 	./script/package_examples.sh $(CUSTOM_VERSION)
 
 package-artifacts:
-	./script/package_maven_artifacts.sh $(RUNTIME_VERSION) $(PACKAGE_ARTIFACTS_STRATEGY) $(STAGING_RUNTIME_REPO)
+	# useful for development purpose only in order to include any local development runtime dependency
+	./script/package_maven_artifacts.sh $(RUNTIME_VERSION) $(CAMEL_K_RUNTIME_DIR)
 
 release: clean codegen set-module-version set-version build-resources check-licenses build images images-push cross-compile package-examples git-tag
 
@@ -376,10 +374,11 @@ get-staging-repo:
 	@echo $(or ${STAGING_RUNTIME_REPO},https://repository.apache.org/content/repositories/snapshots@id=apache-snapshots@snapshots)
 
 .PHONY: build build-kamel build-resources dep codegen images images-dev images-push images-push-staging test check test-integration clean release cross-compile package-examples set-version git-tag release-notes check-licenses generate-deepcopy generate-client generate-doc build-resources release-helm release-staging release-nightly get-staging-repo get-version build-submodules set-module-version bundle-kamelets generate-keda generate-strimzi
+.PHONY: controller-gen kubectl kustomize operator-sdk
 
 # find or download controller-gen if necessary
 controller-gen:
-ifeq (, $(shell which controller-gen))
+ifeq (, $(shell command -v controller-gen 2> /dev/null))
 	@{ \
 	set -e ;\
 	CONTROLLER_GEN_TMP_DIR=$$(mktemp -d) ;\
@@ -390,18 +389,16 @@ ifeq (, $(shell which controller-gen))
 	}
 CONTROLLER_GEN=$(GOBIN)/controller-gen
 else
-CONTROLLER_GEN=$(shell which controller-gen)
+CONTROLLER_GEN=$(shell command -v controller-gen 2> /dev/null)
 endif
 
-.PHONY: kubectl kustomize operator-sdk
-
 kubectl:
-ifeq (, $(shell which kubectl))
-$(error "No kubectl found in PATH. Please install and re-run")
+ifeq (, $(shell command -v kubectl 2> /dev/null))
+	$(error "No kubectl found in PATH. Please install and re-run")
 endif
 
 kustomize:
-ifeq (, $(shell which kustomize))
+ifeq (, $(shell command -v kustomize 2> /dev/null))
 	@{ \
 	set -e ;\
 	KUSTOMIZE_GEN_TMP_DIR=$$(mktemp -d) ;\
@@ -412,11 +409,11 @@ ifeq (, $(shell which kustomize))
 	}
 KUSTOMIZE=$(GOBIN)/kustomize
 else
-KUSTOMIZE=$(shell which kustomize)
+KUSTOMIZE=$(shell command -v kustomize 2> /dev/null)
 endif
 
 operator-sdk:
-ifeq (, $(shell which operator-sdk))
+ifeq (, $(shell command -v operator-sdk 2> /dev/null))
 	@{ \
 	set -e ;\
 	if [ "$(shell uname -s 2>/dev/null || echo Unknown)" == "Darwin" ] ; then \
@@ -438,7 +435,7 @@ else
   operator-sdk version | sed -n 's/.*"v\([^"]*\)".*/\1/p'; \
 	echo " If this is less than $(OPERATOR_SDK_VERSION) then please consider moving it aside and allowing the approved version to be downloaded."; \
 	}
-OPERATOR_SDK=$(shell which operator-sdk)
+OPERATOR_SDK=$(shell command -v operator-sdk 2> /dev/null)
 endif
 
 .PHONY: generate-crd $(BUNDLE_CAMEL_APIS) bundle bundle-build

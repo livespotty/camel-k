@@ -23,18 +23,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/spf13/cobra"
 )
 
-func CreateTarFile(fileNames []string, archiveName string) {
+func CreateTarFile(fileNames []string, archiveName string, cmd *cobra.Command) {
 	out, err := os.Create(archiveName)
 	if err != nil {
-		fmt.Printf("Error writing archive: %v", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error writing archive:", err.Error())
 	}
 	defer out.Close()
 
 	err = createArchiveFile(fileNames, out)
 	if err != nil {
-		fmt.Printf("Error writing archive: %v", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error writing archive:", err.Error())
 	}
 }
 

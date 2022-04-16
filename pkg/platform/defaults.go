@@ -34,12 +34,14 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/pkg/builder"
 	"github.com/apache/camel-k/pkg/client"
 	"github.com/apache/camel-k/pkg/install"
 	"github.com/apache/camel-k/pkg/kamelet/repository"
 	"github.com/apache/camel-k/pkg/util/defaults"
 	"github.com/apache/camel-k/pkg/util/log"
 	"github.com/apache/camel-k/pkg/util/openshift"
+	image "github.com/apache/camel-k/pkg/util/registry"
 )
 
 // BuilderServiceAccount --.
@@ -90,12 +92,12 @@ func ConfigureDefaults(ctx context.Context, c client.Client, p *v1.IntegrationPl
 	}
 
 	if p.Status.Build.BuildStrategy == v1.BuildStrategyPod {
-		if err := createBuilderServiceAccount(ctx, c, p); err != nil {
+		if err := CreateBuilderServiceAccount(ctx, c, p); err != nil {
 			return errors.Wrap(err, "cannot ensure service account is present")
 		}
 	}
 
-	err = configureRegistry(ctx, c, p)
+	err = configureRegistry(ctx, c, p, verbose)
 	if err != nil {
 		return err
 	}
@@ -111,7 +113,22 @@ func ConfigureDefaults(ctx context.Context, c client.Client, p *v1.IntegrationPl
 	return nil
 }
 
-func configureRegistry(ctx context.Context, c client.Client, p *v1.IntegrationPlatform) error {
+func CreateBuilderServiceAccount(ctx context.Context, client client.Client, p *v1.IntegrationPlatform) error {
+	sa := corev1.ServiceAccount{}
+	key := ctrl.ObjectKey{
+		Name:      BuilderServiceAccount,
+		Namespace: p.Namespace,
+	}
+
+	err := client.Get(ctx, key, &sa)
+	if err != nil && k8serrors.IsNotFound(err) {
+		return install.BuilderServiceAccountRoles(ctx, client, p.Namespace, p.Status.Cluster)
+	}
+
+	return err
+}
+
+func configureRegistry(ctx context.Context, c client.Client, p *v1.IntegrationPlatform, verbose bool) error {
 	if p.Status.Cluster == v1.IntegrationPlatformClusterOpenShift &&
 		p.Status.Build.PublishStrategy != v1.IntegrationPlatformBuildPublishStrategyS2I &&
 		p.Status.Build.Registry.Address == "" {
@@ -148,11 +165,22 @@ func configureRegistry(ctx context.Context, c client.Client, p *v1.IntegrationPl
 			}
 		}
 	}
-
+	if p.Status.Build.Registry.Address == "" {
+		// try KEP-1755
+		address, err := image.GetRegistryAddress(ctx, c)
+		if err != nil && verbose {
+			log.Error(err, "Cannot find a registry where to push images via KEP-1755")
+		} else if err == nil && address != nil {
+			p.Status.Build.Registry.Address = *address
+		}
+	}
 	return nil
 }
 
 func setPlatformDefaults(p *v1.IntegrationPlatform, verbose bool) error {
+	if p.Status.Build.PublishStrategyOptions == nil {
+		p.Status.Build.PublishStrategyOptions = map[string]string{}
+	}
 	if p.Status.Build.RuntimeVersion == "" {
 		p.Status.Build.RuntimeVersion = defaults.DefaultRuntimeVersion
 	}
@@ -169,8 +197,8 @@ func setPlatformDefaults(p *v1.IntegrationPlatform, verbose bool) error {
 			"-Dstyle.color=never",
 		}
 	}
-	if p.Status.Build.PersistentVolumeClaim == "" {
-		p.Status.Build.PersistentVolumeClaim = p.Name
+	if _, ok := p.Status.Build.PublishStrategyOptions[builder.KanikoPVCName]; !ok {
+		p.Status.Build.PublishStrategyOptions[builder.KanikoPVCName] = p.Name
 	}
 
 	if p.Status.Build.GetTimeout().Duration != 0 {
@@ -189,15 +217,15 @@ func setPlatformDefaults(p *v1.IntegrationPlatform, verbose bool) error {
 			Duration: 5 * time.Minute,
 		}
 	}
-
-	if p.Status.Build.PublishStrategy == v1.IntegrationPlatformBuildPublishStrategyKaniko && p.Status.Build.KanikoBuildCache == nil {
+	_, cacheEnabled := p.Status.Build.PublishStrategyOptions["KanikoBuildCache"]
+	if p.Status.Build.PublishStrategy == v1.IntegrationPlatformBuildPublishStrategyKaniko && !cacheEnabled {
 		// Default to disabling Kaniko cache warmer
 		// Using the cache warmer pod seems unreliable with the current Kaniko version
 		// and requires relying on a persistent volume.
-		defaultKanikoBuildCache := false
-		p.Status.Build.KanikoBuildCache = &defaultKanikoBuildCache
+		defaultKanikoBuildCache := "false"
+		p.Status.Build.PublishStrategyOptions[builder.KanikoBuildCacheEnabled] = defaultKanikoBuildCache
 		if verbose {
-			log.Log.Infof("Kaniko cache set to %t", *p.Status.Build.KanikoBuildCache)
+			log.Log.Infof("Kaniko cache set to %s", defaultKanikoBuildCache)
 		}
 	}
 
@@ -247,21 +275,6 @@ func createServiceCaBundleConfigMap(ctx context.Context, client client.Client, p
 	}
 
 	return cm, nil
-}
-
-func createBuilderServiceAccount(ctx context.Context, client client.Client, p *v1.IntegrationPlatform) error {
-	sa := corev1.ServiceAccount{}
-	key := ctrl.ObjectKey{
-		Name:      BuilderServiceAccount,
-		Namespace: p.Namespace,
-	}
-
-	err := client.Get(ctx, key, &sa)
-	if err != nil && k8serrors.IsNotFound(err) {
-		return install.BuilderServiceAccountRoles(ctx, client, p.Namespace, p.Status.Cluster)
-	}
-
-	return err
 }
 
 func createBuilderRegistryRoleBinding(ctx context.Context, client client.Client, p *v1.IntegrationPlatform) error {

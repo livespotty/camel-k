@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,10 +36,12 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/kubectl/pkg/cmd/set/env"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/pkg/builder"
 	"github.com/apache/camel-k/pkg/client"
 	"github.com/apache/camel-k/pkg/install"
 	"github.com/apache/camel-k/pkg/util"
@@ -300,7 +303,7 @@ func (o *installCmdOptions) install(cobraCmd *cobra.Command, _ []string) error {
 				ResourcesRequirements: o.ResourcesRequirements,
 				EnvVars:               o.EnvVars,
 			}
-			err = install.OperatorOrCollect(o.Context, c, cfg, collection, o.Force)
+			err = install.OperatorOrCollect(o.Context, cobraCmd, c, cfg, collection, o.Force)
 			if err != nil {
 				return err
 			}
@@ -328,7 +331,11 @@ func (o *installCmdOptions) install(cobraCmd *cobra.Command, _ []string) error {
 			fmt.Fprintln(cobraCmd.OutOrStdout(), "Camel K operator registry setup skipped")
 		}
 
-		platform, err := install.PlatformOrCollect(o.Context, c, o.ClusterType, namespace, o.SkipRegistrySetup, o.registry, collection)
+		operatorID, err := getOperatorID(o.EnvVars)
+		if err != nil {
+			return err
+		}
+		platform, err := install.PlatformOrCollect(o.Context, c, o.ClusterType, namespace, o.SkipRegistrySetup, o.registry, collection, operatorID)
 		if err != nil {
 			return err
 		}
@@ -430,7 +437,7 @@ func (o *installCmdOptions) install(cobraCmd *cobra.Command, _ []string) error {
 			if err != nil {
 				return err
 			}
-			platform.Spec.Build.Maven.CASecret = secret
+			platform.Spec.Build.Maven.CASecrets = append(platform.Spec.Build.Maven.CASecrets, *secret)
 		}
 
 		if o.ClusterType != "" {
@@ -443,7 +450,7 @@ func (o *installCmdOptions) install(cobraCmd *cobra.Command, _ []string) error {
 
 		kanikoBuildCacheFlag := cobraCmd.Flags().Lookup("kaniko-build-cache")
 		if kanikoBuildCacheFlag.Changed {
-			platform.Spec.Build.KanikoBuildCache = &o.KanikoBuildCache
+			platform.Spec.Build.PublishStrategyOptions[builder.KanikoBuildCacheEnabled] = strconv.FormatBool(o.KanikoBuildCache)
 		}
 
 		// Always create a platform in the namespace where the operator is located
@@ -472,18 +479,32 @@ func (o *installCmdOptions) install(cobraCmd *cobra.Command, _ []string) error {
 				strategy = "via OLM subscription"
 			}
 			if o.Global {
-				fmt.Println("Camel K installed in namespace", namespace, strategy, "(global mode)")
+				fmt.Fprintln(cobraCmd.OutOrStdout(), "Camel K installed in namespace", namespace, strategy, "(global mode)")
 			} else {
-				fmt.Println("Camel K installed in namespace", namespace, strategy)
+				fmt.Fprintln(cobraCmd.OutOrStdout(), "Camel K installed in namespace", namespace, strategy)
 			}
 		}
 	}
 
 	if collection != nil {
-		return o.printOutput(collection)
+		return o.printOutput(cobraCmd, collection)
 	}
 
 	return nil
+}
+
+func getOperatorID(vars []string) (string, error) {
+	envs, _, _, err := env.ParseEnv(vars, nil)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range envs {
+		if e.Name == "KAMEL_OPERATOR_ID" {
+			return e.Value, nil
+		}
+	}
+
+	return "", nil
 }
 
 func (o *installCmdOptions) postRun(cmd *cobra.Command, _ []string) error {
@@ -501,7 +522,7 @@ func (o *installCmdOptions) postRun(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func (o *installCmdOptions) printOutput(collection *kubernetes.Collection) error {
+func (o *installCmdOptions) printOutput(cmd *cobra.Command, collection *kubernetes.Collection) error {
 	lst := collection.AsKubernetesList()
 	switch o.OutputFormat {
 	case "yaml":
@@ -509,13 +530,13 @@ func (o *installCmdOptions) printOutput(collection *kubernetes.Collection) error
 		if err != nil {
 			return err
 		}
-		fmt.Print(string(data))
+		fmt.Fprint(cmd.OutOrStdout(), string(data))
 	case "json":
 		data, err := kubernetes.ToJSON(lst)
 		if err != nil {
 			return err
 		}
-		fmt.Print(string(data))
+		fmt.Fprint(cmd.OutOrStdout(), (data))
 	default:
 		return errors.New("unknown output format: " + o.OutputFormat)
 	}

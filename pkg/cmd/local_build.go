@@ -37,14 +37,14 @@ func newCmdLocalBuild(rootCmdOptions *RootCmdOptions) (*cobra.Command, *localBui
 		Long:    `Build integration images locally for containerized integrations.`,
 		PreRunE: decode(&options),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := options.validate(args); err != nil {
+			if err := options.validate(cmd, args); err != nil {
 				return err
 			}
 			if err := options.init(args); err != nil {
 				return err
 			}
 			if err := options.run(cmd, args); err != nil {
-				fmt.Println(err.Error())
+				fmt.Fprintln(cmd.ErrOrStderr(), err.Error())
 			}
 			if err := options.deinit(); err != nil {
 				return err
@@ -67,6 +67,12 @@ func newCmdLocalBuild(rootCmdOptions *RootCmdOptions) (*cobra.Command, *localBui
 	cmd.Flags().StringArrayP("dependency", "d", nil, "Add an additional dependency")
 	cmd.Flags().StringArray("maven-repository", nil, "Use a maven repository")
 
+	// hidden flags for compatibility with kamel run
+	cmd.Flags().StringArrayP("trait", "t", nil, "")
+	if err := cmd.Flags().MarkHidden("trait"); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err.Error())
+	}
+
 	return &cmd, &options
 }
 
@@ -81,19 +87,15 @@ type localBuildCmdOptions struct {
 	Properties             []string `mapstructure:"properties"`
 	PropertyFiles          []string `mapstructure:"property-files"`
 	MavenRepositories      []string `mapstructure:"maven-repositories"`
+	Traits                 []string `mapstructure:"traits"`
 }
 
-func (command *localBuildCmdOptions) validate(args []string) error {
+func (command *localBuildCmdOptions) validate(cmd *cobra.Command, args []string) error {
 	// Validate integration files.
 	if len(args) > 0 {
 		err := validateIntegrationFiles(args)
 		if err != nil {
 			return err
-		}
-
-		// Cannot have both integration files and the base image construction enabled.
-		if command.BaseImage {
-			return errors.New("integration files have been provided and the base image construction is enabled")
 		}
 	}
 
@@ -109,25 +111,32 @@ func (command *localBuildCmdOptions) validate(args []string) error {
 		return err
 	}
 
-	// ContainerRegistry should only be specified when building the base image.
-	if !command.BaseImage && command.ContainerRegistry != "" {
+	if command.BaseImage {
+		// Cannot have both integration files and the base image construction enabled.
+		if len(args) > 0 {
+			return errors.New("integration files have been provided and the base image construction is enabled")
+		}
+
+		// Docker registry must be set.
+		if command.ContainerRegistry == "" {
+			return errors.New("base image cannot be built because container registry has not been provided")
+		}
+
+		// If an integration directory is provided then no base image containerization can be enabled.
+		if command.IntegrationDirectory != "" {
+			return errors.New("base image construction does not use integration files")
+		}
+	} else if command.ContainerRegistry != "" {
+		// ContainerRegistry should only be specified when building the base image.
 		return errors.New("cannot specify container registry unless a base integration image is being built")
-	}
-
-	// Docker registry must be set.
-	if command.BaseImage && command.ContainerRegistry == "" {
-		return errors.New("base image cannot be built because container registry has not been provided")
-	}
-
-	// If an integration directory is provided then no base image containerization can be enabled.
-	if command.BaseImage && command.IntegrationDirectory != "" {
-		return errors.New("base image construction does not use integration files")
 	}
 
 	// The integration directory must be set when only outputting dependencies.
 	if command.DependenciesOnly && command.IntegrationDirectory == "" {
 		return errors.New("to output dependencies the integration directory flag must be set")
 	}
+
+	warnTraitUsages(cmd, command.Traits)
 
 	return nil
 }

@@ -75,7 +75,6 @@ The following tasks need to be done:
 
 - Align `KAMELET_CATALOG_REPO_BRANCH` in Makefile to latest released tag of the camel-kamelets repository
 - Align `RUNTIME_VERSION` in Makefile to latest runtime release
-- Align all libraries to the ones used in the chosen runtime (e.g. `CAMEL_QUARKUS_VERSION` and `QUARKUS_VERSION`)
 - Set `STAGING_RUNTIME_REPO` to the URL of the staging repo (if using a staged camel-k-runtime version)
 - Ensure `LAST_RELEASED_VERSION` points to latest released version of Camel K
 
@@ -150,12 +149,15 @@ kamel install --operator-image=camelk/camel-k:$CAMEL_K_VERSION --maven-repositor
 Release notes can be generated with:
 
 ```
-# previous version released on same branch, e.g. 1.5.0
+# previous version released on same branch, e.g. 1.8.0
 export PREV=a.b.c
-# current version to be released, e.g. 1.6.0
+# current version to be released, e.g. 1.8.1
 export CUR=x.y.z
 # Branch where both tags are present
 export BRANCH=main
+# Personal access Token for accessing Github API
+export GITHUB_TOKEN=token
+# Run the release-notes command
 ./script/gen_release_notes.sh $PREV $CUR $BRANCH
 ```
 
@@ -239,10 +241,27 @@ The milestone field in the release doc is the Github id for the milestone (e.g. 
 
 === Operator Hub
 
-The https://github.com/operator-framework/community-operators[OperatorHub] downstream channel should be synced to publish the latest version
+The https://github.com/k8s-operatorhub/community-operators/[OperatorHub] downstream channel should be synced to publish the latest version
 of Camel K, so that it can be easily installed on platforms that support Operator Hub.
 
-You can create the bundle using the `make bundle` command, then upload the CRD and CSV to the "community-operators" repository (2 PRs, one for OpenShift and one for all other platforms).
+The https://github.com/redhat-openshift-ecosystem/community-operators-prod/[Embedded OperatorHub in OpenShift and OKD] downstream channel should be synced to publish the latest version
+of Camel K, so that it can be easily installed on Openshift and OKD.
+
+You can create the bundle using the `make bundle` command.
+
+Once `make bundle` has been executed, you can run:
+
+```
+./script/prepare-operators.sh <version_just_released>
+```
+
+You'll get two different folders in the bundle folder
+- k8s-operators
+- openshift-ecosystem
+
+In both the directories you'll have a folder with the version number specified in the command line.
+
+The content of these folders is exactly what you need as base to create a PR for https://github.com/k8s-operatorhub/community-operators/[OperatorHub] and https://github.com/redhat-openshift-ecosystem/community-operators-prod/[Embedded OperatorHub in OpenShift and OKD].
 
 === Helm
 
@@ -253,7 +272,7 @@ First update the chart version in the `Chart.yaml` file under the `/helm` sectio
 From the main branch:
 
 ```
-./script/set-version.sh <released-version>
+./script/set_version.sh <released-version>
 make release-helm
 ```
 
@@ -263,9 +282,9 @@ Wait for them to be available on https://hub.helm.sh/.
 
 === Homebrew
 
-The https://brew.sh/[HomeBrew] formula for _kamel_ must be synced to download and build the latest version of https://github.com/apache/camel-k[Camel-K], so it can be easily installed on _macOs_ and _Linux_ platforms.
+The https://brew.sh/[HomeBrew] formula for _kamel_ must be synced to download and build the latest version of https://github.com/apache/camel-k[Camel K], so it can be easily installed on _macOs_ and _Linux_ platforms.
 
-To do so, the content of https://github.com/Homebrew/homebrew-core/blob/master/Formula/kamel.rb[homebrew-core/Formula/kamel.rb] _(the package definition)_ should be updated to point the latest release of https://github.com/apache/camel-k[Camel-K].
+To do so, the content of https://github.com/Homebrew/homebrew-core/blob/master/Formula/kamel.rb[homebrew-core/Formula/kamel.rb] _(the package definition)_ should be updated to point the latest release of https://github.com/apache/camel-k[Camel K].
 
 More importantly the _tag_ and _revision_ section configuration should change for a new release e.g
 ```
