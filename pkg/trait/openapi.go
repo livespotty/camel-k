@@ -33,10 +33,12 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/pointer"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/util"
 	"github.com/apache/camel-k/pkg/util/defaults"
 	"github.com/apache/camel-k/pkg/util/digest"
@@ -46,13 +48,9 @@ import (
 	"github.com/apache/camel-k/pkg/util/maven"
 )
 
-// The OpenAPI DSL trait is internally used to allow creating integrations from a OpenAPI specs.
-//
-// +camel-k:trait=openapi.
 type openAPITrait struct {
-	BaseTrait `property:",squash"`
-	// The configmaps holding the spec of the OpenAPI
-	Configmaps []string `property:"configmaps" json:"configmaps,omitempty"`
+	BaseTrait
+	traitv1.OpenAPITrait `property:",squash"`
 }
 
 func newOpenAPITrait() Trait {
@@ -67,11 +65,7 @@ func (t *openAPITrait) IsPlatformTrait() bool {
 }
 
 func (t *openAPITrait) Configure(e *Environment) (bool, error) {
-	if IsFalse(t.Enabled) {
-		return false, nil
-	}
-
-	if e.Integration == nil {
+	if !e.IntegrationInPhase(v1.IntegrationPhaseInitialization) || !pointer.BoolDeref(t.Enabled, true) {
 		return false, nil
 	}
 
@@ -145,12 +139,16 @@ func (t *openAPITrait) generateFromConfigmaps(e *Environment, tmpDir string) ([]
 			e.Resources.Add(refCm)
 		}
 		// Iterate over each configmap key which may hold a different OpenAPI spec
-		for k, v := range cm.UnstructuredContent()["data"].(map[string]interface{}) {
-			dataSpecs = append(dataSpecs, v1.DataSpec{
-				Name:        k,
-				Content:     v.(string),
-				Compression: false,
-			})
+		if dataMap, ok := cm.UnstructuredContent()["data"].(map[string]interface{}); ok {
+			for k, v := range dataMap {
+				if content, ok := v.(string); ok {
+					dataSpecs = append(dataSpecs, v1.DataSpec{
+						Name:        k,
+						Content:     content,
+						Compression: false,
+					})
+				}
+			}
 		}
 	}
 
@@ -272,7 +270,7 @@ func (t *openAPITrait) createNewOpenAPIConfigMap(e *Environment, resource v1.Dat
 		return err
 	}
 	mc.GlobalSettings = data
-	// nolint: staticcheck
+	//nolint: staticcheck,nolintlint
 	secrets := mergeSecrets(e.Platform.Status.Build.Maven.CASecrets, e.Platform.Status.Build.Maven.CASecret)
 
 	if secrets != nil {

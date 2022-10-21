@@ -62,6 +62,33 @@ func NewCamelCatalogList() CamelCatalogList {
 	}
 }
 
+// GetRuntimeVersion returns the Camel K runtime version of the catalog.
+func (c *CamelCatalogSpec) GetRuntimeVersion() string {
+	return c.Runtime.Version
+}
+
+// GetCamelVersion returns the Camel version the runtime is based on.
+func (c *CamelCatalogSpec) GetCamelVersion() string {
+	return c.Runtime.Metadata["camel.version"]
+}
+
+// GetCamelQuarkusVersion returns the Camel Quarkus version the runtime is based on.
+func (c *CamelCatalogSpec) GetCamelQuarkusVersion() string {
+	return c.Runtime.Metadata["camel-quarkus.version"]
+}
+
+// GetQuarkusVersion returns the Quarkus version the runtime is based on.
+func (c *CamelCatalogSpec) GetQuarkusVersion() string {
+	return c.Runtime.Metadata["quarkus.version"]
+}
+
+// HasCapability checks if the given capability is present in the catalog.
+func (c *CamelCatalogSpec) HasCapability(capability string) bool {
+	_, ok := c.Runtime.Capabilities[capability]
+
+	return ok
+}
+
 // GetDependencyID returns a Camel K recognizable maven dependency for the artifact
 func (in *CamelArtifact) GetDependencyID() string {
 	switch {

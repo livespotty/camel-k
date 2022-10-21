@@ -72,6 +72,7 @@ type OperatorMonitoringConfiguration struct {
 }
 
 // OperatorOrCollect installs the operator resources or adds them to the collector if present.
+// nolint: maintidx // TODO: refactor the code
 func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client, cfg OperatorConfiguration, collection *kubernetes.Collection, force bool) error {
 	isOpenShift, err := isOpenShift(c, cfg.ClusterType)
 	if err != nil {
@@ -241,7 +242,7 @@ func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client,
 	}
 
 	// Additionally, install Knative resources (roles and bindings)
-	isKnative, err := knative.IsInstalled(ctx, c)
+	isKnative, err := knative.IsInstalled(c)
 	if err != nil {
 		return err
 	}
@@ -508,9 +509,9 @@ func installLeaseBindings(ctx context.Context, c client.Client, namespace string
 	)
 }
 
-// PlatformOrCollect --
+// NewPlatform --
 // nolint: lll
-func PlatformOrCollect(ctx context.Context, c client.Client, clusterType string, namespace string, skipRegistrySetup bool, registry v1.RegistrySpec, collection *kubernetes.Collection, operatorID string) (*v1.IntegrationPlatform, error) {
+func NewPlatform(ctx context.Context, c client.Client, clusterType string, skipRegistrySetup bool, registry v1.RegistrySpec, operatorID string) (*v1.IntegrationPlatform, error) {
 	isOpenShift, err := isOpenShift(c, clusterType)
 	if err != nil {
 		return nil, err
@@ -533,10 +534,8 @@ func PlatformOrCollect(ctx context.Context, c client.Client, clusterType string,
 
 	if operatorID != "" {
 		// We must tell the operator to reconcile this IntegrationPlatform
-		if pl.Annotations == nil {
-			pl.Annotations = make(map[string]string)
-		}
-		pl.Annotations[v1.OperatorIDAnnotation] = operatorID
+		pl.SetOperatorID(operatorID)
+		pl.Name = operatorID
 	}
 
 	if !skipRegistrySetup {

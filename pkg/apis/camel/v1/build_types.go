@@ -107,8 +107,12 @@ type PublishTask struct {
 type BuildahTask struct {
 	BaseTask    `json:",inline"`
 	PublishTask `json:",inline"`
+	// The platform of build image
+	Platform string `json:"platform,omitempty"`
 	// log more information
 	Verbose *bool `json:"verbose,omitempty"`
+	// docker image to use
+	ExecutorImage string `json:"executorImage,omitempty"`
 }
 
 // KanikoTask is used to configure Kaniko
@@ -119,6 +123,8 @@ type KanikoTask struct {
 	Verbose *bool `json:"verbose,omitempty"`
 	// use a cache
 	Cache KanikoTaskCache `json:"cache,omitempty"`
+	// docker image to use
+	ExecutorImage string `json:"executorImage,omitempty"`
 }
 
 // KanikoTaskCache is used to configure Kaniko cache
@@ -146,6 +152,8 @@ type S2iTask struct {
 
 // BuildStatus defines the observed state of Build
 type BuildStatus struct {
+	// ObservedGeneration is the most recent generation observed for this Build.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// describes the phase
 	Phase BuildPhase `json:"phase,omitempty"`
 	// the image name built

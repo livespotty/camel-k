@@ -189,14 +189,14 @@ func CreateIntegrationFor(ctx context.Context, c client.Client, kameletbinding *
 	dslSteps = append(dslSteps, s)
 
 	fromWrapper := map[string]interface{}{
-		"uri": from.URI,
+		"uri":   from.URI,
+		"steps": dslSteps,
 	}
 
 	flowRoute := map[string]interface{}{
 		"route": map[string]interface{}{
-			"id":    "binding",
-			"from":  fromWrapper,
-			"steps": dslSteps,
+			"id":   "binding",
+			"from": fromWrapper,
 		},
 	}
 	encodedRoute, err := json.Marshal(flowRoute)
@@ -213,11 +213,8 @@ func configureBinding(integration *v1.Integration, bindings ...*bindings.Binding
 		if b == nil {
 			continue
 		}
-		if integration.Spec.Traits == nil {
-			integration.Spec.Traits = make(map[string]v1.TraitSpec)
-		}
-		for k, v := range b.Traits {
-			integration.Spec.Traits[k] = v
+		if err := integration.Spec.Traits.Merge(b.Traits); err != nil {
+			return err
 		}
 		for k, v := range b.ApplicationProperties {
 			entry, err := property.EncodePropertyFileEntry(k, v)
@@ -252,7 +249,9 @@ func determineProfile(ctx context.Context, c client.Client, binding *v1alpha1.Ka
 			return pl.Spec.Profile, nil
 		}
 	}
-	if knative.IsEnabledInNamespace(ctx, c, binding.Namespace) {
+	if ok, err := knative.IsInstalled(c); err != nil {
+		return "", err
+	} else if ok {
 		return v1.TraitProfileKnative, nil
 	}
 	if pl != nil {

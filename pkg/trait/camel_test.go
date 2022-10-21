@@ -23,6 +23,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/util/camel"
@@ -42,7 +43,7 @@ func TestConfigureEnabledCamelTraitSucceeds(t *testing.T) {
 
 func TestConfigureDisabledCamelTraitFails(t *testing.T) {
 	trait, environment := createNominalCamelTest()
-	trait.Enabled = BoolP(false)
+	trait.Enabled = pointer.Bool(false)
 
 	configured, err := trait.Configure(environment)
 	assert.NotNil(t, err)
@@ -52,7 +53,11 @@ func TestConfigureDisabledCamelTraitFails(t *testing.T) {
 func TestApplyCamelTraitSucceeds(t *testing.T) {
 	trait, environment := createNominalCamelTest()
 
-	err := trait.Apply(environment)
+	configured, err := trait.Configure(environment)
+	assert.Nil(t, err)
+	assert.True(t, configured)
+
+	err = trait.Apply(environment)
 	assert.Nil(t, err)
 	assert.Equal(t, "0.0.1", environment.RuntimeVersion)
 	assert.Equal(t, "0.0.1", environment.Integration.Status.RuntimeVersion)
@@ -65,7 +70,11 @@ func TestApplyCamelTraitWithoutEnvironmentCatalogAndUnmatchableVersionFails(t *t
 	environment.Integration.Status.RuntimeVersion = "Unmatchable version"
 	environment.Integration.Status.RuntimeProvider = v1.RuntimeProviderQuarkus
 
-	err := trait.Apply(environment)
+	configured, err := trait.Configure(environment)
+	assert.Nil(t, err)
+	assert.True(t, configured)
+
+	err = trait.Apply(environment)
 	assert.NotNil(t, err)
 	assert.Equal(t, "unable to find catalog matching version requirement: runtime=Unmatchable version, provider=quarkus", err.Error())
 }
@@ -74,7 +83,7 @@ func createNominalCamelTest() (*camelTrait, *Environment) {
 	client, _ := test.NewFakeClient()
 
 	trait, _ := newCamelTrait().(*camelTrait)
-	trait.Enabled = BoolP(true)
+	trait.Enabled = pointer.Bool(true)
 
 	environment := &Environment{
 		CamelCatalog: &camel.RuntimeCatalog{
@@ -93,7 +102,7 @@ func createNominalCamelTest() (*camelTrait, *Environment) {
 				Namespace: "namespace",
 			},
 			Spec: v1.IntegrationSpec{
-				Traits: make(map[string]v1.TraitSpec),
+				Traits: v1.Traits{},
 			},
 			Status: v1.IntegrationStatus{
 				RuntimeVersion: "0.0.1",
@@ -118,9 +127,14 @@ func createNominalCamelTest() (*camelTrait, *Environment) {
 }
 
 func TestApplyCamelTraitWithProperties(t *testing.T) {
-	camelTrait, environment := createNominalCamelTest()
-	camelTrait.Properties = []string{"a=b", "c=d"}
-	err := camelTrait.Apply(environment)
+	trait, environment := createNominalCamelTest()
+	trait.Properties = []string{"a=b", "c=d"}
+
+	configured, err := trait.Configure(environment)
+	assert.Nil(t, err)
+	assert.True(t, configured)
+
+	err = trait.Apply(environment)
 	assert.Nil(t, err)
 
 	userPropertiesCm := environment.Resources.GetConfigMap(func(cm *corev1.ConfigMap) bool {

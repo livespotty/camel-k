@@ -58,7 +58,7 @@ type IntegrationSpec struct {
 	// a source in YAML DSL language which contain the routes to run
 	Flows []Flow `json:"flows,omitempty"`
 	// Deprecated:
-	// Use container trait (container.resources) to manage resources
+	// Use mount trait (mount.resources) to manage resources
 	// Use openapi trait (openapi.configmaps) to manage OpenAPIs specifications
 	Resources []ResourceSpec `json:"resources,omitempty"`
 	// the reference of the `IntegrationKit` which is used for this Integration
@@ -68,14 +68,14 @@ type IntegrationSpec struct {
 	// the profile needed to run this Integration
 	Profile TraitProfile `json:"profile,omitempty"`
 	// the traits needed to run this Integration
-	Traits map[string]TraitSpec `json:"traits,omitempty"`
+	Traits Traits `json:"traits,omitempty"`
 	// Pod template customization
 	PodTemplate *PodSpecTemplate `json:"template,omitempty"`
 	// Deprecated:
 	// Use camel trait (camel.properties) to manage properties
-	// Use container trait (mount.configs) to manage configs
-	// Use container trait (mount.resources) to manage resources
-	// Use container trait (mount.volumes) to manage volumes
+	// Use mount trait (mount.configs) to manage configs
+	// Use mount trait (mount.resources) to manage resources
+	// Use mount trait (mount.volumes) to manage volumes
 	Configuration []ConfigurationSpec `json:"configuration,omitempty"`
 	// additional Maven repositories to be used
 	Repositories []string `json:"repositories,omitempty"`
@@ -85,6 +85,8 @@ type IntegrationSpec struct {
 
 // IntegrationStatus defines the observed state of Integration
 type IntegrationStatus struct {
+	// ObservedGeneration is the most recent generation observed for this Integration.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// the actual phase
 	Phase IntegrationPhase `json:"phase,omitempty"`
 	// the digest calculated for this Integration
@@ -146,10 +148,10 @@ const (
 
 	// IntegrationPhaseNone --
 	IntegrationPhaseNone IntegrationPhase = ""
-	// IntegrationPhaseInitialization --
-	IntegrationPhaseInitialization IntegrationPhase = "Initialization"
 	// IntegrationPhaseWaitingForPlatform --
 	IntegrationPhaseWaitingForPlatform IntegrationPhase = "Waiting For Platform"
+	// IntegrationPhaseInitialization --
+	IntegrationPhaseInitialization IntegrationPhase = "Initialization"
 	// IntegrationPhaseBuildingKit --
 	IntegrationPhaseBuildingKit IntegrationPhase = "Building Kit"
 	// IntegrationPhaseDeploying --
@@ -238,6 +240,8 @@ const (
 	// IntegrationConditionErrorReason --
 	IntegrationConditionErrorReason string = "Error"
 
+	// IntegrationConditionInitializationFailedReason --
+	IntegrationConditionInitializationFailedReason string = "InitializationFailed"
 	// IntegrationConditionUnsupportedLanguageReason --
 	IntegrationConditionUnsupportedLanguageReason string = "UnsupportedLanguage"
 
@@ -295,4 +299,6 @@ type PodSpec struct {
 	NodeSelector map[string]string `json:"nodeSelector,omitempty" protobuf:"bytes,7,rep,name=nodeSelector"`
 	// TopologySpreadConstraints
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty" patchStrategy:"merge" patchMergeKey:"topologyKey" protobuf:"bytes,33,opt,name=topologySpreadConstraints"`
+	// PodSecurityContext
+	SecurityContext corev1.PodSecurityContext `json:"securityContext,omitempty" protobuf:"bytes,34,opt,name=securityContext"`
 }

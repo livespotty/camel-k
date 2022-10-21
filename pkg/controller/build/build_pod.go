@@ -30,7 +30,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
@@ -239,16 +238,29 @@ func addBuildTaskToPod(build *v1.Build, taskName string, pod *corev1.Pod) {
 }
 
 func addBuildahTaskToPod(ctx context.Context, c ctrl.Reader, build *v1.Build, task *v1.BuildahTask, pod *corev1.Pod) error {
-	bud := []string{
+	var bud []string
+
+	bud = []string{
 		"buildah",
 		"bud",
 		"--storage-driver=vfs",
+	}
+
+	if task.Platform != "" {
+		bud = append(bud, []string{
+			"--platform",
+			task.Platform,
+		}...)
+	}
+
+	bud = append(bud, []string{
+		"--pull-always",
 		"-f",
 		"Dockerfile",
 		"-t",
 		task.Image,
 		".",
-	}
+	}...)
 
 	push := []string{
 		"buildah",
@@ -312,9 +324,14 @@ func addBuildahTaskToPod(ctx context.Context, c ctrl.Reader, build *v1.Build, ta
 		args = append([]string{auth}, args...)
 	}
 
+	image := task.ExecutorImage
+	if image == "" {
+		image = fmt.Sprintf("%s:v%s", builder.BuildahDefaultImageName, defaults.BuildahVersion)
+	}
+
 	container := corev1.Container{
 		Name:            task.Name,
-		Image:           fmt.Sprintf("quay.io/buildah/stable:v%s", defaults.BuildahVersion),
+		Image:           image,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/bin/sh", "-c"},
 		Args:            []string{strings.Join(args, " && ")},
@@ -424,9 +441,14 @@ func addKanikoTaskToPod(ctx context.Context, c ctrl.Reader, build *v1.Build, tas
 		})
 	}
 
+	image := task.ExecutorImage
+	if image == "" {
+		image = fmt.Sprintf("%s:v%s", builder.KanikoDefaultExecutorImageName, defaults.KanikoVersion)
+	}
+
 	container := corev1.Container{
 		Name:            task.Name,
-		Image:           fmt.Sprintf("gcr.io/kaniko-project/executor:v%s", defaults.KanikoVersion),
+		Image:           image,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Args:            args,
 		Env:             env,

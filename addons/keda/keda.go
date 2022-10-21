@@ -27,6 +27,7 @@ import (
 
 	kedav1alpha1 "github.com/apache/camel-k/addons/keda/duck/v1alpha1"
 	camelv1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	camelv1alpha1 "github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
 	"github.com/apache/camel-k/pkg/kamelet/repository"
 	"github.com/apache/camel-k/pkg/metadata"
@@ -41,6 +42,7 @@ import (
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -72,8 +74,8 @@ const (
 // The KEDA trait is disabled by default.
 //
 // +camel-k:trait=keda.
-type kedaTrait struct {
-	trait.BaseTrait `property:",squash"`
+type Trait struct {
+	traitv1.Trait `property:",squash" json:",inline"`
 	// Enables automatic configuration of the trait. Allows the trait to infer KEDA triggers from the Kamelets.
 	Auto *bool `property:"auto" json:"auto,omitempty"`
 	// Set the spec->replicas field on the top level controller to an explicit value if missing, to allow KEDA to recognize it as a scalable resource.
@@ -95,6 +97,11 @@ type kedaTrait struct {
 	Triggers []kedaTrigger `property:"triggers" json:"triggers,omitempty"`
 }
 
+type kedaTrait struct {
+	trait.BaseTrait
+	Trait `property:",squash"`
+}
+
 type kedaTrigger struct {
 	Type                 string            `property:"type" json:"type,omitempty"`
 	Metadata             map[string]string `property:"metadata" json:"metadata,omitempty"`
@@ -110,7 +117,7 @@ func NewKedaTrait() trait.Trait {
 }
 
 func (t *kedaTrait) Configure(e *trait.Environment) (bool, error) {
-	if t.Enabled == nil || !*t.Enabled {
+	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, false) {
 		return false, nil
 	}
 
@@ -311,7 +318,7 @@ func (t *kedaTrait) populateTriggersFromKamelets(e *trait.Environment) error {
 		return err
 	}
 	kameletURIs := make(map[string][]string)
-	metadata.Each(e.CamelCatalog, sources, func(_ int, meta metadata.IntegrationMetadata) bool {
+	if err := metadata.Each(e.CamelCatalog, sources, func(_ int, meta metadata.IntegrationMetadata) bool {
 		for _, kameletURI := range meta.FromURIs {
 			if kameletStr := source.ExtractKamelet(kameletURI); kameletStr != "" && camelv1alpha1.ValidKameletName(kameletStr) {
 				kamelet := kameletStr
@@ -325,7 +332,9 @@ func (t *kedaTrait) populateTriggersFromKamelets(e *trait.Environment) error {
 			}
 		}
 		return true
-	})
+	}); err != nil {
+		return err
+	}
 
 	if len(kameletURIs) == 0 {
 		return nil

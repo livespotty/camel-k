@@ -72,6 +72,7 @@ type resource struct {
 	Content []byte
 }
 
+// nolint: containedctx
 type builderContext struct {
 	client.Client
 	C                 context.Context
@@ -84,10 +85,11 @@ type builderContext struct {
 	SelectedArtifacts []v1.Artifact
 	Resources         []resource
 	Maven             struct {
-		Project        maven.Project
-		UserSettings   []byte
-		GlobalSettings []byte
-		TrustStoreName string
-		TrustStorePass string
+		Project          maven.Project
+		UserSettings     []byte
+		GlobalSettings   []byte
+		SettingsSecurity []byte
+		TrustStoreName   string
+		TrustStorePass   string
 	}
 }

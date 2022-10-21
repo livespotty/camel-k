@@ -24,15 +24,16 @@ import (
 	passert "github.com/magiconair/properties/assert"
 	"github.com/stretchr/testify/assert"
 
-	batchv1beta1 "k8s.io/api/batch/v1beta1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/util"
 	"github.com/apache/camel-k/pkg/util/camel"
 	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/test"
 )
 
 func TestCronFromURI(t *testing.T) {
@@ -249,7 +250,7 @@ func TestCronDeps(t *testing.T) {
 					},
 				},
 				Resources: []v1.ResourceSpec{},
-				Traits:    map[string]v1.TraitSpec{},
+				Traits:    v1.Traits{},
 			},
 		},
 		IntegrationKit: &v1.IntegrationKit{
@@ -263,8 +264,12 @@ func TestCronDeps(t *testing.T) {
 				Build: v1.IntegrationPlatformBuildSpec{
 					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
 					Registry:        v1.RegistrySpec{Address: "registry"},
+					RuntimeVersion:  catalog.Runtime.Version,
 				},
 				Profile: v1.TraitProfileKnative,
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
 			},
 		},
 		EnvVars:        make([]corev1.EnvVar, 0),
@@ -319,10 +324,10 @@ func TestCronDepsFallback(t *testing.T) {
 					},
 				},
 				Resources: []v1.ResourceSpec{},
-				Traits: map[string]v1.TraitSpec{
-					"cron": test.TraitSpecFromMap(t, map[string]interface{}{
-						"fallback": true,
-					}),
+				Traits: v1.Traits{
+					Cron: &traitv1.CronTrait{
+						Fallback: pointer.Bool(true),
+					},
 				},
 			},
 		},
@@ -337,8 +342,12 @@ func TestCronDepsFallback(t *testing.T) {
 				Build: v1.IntegrationPlatformBuildSpec{
 					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
 					Registry:        v1.RegistrySpec{Address: "registry"},
+					RuntimeVersion:  catalog.Runtime.Version,
 				},
 				Profile: v1.TraitProfileKnative,
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
 			},
 		},
 		EnvVars:        make([]corev1.EnvVar, 0),
@@ -394,10 +403,10 @@ func TestCronWithActiveDeadline(t *testing.T) {
 					},
 				},
 				Resources: []v1.ResourceSpec{},
-				Traits: map[string]v1.TraitSpec{
-					"cron": test.TraitSpecFromMap(t, map[string]interface{}{
-						"activeDeadlineSeconds": 120,
-					}),
+				Traits: v1.Traits{
+					Cron: &traitv1.CronTrait{
+						ActiveDeadlineSeconds: pointer.Int64(120),
+					},
 				},
 			},
 		},
@@ -406,7 +415,16 @@ func TestCronWithActiveDeadline(t *testing.T) {
 				Phase: v1.IntegrationKitPhaseReady,
 			},
 		},
-		Platform:       &v1.IntegrationPlatform{},
+		Platform: &v1.IntegrationPlatform{
+			Spec: v1.IntegrationPlatformSpec{
+				Build: v1.IntegrationPlatformBuildSpec{
+					RuntimeVersion: catalog.Runtime.Version,
+				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
+			},
+		},
 		EnvVars:        make([]corev1.EnvVar, 0),
 		ExecutedTraits: make([]Trait, 0),
 		Resources:      kubernetes.NewCollection(),
@@ -428,7 +446,7 @@ func TestCronWithActiveDeadline(t *testing.T) {
 	assert.Nil(t, ct.Fallback)
 	assert.Contains(t, environment.Interceptors, "cron")
 
-	cronJob := environment.Resources.GetCronJob(func(job *batchv1beta1.CronJob) bool { return true })
+	cronJob := environment.Resources.GetCronJob(func(job *batchv1.CronJob) bool { return true })
 	assert.NotNil(t, cronJob)
 
 	assert.NotNil(t, cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds)
@@ -467,10 +485,10 @@ func TestCronWithBackoffLimit(t *testing.T) {
 					},
 				},
 				Resources: []v1.ResourceSpec{},
-				Traits: map[string]v1.TraitSpec{
-					"cron": test.TraitSpecFromMap(t, map[string]interface{}{
-						"backoffLimit": 5,
-					}),
+				Traits: v1.Traits{
+					Cron: &traitv1.CronTrait{
+						BackoffLimit: pointer.Int32(5),
+					},
 				},
 			},
 		},
@@ -479,7 +497,16 @@ func TestCronWithBackoffLimit(t *testing.T) {
 				Phase: v1.IntegrationKitPhaseReady,
 			},
 		},
-		Platform:       &v1.IntegrationPlatform{},
+		Platform: &v1.IntegrationPlatform{
+			Spec: v1.IntegrationPlatformSpec{
+				Build: v1.IntegrationPlatformBuildSpec{
+					RuntimeVersion: catalog.Runtime.Version,
+				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
+			},
+		},
 		EnvVars:        make([]corev1.EnvVar, 0),
 		ExecutedTraits: make([]Trait, 0),
 		Resources:      kubernetes.NewCollection(),
@@ -501,7 +528,7 @@ func TestCronWithBackoffLimit(t *testing.T) {
 	assert.Nil(t, ct.Fallback)
 	assert.Contains(t, environment.Interceptors, "cron")
 
-	cronJob := environment.Resources.GetCronJob(func(job *batchv1beta1.CronJob) bool { return true })
+	cronJob := environment.Resources.GetCronJob(func(job *batchv1.CronJob) bool { return true })
 	assert.NotNil(t, cronJob)
 
 	assert.NotNil(t, cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds)

@@ -48,16 +48,18 @@ type PodScraper struct {
 	defaultContainerName string
 	client               kubernetes.Interface
 	L                    klog.Logger
+	tailLines            *int64
 }
 
 // NewPodScraper creates a new pod scraper.
-func NewPodScraper(c kubernetes.Interface, namespace string, podName string, defaultContainerName string) *PodScraper {
+func NewPodScraper(c kubernetes.Interface, namespace string, podName string, defaultContainerName string, tailLines *int64) *PodScraper {
 	return &PodScraper{
 		namespace:            namespace,
 		podName:              podName,
 		defaultContainerName: defaultContainerName,
 		client:               c,
 		L:                    klog.WithName("scraper").WithName("pod").WithValues("name", podName),
+		tailLines:            tailLines,
 	}
 }
 
@@ -83,6 +85,7 @@ func (s *PodScraper) doScrape(ctx context.Context, out *bufio.Writer, clientClos
 	}
 	logOptions := corev1.PodLogOptions{
 		Follow:    true,
+		TailLines: s.tailLines,
 		Container: containerName,
 	}
 	byteReader, err := s.client.CoreV1().Pods(s.namespace).GetLogs(s.podName, &logOptions).Stream(ctx)
@@ -94,19 +97,17 @@ func (s *PodScraper) doScrape(ctx context.Context, out *bufio.Writer, clientClos
 	reader := bufio.NewReader(byteReader)
 	for {
 		data, err := reader.ReadBytes('\n')
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return
 		}
 		if err != nil {
 			break
 		}
-		_, err = out.Write(data)
-		if err != nil {
+		if _, err = out.Write(data); err != nil {
 			break
 		}
 
-		err = out.Flush()
-		if err != nil {
+		if err = out.Flush(); err != nil {
 			break
 		}
 	}

@@ -23,11 +23,12 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/pointer"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/util/camel"
 	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/test"
 )
 
 func newTestProbesEnv(t *testing.T, integration *v1.Integration) Environment {
@@ -40,9 +41,18 @@ func newTestProbesEnv(t *testing.T, integration *v1.Integration) Environment {
 	traitCatalog := NewCatalog(nil)
 
 	return Environment{
-		Catalog:               traitCatalog,
-		CamelCatalog:          catalog,
-		Platform:              &v1.IntegrationPlatform{},
+		Catalog:      traitCatalog,
+		CamelCatalog: catalog,
+		Platform: &v1.IntegrationPlatform{
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
+				IntegrationPlatformSpec: v1.IntegrationPlatformSpec{
+					Build: v1.IntegrationPlatformBuildSpec{
+						RuntimeVersion: catalog.Runtime.Version,
+					},
+				},
+			},
+		},
 		Integration:           integration,
 		Resources:             kubernetes.NewCollection(),
 		ApplicationProperties: make(map[string]string),
@@ -52,10 +62,10 @@ func newTestProbesEnv(t *testing.T, integration *v1.Integration) Environment {
 func TestProbesDependencies(t *testing.T) {
 	integration := &v1.Integration{
 		Spec: v1.IntegrationSpec{
-			Traits: map[string]v1.TraitSpec{
-				"container": test.TraitSpecFromMap(t, map[string]interface{}{
-					"probesEnabled": true,
-				}),
+			Traits: v1.Traits{
+				Container: &traitv1.ContainerTrait{
+					DeprecatedProbesEnabled: pointer.Bool(true),
+				},
 			},
 		},
 	}
@@ -72,12 +82,12 @@ func TestProbesDependencies(t *testing.T) {
 func TestProbesOnDeployment(t *testing.T) {
 	integration := &v1.Integration{
 		Spec: v1.IntegrationSpec{
-			Traits: map[string]v1.TraitSpec{
-				"container": test.TraitSpecFromMap(t, map[string]interface{}{
-					"probesEnabled":   true,
-					"expose":          true,
-					"LivenessTimeout": 1234,
-				}),
+			Traits: v1.Traits{
+				Container: &traitv1.ContainerTrait{
+					DeprecatedProbesEnabled:   pointer.Bool(true),
+					Expose:                    pointer.Bool(true),
+					DeprecatedLivenessTimeout: 1234,
+				},
 			},
 		},
 	}
@@ -104,14 +114,14 @@ func TestProbesOnDeployment(t *testing.T) {
 func TestProbesOnDeploymentWithCustomScheme(t *testing.T) {
 	integration := &v1.Integration{
 		Spec: v1.IntegrationSpec{
-			Traits: map[string]v1.TraitSpec{
-				"container": test.TraitSpecFromMap(t, map[string]interface{}{
-					"probesEnabled":   true,
-					"expose":          true,
-					"livenessTimeout": 1234,
-					"livenessScheme":  "HTTPS",
-					"readinessScheme": "HTTPS",
-				}),
+			Traits: v1.Traits{
+				Container: &traitv1.ContainerTrait{
+					DeprecatedProbesEnabled:   pointer.Bool(true),
+					Expose:                    pointer.Bool(true),
+					DeprecatedLivenessTimeout: 1234,
+					DeprecatedLivenessScheme:  "HTTPS",
+					DeprecatedReadinessScheme: "HTTPS",
+				},
 			},
 		},
 	}
@@ -139,15 +149,17 @@ func TestProbesOnKnativeService(t *testing.T) {
 	integration := &v1.Integration{
 		Spec: v1.IntegrationSpec{
 			Profile: v1.TraitProfileKnative,
-			Traits: map[string]v1.TraitSpec{
-				"knative-service": test.TraitSpecFromMap(t, map[string]interface{}{
-					"enabled": true,
-				}),
-				"container": test.TraitSpecFromMap(t, map[string]interface{}{
-					"probesEnabled":   true,
-					"expose":          true,
-					"livenessTimeout": 1234,
-				}),
+			Traits: v1.Traits{
+				KnativeService: &traitv1.KnativeServiceTrait{
+					Trait: traitv1.Trait{
+						Enabled: pointer.Bool(true),
+					},
+				},
+				Container: &traitv1.ContainerTrait{
+					DeprecatedProbesEnabled:   pointer.Bool(true),
+					Expose:                    pointer.Bool(true),
+					DeprecatedLivenessTimeout: 1234,
+				},
 			},
 		},
 	}

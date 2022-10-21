@@ -25,7 +25,7 @@
 
 set -e
 
-while getopts ":b:i:l:n:s:v:" opt; do
+while getopts ":b:i:l:n:s:v:x:y:z:" opt; do
   case "${opt}" in
     b)
       BUNDLE_IMAGE=${OPTARG}
@@ -44,6 +44,15 @@ while getopts ":b:i:l:n:s:v:" opt; do
       ;;
     v)
       IMAGE_VERSION=${OPTARG}
+      ;;
+    x)
+      CSV_NAME=${OPTARG}
+      ;;
+    y)
+      IMAGE_LAST_NAME=${OPTARG}
+      ;;
+    z)
+      IMAGE_LAST_VERSION=${OPTARG}
       ;;
     :)
       echo "ERROR: Option -$OPTARG requires an argument"
@@ -67,8 +76,18 @@ if [ -z "${IMAGE_NAME}" ]; then
   exit 1
 fi
 
+if [ -z "${IMAGE_LAST_NAME}" ]; then
+  echo "Error: local-image-last-name not defined"
+  exit 1
+fi
+
 if [ -z "${IMAGE_VERSION}" ]; then
   echo "Error: local-image-version not defined"
+  exit 1
+fi
+
+if [ -z "${IMAGE_LAST_VERSION}" ]; then
+  echo "Error: local-image-last-version not defined"
   exit 1
 fi
 
@@ -84,6 +103,11 @@ fi
 
 if [ -z "${REGISTRY_PULL_HOST}" ]; then
   echo "Error: image-registry-pull-host not defined"
+  exit 1
+fi
+
+if [ -z "${CSV_NAME}" ]; then
+  echo "Error: csv-name not defined"
   exit 1
 fi
 
@@ -116,7 +140,7 @@ if [ "${PULL_REGISTRY}" != "${PUSH_REGISTRY}" ]; then
   #
 
   PULL_HOST=$(echo ${PULL_REGISTRY} | sed -e 's/\(.*\):.*/\1/')
-  PULL_PORT=$(echo ${PULL_REGISTRY} | sed -e 's/.*:\([0-9]\+\).*/\1/')
+  PULL_PORT=$(echo ${PULL_REGISTRY} | sed -ne 's/.*:\([0-9]\+\).*/\1/p')
   if [ -z "${PULL_PORT}" ]; then
     # Use standard http port
     PULL_PORT=80
@@ -128,7 +152,10 @@ if [ "${PULL_REGISTRY}" != "${PUSH_REGISTRY}" ]; then
   # Update both ipv4 and ipv6 addresses if they exist
   # 127.0.0.1 localhost
   # ::1     localhost ip6-localhost ip6-loopback
-  sudo sed -i "s/\(localhost.*\)/\1 ${PULL_HOST}/g" /etc/hosts
+  #
+  # Only add PULL_HOST if not already added (avoids repeated appended)
+  #
+  sudo sed -i "/${PULL_HOST}/!s/localhost/& ${PULL_HOST} /" /etc/hosts
 
   #
   # Bring up the registry:2 instance if not already started
@@ -144,29 +171,91 @@ if [ "${PULL_REGISTRY}" != "${PUSH_REGISTRY}" ]; then
   #
   # Tag the bundle image
   #
+  echo "Tagging bundle image ..."
+  IMAGE_BASE_NAME=$(basename ${IMAGE_NAME})
+  export CUSTOM_IMAGE=${PUSH_REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_BASE_NAME}
+  export CUSTOM_VERSION=${IMAGE_VERSION}
   docker tag \
-    ${PUSH_REGISTRY}/${IMAGE_NAMESPACE}/camel-k-bundle:${IMAGE_VERSION} \
+    $(make get-bundle-image):${CUSTOM_VERSION} \
     ${BUNDLE_IMAGE}
 
   # Push the bundle image to the registry
   #
-  docker push ${BUNDLE_IMAGE}
+  echo "Pushing bundle image ..."
+  docker push ${BUNDLE_IMAGE} 2>&1
 fi
 
 #
 # Construct an index image containing the newly built bundle image
-#   Bug:
-#     https://github.com/operator-framework/operator-registry/issues/870
-#   Workaround:
-#     image catalog layers contain root owned files so fails with `permission denied` error.
-#     Running with sudo fixes this error (alternative is to switch to podman)
 #
-sudo opm index add \
-  -c docker --skip-tls \
-  --bundles ${BUNDLE_IMAGE} \
-  --from-index quay.io/operatorhubio/catalog:latest \
-  --tag ${LOCAL_IIB}
+echo "Constructing index image ..."
 
+#
+# Removes catalog directory if already exists.
+# Stops opm from aborting due to existing directory.
+#
+CATALOG_DIR=catalog
+if [ -d ${CATALOG_DIR} ]; then
+  rm -rf ${CATALOG_DIR}
+fi
+
+if [ -f ${CATALOG_DIR}.Dockerfile ]; then
+  rm -f ${CATALOG_DIR}.Dockerfile
+fi
+
+mkdir ${CATALOG_DIR}
+opm render quay.io/operatorhubio/catalog:latest -o yaml > ${CATALOG_DIR}/bundles.yaml
+opm render --use-http -o yaml ${BUNDLE_IMAGE} > ${CATALOG_DIR}/camel-k.yaml
+
+#
+# Add the dedicated stable-dev branch (needed for upgrade tests)
+#
+cat << EOF >> ${CATALOG_DIR}/camel-k.yaml
+---
+schema: olm.channel
+package: camel-k
+name: stable-dev-$(make get-version | grep -Po "\d+\.\d+")
+entries:
+  - name: $(make get-csv-name)
+    replaces: $(make get-last-released-img-name).v$(make get-last-released-version | grep -Po "\d+\.\d+\.\d+")
+EOF
+
+#
+# Update the existing stable channel (needed for preflight and tests on OCP)
+#
+sedtemp=$(mktemp sed-template-XXX.sed)
+cat << EOF > ${sedtemp}
+/- name: ${IMAGE_LAST_NAME}.v${IMAGE_LAST_VERSION}/ {
+  p;
+  n;
+  /  replaces:/ {
+    p;
+    n;
+    /name: stable$/ {
+      i- name: ${CSV_NAME}
+      i\ \ replaces: ${IMAGE_LAST_NAME}.v${IMAGE_LAST_VERSION}
+      p;
+      d;
+    }
+  }
+}
+p;
+EOF
+
+sed -i -n -f ${sedtemp} ${CATALOG_DIR}/bundles.yaml
+
+rm -f ${sedtemp}
+
+#
+# Validate the modified catalog
+#
+opm validate ${CATALOG_DIR}
+opm generate dockerfile ${CATALOG_DIR}
+if [ ! -f catalog.Dockerfile ]; then
+  echo "Error: Failed to create catalog dockerfile"
+  exit 1
+fi
+docker build . -f catalog.Dockerfile -t ${LOCAL_IIB}
 docker push ${LOCAL_IIB}
 BUILD_BUNDLE_LOCAL_IMAGE_BUNDLE_INDEX="${REGISTRY_PULL_HOST}/${IMAGE_NAMESPACE}/camel-k-iib:${IMAGE_VERSION}"
 echo "Setting build-bundle-image-bundle-index to ${BUILD_BUNDLE_LOCAL_IMAGE_BUNDLE_INDEX}"

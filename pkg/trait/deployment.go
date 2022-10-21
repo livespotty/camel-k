@@ -20,23 +20,21 @@ package trait
 import (
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/pointer"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/util/label"
 )
 
-// The Deployment trait is responsible for generating the Kubernetes deployment that will make sure
-// the integration will run in the cluster.
-//
-// +camel-k:trait=deployment.
 type deploymentTrait struct {
-	BaseTrait `property:",squash"`
-	// The maximum time in seconds for the deployment to make progress before it
-	// is considered to be failed. It defaults to 60s.
-	ProgressDeadlineSeconds *int32 `property:"progress-deadline-seconds" json:"progressDeadlineSeconds,omitempty"`
+	BaseTrait
+	traitv1.DeploymentTrait `property:",squash"`
 }
 
 var _ ControllerStrategySelector = &deploymentTrait{}
@@ -48,14 +46,17 @@ func newDeploymentTrait() Trait {
 }
 
 func (t *deploymentTrait) Configure(e *Environment) (bool, error) {
-	if IsFalse(t.Enabled) {
+	if !e.IntegrationInRunningPhases() {
+		return false, nil
+	}
+
+	if !pointer.BoolDeref(t.Enabled, true) {
 		e.Integration.Status.SetCondition(
 			v1.IntegrationConditionDeploymentAvailable,
 			corev1.ConditionFalse,
 			v1.IntegrationConditionDeploymentAvailableReason,
 			"explicitly disabled",
 		)
-
 		return false, nil
 	}
 
@@ -90,7 +91,7 @@ func (t *deploymentTrait) Configure(e *Environment) (bool, error) {
 }
 
 func (t *deploymentTrait) SelectControllerStrategy(e *Environment) (*ControllerStrategy, error) {
-	if IsFalse(t.Enabled) {
+	if !pointer.BoolDeref(t.Enabled, true) {
 		return nil, nil
 	}
 	deploymentStrategy := ControllerStrategyDeployment
@@ -165,6 +166,36 @@ func (t *deploymentTrait) getDeploymentFor(e *Environment) *appsv1.Deployment {
 				},
 			},
 		},
+	}
+
+	switch t.Strategy {
+	case appsv1.RecreateDeploymentStrategyType:
+		deployment.Spec.Strategy = appsv1.DeploymentStrategy{
+			Type: t.Strategy,
+		}
+	case appsv1.RollingUpdateDeploymentStrategyType:
+		deployment.Spec.Strategy = appsv1.DeploymentStrategy{
+			Type: t.Strategy,
+		}
+
+		if t.RollingUpdateMaxSurge != nil || t.RollingUpdateMaxUnavailable != nil {
+			var maxSurge *intstr.IntOrString
+			var maxUnavailable *intstr.IntOrString
+
+			if t.RollingUpdateMaxSurge != nil {
+				v := intstr.FromInt(*t.RollingUpdateMaxSurge)
+				maxSurge = &v
+			}
+			if t.RollingUpdateMaxUnavailable != nil {
+				v := intstr.FromInt(*t.RollingUpdateMaxUnavailable)
+				maxUnavailable = &v
+			}
+
+			deployment.Spec.Strategy.RollingUpdate = &appsv1.RollingUpdateDeployment{
+				MaxSurge:       maxSurge,
+				MaxUnavailable: maxUnavailable,
+			}
+		}
 	}
 
 	// Reconcile the deployment replicas

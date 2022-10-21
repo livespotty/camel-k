@@ -22,12 +22,14 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/util/camel"
 	"github.com/apache/camel-k/pkg/util/gzip"
 	"github.com/apache/camel-k/pkg/util/kubernetes"
@@ -38,12 +40,12 @@ func TestMountVolumesEmpty(t *testing.T) {
 	traitCatalog := NewCatalog(nil)
 
 	environment := getNominalEnv(t, traitCatalog)
-	environment.Integration.Spec.Traits = map[string]v1.TraitSpec{}
+	environment.Integration.Spec.Traits = v1.Traits{} // empty traits
 	environment.Platform.ResyncStatusFullConfig()
 
 	err := traitCatalog.apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("mount"))
 
@@ -65,7 +67,7 @@ func TestMountVolumesIntegrationPhaseDeploying(t *testing.T) {
 
 	err := traitCatalog.apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("mount"))
 
@@ -113,7 +115,7 @@ func TestMountVolumesIntegrationPhaseInitialization(t *testing.T) {
 
 	err := traitCatalog.apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.Nil(t, environment.GetTrait("mount"))
 
@@ -127,7 +129,7 @@ func getNominalEnv(t *testing.T, traitCatalog *Catalog) *Environment {
 	t.Helper()
 	fakeClient, _ := test.NewFakeClient()
 	catalog, _ := camel.DefaultCatalog()
-	compressedRoute, _ := gzip.CompressBase64([]byte(`from("undertow:test").log("hello")`))
+	compressedRoute, _ := gzip.CompressBase64([]byte(`from("platform-http:test").log("hello")`))
 
 	return &Environment{
 		CamelCatalog: catalog,
@@ -153,12 +155,12 @@ func getNominalEnv(t *testing.T, traitCatalog *Catalog) *Environment {
 						Language: v1.LanguageJavaScript,
 					},
 				},
-				Traits: map[string]v1.TraitSpec{
-					"mount": test.TraitSpecFromMap(t, map[string]interface{}{
-						"configs":   []string{"configmap:my-cm"},
-						"resources": []string{"secret:my-secret"},
-						"volumes":   []string{"my-pvc:/over/the/rainbow"},
-					}),
+				Traits: v1.Traits{
+					Mount: &traitv1.MountTrait{
+						Configs:   []string{"configmap:my-cm"},
+						Resources: []string{"secret:my-secret"},
+						Volumes:   []string{"my-pvc:/over/the/rainbow"},
+					},
 				},
 			},
 		},
@@ -173,7 +175,11 @@ func getNominalEnv(t *testing.T, traitCatalog *Catalog) *Environment {
 				Build: v1.IntegrationPlatformBuildSpec{
 					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
 					Registry:        v1.RegistrySpec{Address: "registry"},
+					RuntimeVersion:  catalog.Runtime.Version,
 				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
 			},
 		},
 		EnvVars:        make([]corev1.EnvVar, 0),

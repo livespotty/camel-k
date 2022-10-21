@@ -33,32 +33,34 @@ import (
 
 	routev1 "github.com/openshift/api/route/v1"
 
+	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/client"
 )
 
 // ReplaceResource allows to completely replace a resource on Kubernetes, taking care of immutable fields and resource versions.
-func ReplaceResource(ctx context.Context, c client.Client, res ctrl.Object) error {
+func ReplaceResource(ctx context.Context, c client.Client, res ctrl.Object) (bool, error) {
+	replaced := false
 	err := c.Create(ctx, res)
 	if err != nil && k8serrors.IsAlreadyExists(err) {
+		replaced = true
 		existing, ok := res.DeepCopyObject().(ctrl.Object)
 		if !ok {
-			return fmt.Errorf("type assertion failed: %v", res.DeepCopyObject())
+			return replaced, fmt.Errorf("type assertion failed: %v", res.DeepCopyObject())
 		}
 		err = c.Get(ctx, ctrl.ObjectKeyFromObject(existing), existing)
 		if err != nil {
-			return err
+			return replaced, err
 		}
 		mapRequiredMeta(existing, res)
 		mapRequiredServiceData(existing, res)
 		mapRequiredRouteData(existing, res)
-		mapRequiredKnativeServiceV1Beta1Data(existing, res)
 		mapRequiredKnativeServiceV1Data(existing, res)
 		err = c.Update(ctx, res)
 	}
 	if err != nil {
-		return errors.Wrap(err, "could not create or replace "+findResourceDetails(res))
+		return replaced, errors.Wrap(err, "could not create or replace "+findResourceDetails(res))
 	}
-	return nil
+	return replaced, nil
 }
 
 func mapRequiredMeta(from ctrl.Object, to ctrl.Object) {
@@ -81,33 +83,14 @@ func mapRequiredRouteData(from runtime.Object, to runtime.Object) {
 	}
 }
 
-func mapRequiredKnativeServiceV1Beta1Data(from runtime.Object, to runtime.Object) {
-	if fromC, ok := from.(*serving.Service); ok {
-		if toC, ok := to.(*serving.Service); ok {
-			if toC.ObjectMeta.Annotations == nil {
-				toC.ObjectMeta.Annotations = make(map[string]string)
-			}
-			if v, present := fromC.ObjectMeta.Annotations["serving.knative.dev/creator"]; present {
-				toC.ObjectMeta.Annotations["serving.knative.dev/creator"] = v
-			}
-			if v, present := fromC.ObjectMeta.Annotations["serving.knative.dev/lastModifier"]; present {
-				toC.ObjectMeta.Annotations["serving.knative.dev/lastModifier"] = v
-			}
-		}
-	}
-}
-
 func mapRequiredKnativeServiceV1Data(from runtime.Object, to runtime.Object) {
 	if fromC, ok := from.(*serving.Service); ok {
 		if toC, ok := to.(*serving.Service); ok {
-			if toC.ObjectMeta.Annotations == nil {
-				toC.ObjectMeta.Annotations = make(map[string]string)
-			}
 			if v, present := fromC.ObjectMeta.Annotations["serving.knative.dev/creator"]; present {
-				toC.ObjectMeta.Annotations["serving.knative.dev/creator"] = v
+				v1.SetAnnotation(&toC.ObjectMeta, "serving.knative.dev/creator", v)
 			}
 			if v, present := fromC.ObjectMeta.Annotations["serving.knative.dev/lastModifier"]; present {
-				toC.ObjectMeta.Annotations["serving.knative.dev/lastModifier"] = v
+				v1.SetAnnotation(&toC.ObjectMeta, "serving.knative.dev/lastModifier", v)
 			}
 		}
 	}

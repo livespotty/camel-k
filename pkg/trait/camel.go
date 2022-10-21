@@ -24,25 +24,22 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/util/camel"
 	"github.com/apache/camel-k/pkg/util/maven"
 	"github.com/apache/camel-k/pkg/util/property"
 )
 
-// The Camel trait can be used to configure versions of Apache Camel K runtime and related libraries, it cannot be disabled.
-//
-// +camel-k:trait=camel.
 type camelTrait struct {
-	BaseTrait `property:",squash"`
-	// The camel-k-runtime version to use for the integration. It overrides the default version set in the Integration Platform.
-	RuntimeVersion string `property:"runtime-version" json:"runtimeVersion,omitempty"`
-	// A list of properties to be provided to the Integration runtime
-	Properties []string `property:"properties" json:"properties,omitempty"`
+	BaseTrait
+	traitv1.CamelTrait `property:",squash"`
 }
 
 func newCamelTrait() Trait {
@@ -52,24 +49,30 @@ func newCamelTrait() Trait {
 }
 
 func (t *camelTrait) Configure(e *Environment) (bool, error) {
-	if IsFalse(t.Enabled) {
+	if !pointer.BoolDeref(t.Enabled, true) {
 		return false, errors.New("trait camel cannot be disabled")
+	}
+
+	if t.RuntimeVersion == "" {
+		t.RuntimeVersion = determineRuntimeVersion(e)
 	}
 
 	return true, nil
 }
 
 func (t *camelTrait) Apply(e *Environment) error {
-	rv := t.determineRuntimeVersion(e)
+	if t.RuntimeVersion == "" {
+		return errors.New("unable to determine runtime version")
+	}
 
 	if e.CamelCatalog == nil {
-		err := t.loadOrCreateCatalog(e, rv)
+		err := t.loadOrCreateCatalog(e, t.RuntimeVersion)
 		if err != nil {
 			return err
 		}
 	}
 
-	e.RuntimeVersion = rv
+	e.RuntimeVersion = t.RuntimeVersion
 
 	if e.Integration != nil {
 		e.Integration.Status.RuntimeVersion = e.CamelCatalog.Runtime.Version
@@ -83,10 +86,6 @@ func (t *camelTrait) Apply(e *Environment) error {
 	if e.IntegrationKitInPhase(v1.IntegrationKitPhaseReady) && e.IntegrationInRunningPhases() {
 		// Get all resources
 		maps := t.computeConfigMaps(e)
-		if t.Properties != nil {
-			// Only user.properties
-			maps = append(maps, t.computeUserProperties(e)...)
-		}
 		e.Resources.AddAll(maps)
 	}
 
@@ -152,19 +151,6 @@ func (t *camelTrait) loadOrCreateCatalog(e *Environment, runtimeVersion string) 
 	return nil
 }
 
-func (t *camelTrait) determineRuntimeVersion(e *Environment) string {
-	if t.RuntimeVersion != "" {
-		return t.RuntimeVersion
-	}
-	if e.Integration != nil && e.Integration.Status.RuntimeVersion != "" {
-		return e.Integration.Status.RuntimeVersion
-	}
-	if e.IntegrationKit != nil && e.IntegrationKit.Status.RuntimeVersion != "" {
-		return e.IntegrationKit.Status.RuntimeVersion
-	}
-	return e.Platform.Status.Build.RuntimeVersion
-}
-
 // IsPlatformTrait overrides base class method.
 func (t *camelTrait) IsPlatformTrait() bool {
 	return true
@@ -181,6 +167,14 @@ func (t *camelTrait) computeConfigMaps(e *Environment) []ctrl.Object {
 	for _, prop := range e.collectConfigurationPairs("property") {
 		// properties in resource configuration are expected to be pre-encoded using properties format
 		userProperties += fmt.Sprintf("%s=%s\n", prop.Name, prop.Value)
+	}
+
+	if t.Properties != nil {
+		// Merge with properties set in the trait
+		for _, prop := range t.Properties {
+			k, v := property.SplitPropertyFileEntry(prop)
+			userProperties += fmt.Sprintf("%s=%s\n", k, v)
+		}
 	}
 
 	if userProperties != "" {
@@ -288,40 +282,15 @@ func (t *camelTrait) computeConfigMaps(e *Environment) []ctrl.Object {
 	return maps
 }
 
-func (t *camelTrait) computeUserProperties(e *Environment) []ctrl.Object {
-	maps := make([]ctrl.Object, 0)
-
-	// combine properties of integration with kit, integration
-	// properties have the priority
-	userProperties := ""
-
-	for _, prop := range t.Properties {
-		k, v := property.SplitPropertyFileEntry(prop)
-		userProperties += fmt.Sprintf("%s=%s\n", k, v)
+func determineRuntimeVersion(e *Environment) string {
+	if e.Integration != nil && e.Integration.Status.RuntimeVersion != "" {
+		return e.Integration.Status.RuntimeVersion
 	}
-
-	if userProperties != "" {
-		maps = append(
-			maps,
-			&corev1.ConfigMap{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "ConfigMap",
-					APIVersion: "v1",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      e.Integration.Name + "-user-properties",
-					Namespace: e.Integration.Namespace,
-					Labels: map[string]string{
-						v1.IntegrationLabel:                e.Integration.Name,
-						"camel.apache.org/properties.type": "user",
-					},
-				},
-				Data: map[string]string{
-					"application.properties": userProperties,
-				},
-			},
-		)
+	if e.IntegrationKit != nil && e.IntegrationKit.Status.RuntimeVersion != "" {
+		return e.IntegrationKit.Status.RuntimeVersion
 	}
-
-	return maps
+	if e.Platform != nil && e.Platform.Status.Build.RuntimeVersion != "" {
+		return e.Platform.Status.Build.RuntimeVersion
+	}
+	return ""
 }

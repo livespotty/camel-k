@@ -43,19 +43,13 @@ func newCmdBind(rootCmdOptions *RootCmdOptions) (*cobra.Command, *bindCmdOptions
 		RootCmdOptions: rootCmdOptions,
 	}
 	cmd := cobra.Command{
-		Use:     "bind [source] [sink] ...",
-		Short:   "Bind Kubernetes resources, such as Kamelets, in an integration flow. Endpoints are expected in the format \"[[apigroup/]version:]kind:[namespace/]name\" or plain Camel URIs.",
-		PreRunE: decode(&options),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := options.validate(cmd, args); err != nil {
-				return err
-			}
-			if err := options.run(cmd, args); err != nil {
-				fmt.Fprintln(cmd.OutOrStdout(), err.Error())
-			}
-
-			return nil
-		},
+		Use:               "bind [source] [sink] ...",
+		Short:             "Bind Kubernetes resources, such as Kamelets, in an integration flow.",
+		Long:              "Bind Kubernetes resources, such as Kamelets, in an integration flow. Endpoints are expected in the format \"[[apigroup/]version:]kind:[namespace/]name\" or plain Camel URIs.",
+		PersistentPreRunE: decode(&options),
+		PreRunE:           options.preRunE,
+		RunE:              options.runE,
+		Annotations:       make(map[string]string),
 	}
 
 	cmd.Flags().StringArrayP("connect", "c", nil, "A ServiceBinding or Provisioned Service that the integration should bind to, specified as [[apigroup/]version:]kind:[namespace/]name")
@@ -66,6 +60,9 @@ func newCmdBind(rootCmdOptions *RootCmdOptions) (*cobra.Command, *bindCmdOptions
 	cmd.Flags().Bool("skip-checks", false, "Do not verify the binding for compliance with Kamelets and other Kubernetes resources")
 	cmd.Flags().StringArray("step", nil, `Add binding steps as Kubernetes resources. Endpoints are expected in the format "[[apigroup/]version:]kind:[namespace/]name", plain Camel URIs or Kamelet name.`)
 	cmd.Flags().StringArrayP("trait", "t", nil, `Add a trait to the corresponding Integration.`)
+	cmd.Flags().StringP("operator-id", "x", "camel-k", "Operator id selected to manage this Kamelet binding.")
+	cmd.Flags().StringArray("annotation", nil, "Add an annotation to the Kamelet binding. E.g. \"--annotation my.company=hello\"")
+	cmd.Flags().Bool("force", false, "Force creation of Kamelet binding regardless of potential misconfiguration.")
 
 	return &cmd, &options
 }
@@ -87,6 +84,28 @@ type bindCmdOptions struct {
 	SkipChecks   bool     `mapstructure:"skip-checks" yaml:",omitempty"`
 	Steps        []string `mapstructure:"steps" yaml:",omitempty"`
 	Traits       []string `mapstructure:"traits" yaml:",omitempty"`
+	OperatorID   string   `mapstructure:"operator-id" yaml:",omitempty"`
+	Annotations  []string `mapstructure:"annotations" yaml:",omitempty"`
+	Force        bool     `mapstructure:"force" yaml:",omitempty"`
+}
+
+func (o *bindCmdOptions) preRunE(cmd *cobra.Command, args []string) error {
+	if o.OutputFormat != "" {
+		// let the command work in offline mode
+		cmd.Annotations[offlineCommandLabel] = "true"
+	}
+	return o.RootCmdOptions.preRun(cmd, args)
+}
+
+func (o *bindCmdOptions) runE(cmd *cobra.Command, args []string) error {
+	if err := o.validate(cmd, args); err != nil {
+		return err
+	}
+	if err := o.run(cmd, args); err != nil {
+		fmt.Fprintln(cmd.OutOrStdout(), err.Error())
+	}
+
+	return nil
 }
 
 func (o *bindCmdOptions) validate(cmd *cobra.Command, args []string) error {
@@ -94,6 +113,17 @@ func (o *bindCmdOptions) validate(cmd *cobra.Command, args []string) error {
 		return errors.New("too many arguments: expected source and sink")
 	} else if len(args) < 2 {
 		return errors.New("source or sink arguments are missing")
+	}
+
+	if o.OperatorID == "" {
+		return fmt.Errorf("cannot use empty operator id")
+	}
+
+	for _, annotation := range o.Annotations {
+		parts := strings.SplitN(annotation, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf(`invalid annotation specification %s. Expected "<annotationkey>=<annotationvalue>"`, annotation)
+		}
 	}
 
 	for _, p := range o.Properties {
@@ -145,7 +175,6 @@ func (o *bindCmdOptions) run(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	catalog := trait.NewCatalog(client)
 
 	source, err := o.decode(args[0], sourceKey)
 	if err != nil {
@@ -197,28 +226,46 @@ func (o *bindCmdOptions) run(cmd *cobra.Command, args []string) error {
 		if binding.Spec.Integration == nil {
 			binding.Spec.Integration = &v1.IntegrationSpec{}
 		}
-		traits, err := configureTraits(o.Traits, catalog)
-		if err != nil {
+		catalog := trait.NewCatalog(client)
+		if err := configureTraits(o.Traits, &binding.Spec.Integration.Traits, catalog); err != nil {
 			return err
 		}
-		binding.Spec.Integration.Traits = traits
+	}
+
+	if binding.Annotations == nil {
+		binding.Annotations = make(map[string]string)
+	}
+
+	if !isOfflineCommand(cmd) && o.OperatorID != "" {
+		if err := verifyOperatorID(o.Context, client, o.OperatorID, cmd.OutOrStdout()); err != nil {
+			if o.Force {
+				o.PrintfVerboseErrf(cmd, "%s, use --force option or make sure to use a proper operator id", err.Error())
+			} else {
+				return err
+			}
+		}
+	}
+
+	// --operator-id={id} is a syntax sugar for '--annotation camel.apache.org/operator.id={id}'
+	binding.SetOperatorID(strings.TrimSpace(o.OperatorID))
+
+	for _, annotation := range o.Annotations {
+		parts := strings.SplitN(annotation, "=", 2)
+		if len(parts) == 2 {
+			binding.Annotations[parts[0]] = parts[1]
+		}
 	}
 
 	if o.OutputFormat != "" {
 		return showOutput(cmd, &binding, o.OutputFormat, client.GetScheme())
 	}
 
-	existed := false
-	err = client.Create(o.Context, &binding)
-	if err != nil && k8serrors.IsAlreadyExists(err) {
-		existed = true
-		err = kubernetes.ReplaceResource(o.Context, client, &binding)
-	}
+	replaced, err := kubernetes.ReplaceResource(o.Context, client, &binding)
 	if err != nil {
 		return err
 	}
 
-	if !existed {
+	if !replaced {
 		fmt.Fprintln(cmd.OutOrStdout(), `kamelet binding "`+name+`" created`)
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), `kamelet binding "`+name+`" updated`)

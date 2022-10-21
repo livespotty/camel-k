@@ -39,6 +39,7 @@ import (
 	"github.com/apache/camel-k/pkg/util/kubernetes"
 )
 
+// nolint: maintidx // TODO: refactor the code
 func SetupClusterWideResourcesOrCollect(ctx context.Context, clientProvider client.Provider, collection *kubernetes.Collection, clusterType string, force bool) error {
 	// Get a client to install the CRD
 	c, err := clientProvider.Get()
@@ -200,7 +201,7 @@ func SetupClusterWideResourcesOrCollect(ctx context.Context, clientProvider clie
 		}
 	}
 
-	isKnative, err := knative.IsInstalled(ctx, c)
+	isKnative, err := knative.IsInstalled(c)
 	if err != nil {
 		return err
 	}
@@ -321,7 +322,8 @@ func installCRD(ctx context.Context, c client.Client, kind string, version strin
 		return nil
 	}
 
-	return kubernetes.ReplaceResource(ctx, c, crd)
+	_, err = kubernetes.ReplaceResource(ctx, c, crd)
+	return err
 }
 
 func isClusterRoleInstalled(ctx context.Context, c client.Client, name string) (bool, error) {

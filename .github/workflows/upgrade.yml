@@ -17,6 +17,9 @@
 
 name: upgrade
 
+env:
+  TEST_CLUSTER: kind
+
 on:
   pull_request:
     branches:
@@ -44,13 +47,16 @@ on:
       - 'NOTICE'
   workflow_dispatch:
     inputs:
+      log-level:
+        description: 'Set the operator log level (info or debug)'
+        required: false
       pre-built-kamel-image:
         description: 'Kamel image url for skipping building of kamel stages. Used for debugging'
         required: false
       skip-problematic:
         description: 'Whether tests marked as problematic should be skipped - false by default (sets CAMEL_K_TEST_SKIP_PROBLEMATIC)'
         required: false
-        default: false
+        default: "false"
       test-filters:
         description: |
           Filter the tests in this test suite by assigning the test pattern to TEST_UPGRADE_RUN,
@@ -71,13 +77,13 @@ jobs:
       with:
         persist-credentials: false
         submodules: recursive
-
     - name: Convert input parameters to env vars
       shell: bash
       run: |
         ./.github/workflows/manual-exec-process-inputs.sh \
           -i "${{ github.event.inputs.pre-built-kamel-image }}" \
           -p "${{ github.event.inputs.skip-problematic }}" \
+          -q "${{ github.event.inputs.log-level }}" \
           -t "${{ github.event.inputs.test-filters }}"
 
     - name: Execute Upgrade Tests

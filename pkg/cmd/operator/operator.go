@@ -23,18 +23,25 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/pkg/errors"
+
 	"go.uber.org/automaxprocs/maxprocs"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
-	batchv1beta1 "k8s.io/api/batch/v1beta1"
 	coordination "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -46,7 +53,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	zapctrl "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 
@@ -61,22 +68,25 @@ import (
 	"github.com/apache/camel-k/pkg/platform"
 	"github.com/apache/camel-k/pkg/util/defaults"
 	"github.com/apache/camel-k/pkg/util/kubernetes"
+	logutil "github.com/apache/camel-k/pkg/util/log"
 )
 
-var log = logf.Log.WithName("cmd")
+var log = logutil.Log.WithName("cmd")
 
 func printVersion() {
 	log.Info(fmt.Sprintf("Go Version: %s", runtime.Version()))
 	log.Info(fmt.Sprintf("Go OS/Arch: %s/%s", runtime.GOOS, runtime.GOARCH))
-	log.Info(fmt.Sprintf("Buildah Version: %v", defaults.BuildahVersion))
-	log.Info(fmt.Sprintf("Kaniko Version: %v", defaults.KanikoVersion))
 	log.Info(fmt.Sprintf("Camel K Operator Version: %v", defaults.Version))
 	log.Info(fmt.Sprintf("Camel K Default Runtime Version: %v", defaults.DefaultRuntimeVersion))
 	log.Info(fmt.Sprintf("Camel K Git Commit: %v", defaults.GitCommit))
+	log.Info(fmt.Sprintf("Camel K Operator ID: %v", defaults.OperatorID()))
+
+	// Will only appear if DEBUG level has been enabled using the env var LOG_LEVEL
+	log.Debug("*** DEBUG level messages will be logged ***")
 }
 
 // Run starts the Camel K operator.
-func Run(healthPort, monitoringPort int32, leaderElection bool) {
+func Run(healthPort, monitoringPort int32, leaderElection bool, leaderElectionID string) {
 	rand.Seed(time.Now().UTC().UnixNano())
 
 	flag.Parse()
@@ -85,11 +95,36 @@ func Run(healthPort, monitoringPort int32, leaderElection bool) {
 	// implementing the logr.Logger interface. This logger will
 	// be propagated through the whole operator, generating
 	// uniform and structured logs.
-	logf.SetLogger(zap.New(func(o *zap.Options) {
+
+	// The constants specified here are zap specific
+	var logLevel zapcore.Level
+	logLevelVal, ok := os.LookupEnv("LOG_LEVEL")
+	if ok {
+		switch strings.ToLower(logLevelVal) {
+		case "error":
+			logLevel = zapcore.ErrorLevel
+		case "info":
+			logLevel = zapcore.InfoLevel
+		case "debug":
+			logLevel = zapcore.DebugLevel
+		default:
+			customLevel, err := strconv.Atoi(strings.ToLower(logLevelVal))
+			exitOnError(err, "Invalid log-level")
+			// Need to multiply by -1 to turn logr expected level into zap level
+			logLevel = zapcore.Level(int8(customLevel) * -1)
+		}
+	} else {
+		logLevel = zapcore.InfoLevel
+	}
+
+	// Use and set atomic level that all following log events are compared with
+	// in order to evaluate if a given log level on the event is enabled.
+	logf.SetLogger(zapctrl.New(func(o *zapctrl.Options) {
 		o.Development = false
+		o.Level = zap.NewAtomicLevelAt(logLevel)
 	}))
 
-	klog.SetLogger(log)
+	klog.SetLogger(log.AsLogger())
 
 	_, err := maxprocs.Set(maxprocs.Logger(func(f string, a ...interface{}) { log.Info(fmt.Sprintf(f, a)) }))
 	exitOnError(err, "failed to set GOMAXPROCS from cgroups")
@@ -99,6 +134,8 @@ func Run(healthPort, monitoringPort int32, leaderElection bool) {
 	watchNamespace, err := getWatchNamespace()
 	exitOnError(err, "failed to get watch namespace")
 
+	ctx := signals.SetupSignalHandler()
+
 	cfg, err := config.GetConfig()
 	exitOnError(err, "cannot get client config")
 	// Increase maximum burst that is used by client-side throttling,
@@ -106,7 +143,7 @@ func Run(healthPort, monitoringPort int32, leaderElection bool) {
 	// from being throttled.
 	cfg.QPS = 20
 	cfg.Burst = 200
-	c, err := client.NewClientWithConfig(false, cfg)
+	bootstrapClient, err := client.NewClientWithConfig(false, cfg)
 	exitOnError(err, "cannot initialize client")
 
 	// We do not rely on the event broadcaster managed by controller runtime,
@@ -116,7 +153,7 @@ func Run(healthPort, monitoringPort int32, leaderElection bool) {
 	broadcaster := record.NewBroadcaster()
 	defer broadcaster.Shutdown()
 
-	if ok, err := kubernetes.CheckPermission(context.TODO(), c, corev1.GroupName, "events", watchNamespace, "", "create"); err != nil || !ok {
+	if ok, err := kubernetes.CheckPermission(ctx, bootstrapClient, corev1.GroupName, "events", watchNamespace, "", "create"); err != nil || !ok {
 		// Do not sink Events to the server as they'll be rejected
 		broadcaster = event.NewSinkLessBroadcaster(broadcaster)
 		exitOnError(err, "cannot check permissions for creating Events")
@@ -136,10 +173,10 @@ func Run(healthPort, monitoringPort int32, leaderElection bool) {
 	}
 
 	// Set the operator container image if it runs in-container
-	platform.OperatorImage, err = getOperatorImage(context.TODO(), c)
+	platform.OperatorImage, err = getOperatorImage(ctx, bootstrapClient)
 	exitOnError(err, "cannot get operator container image")
 
-	if ok, err := kubernetes.CheckPermission(context.TODO(), c, coordination.GroupName, "leases", operatorNamespace, "", "create"); err != nil || !ok {
+	if ok, err := kubernetes.CheckPermission(ctx, bootstrapClient, coordination.GroupName, "leases", operatorNamespace, "", "create"); err != nil || !ok {
 		leaderElection = false
 		exitOnError(err, "cannot check permissions for creating Leases")
 		log.Info("The operator is not granted permissions to create Leases")
@@ -153,34 +190,45 @@ func Run(healthPort, monitoringPort int32, leaderElection bool) {
 	exitOnError(err, "cannot create Integration label selector")
 	selector := labels.NewSelector().Add(*hasIntegrationLabel)
 
-	mgr, err := manager.New(c.GetConfig(), manager.Options{
+	selectors := cache.SelectorsByObject{
+		&corev1.Pod{}:        {Label: selector},
+		&appsv1.Deployment{}: {Label: selector},
+		&batchv1.Job{}:       {Label: selector},
+		&servingv1.Service{}: {Label: selector},
+	}
+
+	if ok, err := kubernetes.IsAPIResourceInstalled(bootstrapClient, batchv1.SchemeGroupVersion.String(), reflect.TypeOf(batchv1.CronJob{}).Name()); ok && err == nil {
+		selectors[&batchv1.CronJob{}] = struct {
+			Label labels.Selector
+			Field fields.Selector
+		}{
+			Label: selector,
+		}
+	}
+
+	mgr, err := manager.New(cfg, manager.Options{
 		Namespace:                     watchNamespace,
 		EventBroadcaster:              broadcaster,
 		LeaderElection:                leaderElection,
 		LeaderElectionNamespace:       operatorNamespace,
-		LeaderElectionID:              platform.OperatorLockName,
+		LeaderElectionID:              leaderElectionID,
 		LeaderElectionResourceLock:    resourcelock.LeasesResourceLock,
 		LeaderElectionReleaseOnCancel: true,
 		HealthProbeBindAddress:        ":" + strconv.Itoa(int(healthPort)),
 		MetricsBindAddress:            ":" + strconv.Itoa(int(monitoringPort)),
 		NewCache: cache.BuilderWithOptions(
 			cache.Options{
-				SelectorsByObject: cache.SelectorsByObject{
-					&corev1.Pod{}:           {Label: selector},
-					&appsv1.Deployment{}:    {Label: selector},
-					&batchv1beta1.CronJob{}: {Label: selector},
-					&batchv1.Job{}:          {Label: selector},
-					&servingv1.Service{}:    {Label: selector},
-				},
+				SelectorsByObject: selectors,
 			},
 		),
 	})
 	exitOnError(err, "")
 
 	exitOnError(
-		mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "status.phase",
+		mgr.GetFieldIndexer().IndexField(ctx, &corev1.Pod{}, "status.phase",
 			func(obj ctrl.Object) []string {
-				return []string{string(obj.(*corev1.Pod).Status.Phase)}
+				pod, _ := obj.(*corev1.Pod)
+				return []string{string(pod.Status.Phase)}
 			}),
 		"unable to set up field indexer for status.phase: %v",
 	)
@@ -188,15 +236,49 @@ func Run(healthPort, monitoringPort int32, leaderElection bool) {
 	log.Info("Configuring manager")
 	exitOnError(mgr.AddHealthzCheck("health-probe", healthz.Ping), "Unable add liveness check")
 	exitOnError(apis.AddToScheme(mgr.GetScheme()), "")
-	exitOnError(controller.AddToManager(mgr), "")
+	ctrlClient, err := client.FromManager(mgr)
+	exitOnError(err, "")
+	exitOnError(controller.AddToManager(mgr, ctrlClient), "")
 
 	log.Info("Installing operator resources")
-	installCtx, installCancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	installCtx, installCancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer installCancel()
-	install.OperatorStartupOptionalTools(installCtx, c, watchNamespace, operatorNamespace, log)
+	install.OperatorStartupOptionalTools(installCtx, bootstrapClient, watchNamespace, operatorNamespace, log)
+	exitOnError(findOrCreateIntegrationPlatform(installCtx, bootstrapClient, operatorNamespace), "failed to create integration platform")
 
 	log.Info("Starting the manager")
-	exitOnError(mgr.Start(signals.SetupSignalHandler()), "manager exited non-zero")
+	exitOnError(mgr.Start(ctx), "manager exited non-zero")
+}
+
+// findOrCreateIntegrationPlatform create default integration platform in operator namespace if not already exists.
+func findOrCreateIntegrationPlatform(ctx context.Context, c client.Client, operatorNamespace string) error {
+	var platformName string
+	if defaults.OperatorID() != "" {
+		platformName = defaults.OperatorID()
+	} else {
+		platformName = platform.DefaultPlatformName
+	}
+
+	if pl, err := kubernetes.GetIntegrationPlatform(ctx, c, platformName, operatorNamespace); pl == nil || k8serrors.IsNotFound(err) {
+		defaultPlatform := v1.NewIntegrationPlatform(operatorNamespace, platformName)
+		if defaultPlatform.Labels == nil {
+			defaultPlatform.Labels = make(map[string]string)
+		}
+		defaultPlatform.Labels["camel.apache.org/platform.generated"] = "true"
+
+		if _, err := c.CamelV1().IntegrationPlatforms(operatorNamespace).Create(ctx, &defaultPlatform, metav1.CreateOptions{}); err != nil {
+			return err
+		}
+
+		// Make sure that IntegrationPlatform installed in operator namespace can be seen by others
+		if err := install.IntegrationPlatformViewerRole(ctx, c, operatorNamespace); err != nil && !k8serrors.IsAlreadyExists(err) {
+			return errors.Wrap(err, "Error while installing global IntegrationPlatform viewer role")
+		}
+	} else {
+		return err
+	}
+
+	return nil
 }
 
 // getWatchNamespace returns the Namespace the operator should be watching for changes.

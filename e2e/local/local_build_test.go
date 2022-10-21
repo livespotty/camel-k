@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -63,8 +64,9 @@ func TestLocalBuild(t *testing.T) {
 	file := testutil.MakeTempCopy(t, "files/yaml.yaml")
 	image := "test/test-" + strings.ToLower(util.RandomString(10))
 
-	kamelBuild := KamelWithContext(ctx, "local", "build", file, "--image", image)
+	kamelBuild := kamelWithContext(ctx, "local", "build", file, "--image", image)
 	kamelBuild.SetOut(pipew)
+	kamelBuild.SetErr(pipew)
 
 	msgTagged := "Successfully tagged"
 	logScanner := testutil.NewLogScanner(ctx, piper, msgTagged, image)
@@ -92,8 +94,9 @@ func TestLocalBuildWithTrait(t *testing.T) {
 	file := testutil.MakeTempCopy(t, "files/trait.groovy")
 	image := "test/test-" + strings.ToLower(util.RandomString(10))
 
-	kamelBuild := KamelWithContext(ctx, "local", "build", file, "--image", image)
+	kamelBuild := kamelWithContext(ctx, "local", "build", file, "--image", image)
 	kamelBuild.SetOut(pipew)
+	kamelBuild.SetErr(pipew)
 
 	msgWarning := "Warning: traits are specified but don't take effect for local run: [jolokia.enabled=true]"
 	msgTagged := "Successfully tagged"
@@ -111,6 +114,45 @@ func TestLocalBuildWithTrait(t *testing.T) {
 	Eventually(DockerImages, TestTimeoutMedium).Should(ContainSubstring(image))
 }
 
+func TestLocalBuildWithInvalidDependency(t *testing.T) {
+	RegisterTestingT(t)
+
+	ctx, cancel := context.WithCancel(TestContext)
+	defer cancel()
+	piper, pipew := io.Pipe()
+	defer pipew.Close()
+	defer piper.Close()
+
+	file := testutil.MakeTempCopy(t, "files/yaml.yaml")
+	image := "test/test-" + strings.ToLower(util.RandomString(10))
+
+	kamelBuild := KamelWithContext(ctx, "local", "build", file, "--image", image,
+		"-d", "camel-xxx",
+		"-d", "mvn:org.apache.camel:camel-http:3.18.0",
+		"-d", "mvn:org.apache.camel.quarkus:camel-quarkus-netty:2.11.0")
+	kamelBuild.SetOut(pipew)
+	kamelBuild.SetErr(pipew)
+
+	warn1 := "Warning: dependency camel:xxx not found in Camel catalog"
+	warn2 := "Warning: do not use mvn:org.apache.camel:camel-http:3.18.0. Use camel:http instead"
+	warn3 := "Warning: do not use mvn:org.apache.camel.quarkus:camel-quarkus-netty:2.11.0. Use camel:netty instead"
+	logScanner := testutil.NewLogScanner(ctx, piper, warn1, warn2, warn3)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := kamelBuild.Execute()
+		assert.Error(t, err)
+		cancel()
+	}()
+
+	Eventually(logScanner.IsFound(warn1), TestTimeoutShort).Should(BeTrue())
+	Eventually(logScanner.IsFound(warn2), TestTimeoutShort).Should(BeTrue())
+	Eventually(logScanner.IsFound(warn3), TestTimeoutShort).Should(BeTrue())
+	wg.Wait()
+}
+
 func TestLocalBuildIntegrationDirectory(t *testing.T) {
 	RegisterTestingT(t)
 
@@ -120,7 +162,7 @@ func TestLocalBuildIntegrationDirectory(t *testing.T) {
 	file := testutil.MakeTempCopy(t, "files/yaml.yaml")
 	dir := testutil.MakeTempDir(t)
 
-	kamelBuild := KamelWithContext(ctx, "local", "build", file, "--integration-directory", dir)
+	kamelBuild := kamelWithContext(ctx, "local", "build", file, "--integration-directory", dir)
 
 	go func() {
 		err := kamelBuild.Execute()
@@ -147,7 +189,7 @@ func TestLocalBuildIntegrationDirectoryWithSpaces(t *testing.T) {
 	file := testutil.MakeTempCopy(t, "files/yaml.yaml")
 	dir := testutil.MakeTempDir(t) + " - Camel rocks!"
 
-	kamelBuild := KamelWithContext(ctx, "local", "build", file, "--integration-directory", dir)
+	kamelBuild := kamelWithContext(ctx, "local", "build", file, "--integration-directory", dir)
 
 	go func() {
 		err := kamelBuild.Execute()
@@ -171,7 +213,7 @@ func TestLocalBuildIntegrationDirectoryWithMultiBytes(t *testing.T) {
 	file := testutil.MakeTempCopy(t, "files/yaml.yaml")
 	dir := testutil.MakeTempDir(t) + "_らくだ" // Camel
 
-	kamelBuild := KamelWithContext(ctx, "local", "build", file, "--integration-directory", dir)
+	kamelBuild := kamelWithContext(ctx, "local", "build", file, "--integration-directory", dir)
 
 	go func() {
 		err := kamelBuild.Execute()
@@ -195,7 +237,7 @@ func TestLocalBuildDependenciesOnly(t *testing.T) {
 	file := testutil.MakeTempCopy(t, "files/yaml.yaml")
 	dir := testutil.MakeTempDir(t)
 
-	kamelBuild := KamelWithContext(ctx, "local", "build", file, "--integration-directory", dir, "--dependencies-only")
+	kamelBuild := kamelWithContext(ctx, "local", "build", file, "--integration-directory", dir, "--dependencies-only", "-d", "camel-amqp")
 
 	go func() {
 		err := kamelBuild.Execute()
@@ -206,6 +248,7 @@ func TestLocalBuildDependenciesOnly(t *testing.T) {
 	Eventually(dir+"/dependencies", TestTimeoutShort).Should(BeADirectory())
 	Eventually(dependency(dir, "org.apache.camel.camel-timer-%s.jar", camelVersion), TestTimeoutShort).Should(BeAnExistingFile())
 	Eventually(dependency(dir, "org.apache.camel.camel-log-%s.jar", camelVersion), TestTimeoutShort).Should(BeAnExistingFile())
+	Eventually(dependency(dir, "org.apache.camel.camel-amqp-%s.jar", camelVersion), TestTimeoutShort).Should(BeAnExistingFile())
 	Expect(dir + "/properties").ShouldNot(BeADirectory())
 	Expect(dir + "/routes/yaml.yaml").ShouldNot(BeAnExistingFile())
 }
@@ -219,7 +262,7 @@ func TestLocalBuildModelineDependencies(t *testing.T) {
 	file := testutil.MakeTempCopy(t, "files/dependency.groovy")
 	dir := testutil.MakeTempDir(t)
 
-	kamelBuild := KamelWithContext(ctx, "local", "build", file, "--integration-directory", dir)
+	kamelBuild := kamelWithContext(ctx, "local", "build", file, "--integration-directory", dir, "-d", "camel-amqp")
 
 	go func() {
 		err := kamelBuild.Execute()
@@ -229,6 +272,7 @@ func TestLocalBuildModelineDependencies(t *testing.T) {
 	Eventually(dir+"/dependencies", TestTimeoutShort).Should(BeADirectory())
 	Eventually(dependency(dir, "org.apache.camel.camel-timer-%s.jar", camelVersion), TestTimeoutShort).Should(BeAnExistingFile())
 	Eventually(dependency(dir, "org.apache.camel.camel-log-%s.jar", camelVersion), TestTimeoutShort).Should(BeAnExistingFile())
+	Eventually(dependency(dir, "org.apache.camel.camel-amqp-%s.jar", camelVersion), TestTimeoutShort).Should(BeAnExistingFile())
 	// camel dependency
 	Eventually(dependency(dir, "org.apache.camel.camel-twitter-%s.jar", camelVersion), TestTimeoutMedium).Should(BeAnExistingFile())
 	// mvn dependency

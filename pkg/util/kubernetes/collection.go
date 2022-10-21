@@ -19,7 +19,7 @@ package kubernetes
 
 import (
 	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/api/batch/v1beta1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -157,7 +157,12 @@ func (c *Collection) RemoveDeployment(filter func(*appsv1.Deployment) bool) *app
 	if res == nil {
 		return nil
 	}
-	return res.(*appsv1.Deployment)
+	deploy, ok := res.(*appsv1.Deployment)
+	if !ok {
+		return nil
+	}
+
+	return deploy
 }
 
 // VisitConfigMap executes the visitor function on all ConfigMap resources.
@@ -191,7 +196,12 @@ func (c *Collection) RemoveConfigMap(filter func(*corev1.ConfigMap) bool) *corev
 	if res == nil {
 		return nil
 	}
-	return res.(*corev1.ConfigMap)
+	cm, ok := res.(*corev1.ConfigMap)
+	if !ok {
+		return nil
+	}
+
+	return cm
 }
 
 // VisitService executes the visitor function on all Service resources.
@@ -268,9 +278,9 @@ func (c *Collection) GetRoute(filter func(*routev1.Route) bool) *routev1.Route {
 }
 
 // GetCronJob returns a CronJob that matches the given function.
-func (c *Collection) GetCronJob(filter func(job *v1beta1.CronJob) bool) *v1beta1.CronJob {
-	var retValue *v1beta1.CronJob
-	c.VisitCronJob(func(re *v1beta1.CronJob) {
+func (c *Collection) GetCronJob(filter func(job *batchv1.CronJob) bool) *batchv1.CronJob {
+	var retValue *batchv1.CronJob
+	c.VisitCronJob(func(re *batchv1.CronJob) {
 		if filter(re) {
 			retValue = re
 		}
@@ -279,18 +289,18 @@ func (c *Collection) GetCronJob(filter func(job *v1beta1.CronJob) bool) *v1beta1
 }
 
 // VisitCronJob executes the visitor function on all CronJob resources.
-func (c *Collection) VisitCronJob(visitor func(*v1beta1.CronJob)) {
+func (c *Collection) VisitCronJob(visitor func(*batchv1.CronJob)) {
 	c.Visit(func(res runtime.Object) {
-		if conv, ok := res.(*v1beta1.CronJob); ok {
+		if conv, ok := res.(*batchv1.CronJob); ok {
 			visitor(conv)
 		}
 	})
 }
 
 // VisitCronJobE executes the visitor function on all CronJob resources.
-func (c *Collection) VisitCronJobE(visitor func(*v1beta1.CronJob) error) error {
+func (c *Collection) VisitCronJobE(visitor func(*batchv1.CronJob) error) error {
 	return c.VisitE(func(res runtime.Object) error {
-		if conv, ok := res.(*v1beta1.CronJob); ok {
+		if conv, ok := res.(*batchv1.CronJob); ok {
 			return visitor(conv)
 		}
 
@@ -373,7 +383,7 @@ func (c *Collection) VisitContainer(visitor func(container *corev1.Container)) {
 			visitor(cntref)
 		}
 	})
-	c.VisitCronJob(func(c *v1beta1.CronJob) {
+	c.VisitCronJob(func(c *batchv1.CronJob) {
 		for idx := range c.Spec.JobTemplate.Spec.Template.Spec.Containers {
 			cntref := &c.Spec.JobTemplate.Spec.Template.Spec.Containers[idx]
 			visitor(cntref)
@@ -395,7 +405,7 @@ func (c *Collection) GetController(filter func(object ctrl.Object) bool) ctrl.Ob
 	if svc != nil {
 		return svc
 	}
-	cj := c.GetCronJob(func(job *v1beta1.CronJob) bool {
+	cj := c.GetCronJob(func(job *batchv1.CronJob) bool {
 		return filter(job)
 	})
 	if cj != nil {
@@ -412,7 +422,7 @@ func (c *Collection) VisitPodSpec(visitor func(container *corev1.PodSpec)) {
 	c.VisitKnativeConfigurationSpec(func(cs *serving.ConfigurationSpec) {
 		visitor(&cs.Template.Spec.PodSpec)
 	})
-	c.VisitCronJob(func(d *v1beta1.CronJob) {
+	c.VisitCronJob(func(d *batchv1.CronJob) {
 		visitor(&d.Spec.JobTemplate.Spec.Template.Spec)
 	})
 }
@@ -425,7 +435,7 @@ func (c *Collection) VisitPodTemplateMeta(visitor func(meta *metav1.ObjectMeta))
 	c.VisitKnativeConfigurationSpec(func(cs *serving.ConfigurationSpec) {
 		visitor(&cs.Template.ObjectMeta)
 	})
-	c.VisitCronJob(func(d *v1beta1.CronJob) {
+	c.VisitCronJob(func(d *batchv1.CronJob) {
 		visitor(&d.Spec.JobTemplate.Spec.Template.ObjectMeta)
 	})
 }

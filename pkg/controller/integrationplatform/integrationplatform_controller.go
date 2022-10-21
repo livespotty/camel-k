@@ -41,17 +41,12 @@ import (
 	"github.com/apache/camel-k/pkg/util/monitoring"
 )
 
-// Add creates a new IntegrationPlatform Controller and adds it to the Manager. The Manager will set fields on the Controller
-// and Start it when the Manager is Started.
-func Add(mgr manager.Manager) error {
-	c, err := client.FromManager(mgr)
-	if err != nil {
-		return err
-	}
+// Add creates a new IntegrationPlatform Controller and adds it to the Manager. The Manager will set fields
+// on the Controller and Start it when the Manager is Started.
+func Add(mgr manager.Manager, c client.Client) error {
 	return add(mgr, newReconciler(mgr, c))
 }
 
-// newReconciler returns a new reconcile.Reconciler.
 func newReconciler(mgr manager.Manager, c client.Client) reconcile.Reconciler {
 	return monitoring.NewInstrumentedReconciler(
 		&reconcileIntegrationPlatform{
@@ -68,9 +63,7 @@ func newReconciler(mgr manager.Manager, c client.Client) reconcile.Reconciler {
 	)
 }
 
-// add adds a new Controller to mgr with r as the reconcile.Reconciler.
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
-	// Create a new controller
 	c, err := controller.New("integrationplatform-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
@@ -155,7 +148,7 @@ func (r *reconcileIntegrationPlatform) Reconcile(ctx context.Context, request re
 	}
 
 	// Only process resources assigned to the operator
-	if !platform.IsOperatorHandler(&instance) {
+	if !platform.IsOperatorHandlerConsideringLock(ctx, r.client, request.Namespace, &instance) {
 		rlog.Info("Ignoring request because resource is not assigned to current operator")
 		return reconcile.Result{}, nil
 	}
@@ -189,6 +182,8 @@ func (r *reconcileIntegrationPlatform) Reconcile(ctx context.Context, request re
 			}
 
 			if target != nil {
+				target.Status.ObservedGeneration = instance.Generation
+
 				if err := r.client.Status().Patch(ctx, target, ctrl.MergeFrom(&instance)); err != nil {
 					camelevent.NotifyIntegrationPlatformError(ctx, r.client, r.recorder, &instance, target, err)
 					return reconcile.Result{}, err

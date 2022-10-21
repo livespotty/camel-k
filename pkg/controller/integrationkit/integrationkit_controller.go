@@ -46,15 +46,10 @@ import (
 
 // Add creates a new IntegrationKit Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func Add(mgr manager.Manager) error {
-	c, err := client.FromManager(mgr)
-	if err != nil {
-		return err
-	}
+func Add(mgr manager.Manager, c client.Client) error {
 	return add(mgr, newReconciler(mgr, c))
 }
 
-// newReconciler returns a new reconcile.Reconciler.
 func newReconciler(mgr manager.Manager, c client.Client) reconcile.Reconciler {
 	return monitoring.NewInstrumentedReconciler(
 		&reconcileIntegrationKit{
@@ -70,9 +65,7 @@ func newReconciler(mgr manager.Manager, c client.Client) reconcile.Reconciler {
 	)
 }
 
-// add adds a new Controller to mgr with r as the reconcile.Reconciler.
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
-	// Create a new controller
 	c, err := controller.New("integrationkit-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
@@ -198,6 +191,7 @@ func (r *reconcileIntegrationKit) Reconcile(ctx context.Context, request reconci
 
 	// Make sure the operator is allowed to act on namespace
 	if ok, err := platform.IsOperatorAllowedOnNamespace(ctx, r.client, request.Namespace); err != nil {
+		log.Debugf("Error occurred when checking whether operator is allowed in namespace %s: %v", request.Namespace, err)
 		return reconcile.Result{}, err
 	} else if !ok {
 		rlog.Info("Ignoring request because namespace is locked")
@@ -219,7 +213,7 @@ func (r *reconcileIntegrationKit) Reconcile(ctx context.Context, request reconci
 	}
 
 	// Only process resources assigned to the operator
-	if !platform.IsOperatorHandler(&instance) {
+	if !platform.IsOperatorHandlerConsideringLock(ctx, r.client, request.Namespace, &instance) {
 		rlog.Info("Ignoring request because resource is not assigned to current operator")
 		return reconcile.Result{}, nil
 	}
@@ -228,6 +222,7 @@ func (r *reconcileIntegrationKit) Reconcile(ctx context.Context, request reconci
 	targetLog := rlog.ForIntegrationKit(target)
 
 	if target.Status.Phase == v1.IntegrationKitPhaseNone || target.Status.Phase == v1.IntegrationKitPhaseWaitingForPlatform {
+		rlog.Debug("Preparing to shift integration kit phase")
 		if target.Labels[v1.IntegrationKitTypeLabel] == v1.IntegrationKitTypeExternal {
 			target.Status.Phase = v1.IntegrationKitPhaseInitialization
 			return r.update(ctx, &instance, target)
@@ -243,6 +238,7 @@ func (r *reconcileIntegrationKit) Reconcile(ctx context.Context, request reconci
 
 		if instance.Status.Phase != target.Status.Phase {
 			if err != nil {
+				rlog.Debugf("Error occurred while searching for platform. Cannot advance phase until cleared: %v", err)
 				target.Status.SetErrorCondition(v1.IntegrationKitConditionPlatformAvailable, v1.IntegrationKitConditionPlatformAvailableReason, err)
 			}
 
@@ -308,6 +304,8 @@ func (r *reconcileIntegrationKit) update(ctx context.Context, base *v1.Integrati
 	}
 
 	target.Status.Digest = dgst
+
+	target.Status.ObservedGeneration = base.Generation
 
 	err = r.client.Status().Patch(ctx, target, ctrl.MergeFrom(base))
 

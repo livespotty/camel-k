@@ -4,6 +4,7 @@
 
 # Binary files
 /kamel
+/kamel.*
 /license-check
 /**/platform-check
 
@@ -22,6 +23,10 @@
 
 # Bundle directory
 /bundle
+
+# Bundle Index directory
+/index
+index.Dockerfile
 
 # IDEs
 .idea
@@ -161,4 +166,4 @@ config/**/*.gen.tmpl
 config/**/*.gen.yaml
 config/**/*.gen.json
 
-release/*-installer*
+*-installer*

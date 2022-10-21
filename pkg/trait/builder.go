@@ -22,23 +22,18 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/pointer"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/builder"
 	mvn "github.com/apache/camel-k/pkg/util/maven"
 	"github.com/apache/camel-k/pkg/util/property"
 )
 
-// The builder trait is internally used to determine the best strategy to
-// build and configure IntegrationKits.
-//
-// +camel-k:trait=builder.
 type builderTrait struct {
-	BaseTrait `property:",squash"`
-	// Enable verbose logging on build components that support it (e.g. Kaniko build pod).
-	Verbose *bool `property:"verbose" json:"verbose,omitempty"`
-	// A list of properties to be provided to the build task
-	Properties []string `property:"properties" json:"properties,omitempty"`
+	BaseTrait
+	traitv1.BuilderTrait `property:",squash"`
 }
 
 func newBuilderTrait() Trait {
@@ -58,7 +53,7 @@ func (t *builderTrait) InfluencesKit() bool {
 }
 
 func (t *builderTrait) Configure(e *Environment) (bool, error) {
-	if IsFalse(t.Enabled) {
+	if e.IntegrationKit == nil || !pointer.BoolDeref(t.Enabled, true) {
 		return false, nil
 	}
 
@@ -101,7 +96,21 @@ func (t *builderTrait) Apply(e *Environment) error {
 		}})
 
 	case v1.IntegrationPlatformBuildPublishStrategyBuildah:
+		var platform string
+		var found bool
+		if platform, found = e.Platform.Status.Build.PublishStrategyOptions[builder.BuildahPlatform]; !found {
+			platform = ""
+			t.L.Infof("Attribute platform for buildah not found, default from host will be used!")
+		} else {
+			t.L.Infof("User defined %s platform, will be used from buildah!", platform)
+		}
+		var executorImage string
+		if image, found := e.Platform.Status.Build.PublishStrategyOptions[builder.BuildahImage]; found {
+			executorImage = image
+			t.L.Infof("User defined executor image %s will be used for buildah", image)
+		}
 		e.BuildTasks = append(e.BuildTasks, v1.Task{Buildah: &v1.BuildahTask{
+			Platform: platform,
 			BaseTask: v1.BaseTask{
 				Name: "buildah",
 			},
@@ -109,9 +118,10 @@ func (t *builderTrait) Apply(e *Environment) error {
 				Image:    getImageName(e),
 				Registry: e.Platform.Status.Build.Registry,
 			},
-			Verbose: t.Verbose,
+			Verbose:       t.Verbose,
+			ExecutorImage: executorImage,
 		}})
-	// nolint: staticcheck
+	//nolint: staticcheck,nolintlint
 	case v1.IntegrationPlatformBuildPublishStrategyKaniko:
 		var persistentVolumeClaim string
 		var found, cacheEnabled bool
@@ -122,6 +132,12 @@ func (t *builderTrait) Apply(e *Environment) error {
 		cacheEnabled = e.Platform.Status.Build.IsOptionEnabled(builder.KanikoBuildCacheEnabled)
 		if _, found = e.Platform.Status.Build.PublishStrategyOptions[builder.KanikoBuildCacheEnabled]; !found {
 			cacheEnabled = *e.Platform.Status.Build.KanikoBuildCache
+		}
+
+		var executorImage string
+		if image, found := e.Platform.Status.Build.PublishStrategyOptions[builder.KanikoExecutorImage]; found {
+			executorImage = image
+			t.L.Infof("User defined executor image %s will be used for kaniko", image)
 		}
 
 		e.BuildTasks = append(e.BuildTasks, v1.Task{Kaniko: &v1.KanikoTask{
@@ -136,7 +152,8 @@ func (t *builderTrait) Apply(e *Environment) error {
 				Enabled:               &cacheEnabled,
 				PersistentVolumeClaim: persistentVolumeClaim,
 			},
-			Verbose: t.Verbose,
+			Verbose:       t.Verbose,
+			ExecutorImage: executorImage,
 		}})
 	}
 
@@ -151,6 +168,7 @@ func (t *builderTrait) builderTask(e *Environment) (*v1.BuilderTask, error) {
 	for _, repo := range e.IntegrationKit.Spec.Repositories {
 		maven.Repositories = append(maven.Repositories, mvn.NewRepository(repo))
 	}
+
 	task := &v1.BuilderTask{
 		BaseTask: v1.BaseTask{
 			Name: "builder",

@@ -23,19 +23,19 @@ package defaults
 
 const (
 	// Version --
-	Version = "1.9.0-SNAPSHOT"
+	Version = "1.11.0-SNAPSHOT"
 
 	// DefaultRuntimeVersion --
-	DefaultRuntimeVersion = "1.12.0"
+	DefaultRuntimeVersion = "1.14.0"
 
 	// BuildahVersion --
-	BuildahVersion = "1.14.0"
+	BuildahVersion = "1.23.3"
 
 	// KanikoVersion --
 	KanikoVersion = "0.17.1"
 
 	// baseImage --
-	baseImage = "adoptopenjdk/openjdk11:slim"
+	baseImage = "docker.io/adoptopenjdk/openjdk11:slim"
 
 	// LocalRepository --
 	LocalRepository = "/tmp/artifacts/m2"

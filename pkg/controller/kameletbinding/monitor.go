@@ -31,6 +31,7 @@ import (
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
+	"github.com/apache/camel-k/pkg/trait"
 )
 
 // NewMonitorAction returns an action that monitors the KameletBinding after it's fully initialized.
@@ -73,13 +74,29 @@ func (action *monitorAction) Handle(ctx context.Context, kameletbinding *v1alpha
 		return nil, errors.Wrapf(err, "could not load integration for KameletBinding %q", kameletbinding.Name)
 	}
 
+	operatorIDChanged := v1.GetOperatorIDAnnotation(kameletbinding) != "" &&
+		(v1.GetOperatorIDAnnotation(kameletbinding) != v1.GetOperatorIDAnnotation(&it))
+
+	sameTraits, err := trait.IntegrationAndBindingSameTraits(&it, kameletbinding)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check if the integration needs to be changed
 	expected, err := CreateIntegrationFor(ctx, action.client, kameletbinding)
 	if err != nil {
 		return nil, err
 	}
 
-	if !equality.Semantic.DeepDerivative(expected.Spec, it.Spec) {
+	semanticEquality := equality.Semantic.DeepDerivative(expected.Spec, it.Spec)
+
+	if !semanticEquality || operatorIDChanged || !sameTraits {
+		action.L.Info(
+			"KameletBinding needs a rebuild",
+			"semantic-equality", !semanticEquality,
+			"operatorid-changed", operatorIDChanged,
+			"traits-changed", !sameTraits)
+
 		// KameletBinding has changed and needs rebuild
 		target := kameletbinding.DeepCopy()
 		// Rebuild the integration

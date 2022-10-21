@@ -22,15 +22,16 @@ import (
 	"fmt"
 	"strings"
 
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+
 	"github.com/Masterminds/semver"
 	"github.com/fatih/camelcase"
 	"github.com/spf13/cobra"
 
-	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
-
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/client"
+	platformutil "github.com/apache/camel-k/pkg/platform"
 	"github.com/apache/camel-k/pkg/util/defaults"
+	"github.com/apache/camel-k/pkg/util/log"
 )
 
 // VersionVariant may be overridden at build time.
@@ -130,19 +131,24 @@ func (o *versionCmdOptions) displayOperatorVersion(cmd *cobra.Command, c client.
 func operatorInfo(ctx context.Context, c client.Client, namespace string) (map[string]string, error) {
 	infos := make(map[string]string)
 
-	platform := v1.NewIntegrationPlatform(namespace, "camel-k")
-	platformKey := k8sclient.ObjectKey{
-		Namespace: namespace,
-		Name:      "camel-k",
-	}
-
-	if err := c.Get(ctx, platformKey, &platform); err != nil {
+	platform, err := platformutil.GetOrFindLocal(ctx, c, namespace)
+	if err != nil && k8serrors.IsNotFound(err) {
+		// find default operator platform in any namespace
+		if defaultPlatform, _ := platformutil.LookupForPlatformName(ctx, c, platformutil.DefaultPlatformName); defaultPlatform != nil {
+			platform = defaultPlatform
+		} else {
+			return nil, err
+		}
+	} else if err != nil {
 		return nil, err
 	}
+
 	// Useful information
+	infos["name"] = platform.Name
 	infos["version"] = platform.Status.Version
 	infos["publishStrategy"] = string(platform.Status.Build.PublishStrategy)
 	infos["runtimeVersion"] = platform.Status.Build.RuntimeVersion
+	infos["registryAddress"] = platform.Status.Build.Registry.Address
 
 	if platform.Status.Info != nil {
 		for k, v := range platform.Status.Info {
@@ -150,7 +156,9 @@ func operatorInfo(ctx context.Context, c client.Client, namespace string) (map[s
 		}
 	}
 
-	return fromCamelCase(infos), nil
+	ccInfo := fromCamelCase(infos)
+	log.Debugf("Operator Info for namespace %s: %v", namespace, ccInfo)
+	return ccInfo, nil
 }
 
 func fromCamelCase(infos map[string]string) map[string]string {

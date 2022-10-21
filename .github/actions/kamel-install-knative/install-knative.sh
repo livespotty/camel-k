@@ -26,13 +26,13 @@
 set -e
 
 # Prerequisites
-sudo wget https://github.com/mikefarah/yq/releases/download/v4.9.6/yq_linux_amd64 -O /usr/bin/yq && sudo chmod +x /usr/bin/yq
+sudo wget https://github.com/mikefarah/yq/releases/download/v4.26.1/yq_linux_amd64 -O /usr/bin/yq && sudo chmod +x /usr/bin/yq
 
 set +e
 
-export SERVING_VERSION=knative-v1.2.0
-export EVENTING_VERSION=knative-v1.2.0
-export KOURIER_VERSION=knative-v1.2.0
+export SERVING_VERSION=knative-v1.6.0
+export EVENTING_VERSION=knative-v1.6.0
+export KOURIER_VERSION=knative-v1.6.0
 
 apply() {
   local file="${1:-}"
@@ -60,7 +60,6 @@ EVENTING_CRDS="https://github.com/knative/eventing/releases/download/${EVENTING_
 EVENTING_CORE="https://github.com/knative/eventing/releases/download/${EVENTING_VERSION}/eventing-core.yaml"
 IN_MEMORY_CHANNEL="https://github.com/knative/eventing/releases/download/${EVENTING_VERSION}/in-memory-channel.yaml"
 CHANNEL_BROKER="https://github.com/knative/eventing/releases/download/${EVENTING_VERSION}/mt-channel-broker.yaml"
-SUGAR_CONTROLLER="https://github.com/knative/eventing/releases/download/${EVENTING_VERSION}/eventing-sugar-controller.yaml"
 
 # Serving
 apply "${SERVING_CRDS}"
@@ -78,6 +77,8 @@ fi
 
 # Kourier
 apply "${KOURIER}"
+
+sleep 5
 
 kubectl patch configmap/config-network \
   --namespace knative-serving \
@@ -120,8 +121,17 @@ else
   exit 1
 fi
 
-# Eventing sugar controller for injection
-apply ${SUGAR_CONTROLLER}
+# Eventing sugar controller configuration
+echo "Patching Knative eventing configuration"
+kubectl patch configmap/config-sugar \
+  -n knative-eventing \
+  --type merge \
+  -p '{"data":{"namespace-selector":"{\"matchExpressions\":[{\"key\":\"eventing.knative.dev/injection\",\"operator\":\"In\",\"values\":[\"enabled\"]}]}"}}'
+
+kubectl patch configmap/config-sugar \
+  -n knative-eventing \
+  --type merge \
+  -p '{"data":{"trigger-selector":"{\"matchExpressions\":[{\"key\":\"eventing.knative.dev/injection\",\"operator\":\"In\",\"values\":[\"enabled\"]}]}"}}'
 
 # Wait for installation completed
 echo "Waiting for all pods to be ready in kourier-system"

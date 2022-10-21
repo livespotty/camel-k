@@ -35,6 +35,9 @@ inputs:
   local-image-version:
     description: "Reference of the camel-k image version"
     required: true
+  catalog-source-name:
+    description: 'Name of the catalog source for the bundle (if required)'
+    required: false
   catalog-source-namespace:
     description: 'Namespace in which to install the catalog source for the bundle (if required)'
     required: false
@@ -58,12 +61,11 @@ runs:
       name: Install opm if required
       shell: bash
       run: |
-        if ! command -v opm &> /dev/null
-        then
-          curl -L https://github.com/operator-framework/operator-registry/releases/download/v1.16.1/linux-amd64-opm -o opm
-          chmod +x opm
-          sudo mv opm /usr/local/bin/
-        fi
+        make opm
+
+        # Append to PATH if not already
+        echo "${{ env.GOPATH }}/bin" >> $GITHUB_PATH
+        which opm || { echo 'opm not found' ; exit 1; }
 
     - id: build-index-image
       name: Create New Index Image
@@ -75,13 +77,17 @@ runs:
           -l "${{ inputs.image-registry-pull-host }}" \
           -n "${{ inputs.local-image-name }}" \
           -s "${{ inputs.image-registry-push-host }}" \
-          -v "${{ inputs.local-image-version }}"
+          -v "${{ inputs.local-image-version }}" \
+          -x "$(make get-csv-name)" \
+          -y "$(make get-last-released-img-name)" \
+          -z "$(make get-last-released-version)"
 
     - id: build-image-catalog
       name: Create a new catalog to host the index image
       shell: bash
       run: |
         ./.github/actions/kamel-build-bundle/build-image-catalog.sh \
+          -b "${{ inputs.catalog-source-name }}" \
           -c "${{ inputs.catalog-source-namespace }}" \
           -i "${{ inputs.image-namespace }}" \
           -x "${{ steps.build-index-image.outputs.build-bundle-image-bundle-index }}"
@@ -93,6 +99,3 @@ outputs:
   build-bundle-image-bundle-index:
     description: "Full name of the bundle index image"
     value: ${{ steps.build-index-image.outputs.build-bundle-image-bundle-index }}
-  build-bundle-catalog-source-name:
-    description: "Name of the catalog source for the build bundle image"
-    value: ${{ steps.build-image-catalog.outputs.build-bundle-catalog-source-name }}

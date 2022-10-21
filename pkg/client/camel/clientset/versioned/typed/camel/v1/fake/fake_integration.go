@@ -119,7 +119,7 @@ func (c *FakeIntegrations) UpdateStatus(ctx context.Context, integration *camelv
 // Delete takes name of the integration and deletes it. Returns an error if one occurs.
 func (c *FakeIntegrations) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
 	_, err := c.Fake.
-		Invokes(testing.NewDeleteAction(integrationsResource, c.ns, name), &camelv1.Integration{})
+		Invokes(testing.NewDeleteActionWithOptions(integrationsResource, c.ns, name, opts), &camelv1.Integration{})
 
 	return err
 }
@@ -158,6 +158,16 @@ func (c *FakeIntegrations) GetScale(ctx context.Context, integrationName string,
 func (c *FakeIntegrations) UpdateScale(ctx context.Context, integrationName string, scale *autoscalingv1.Scale, opts v1.UpdateOptions) (result *autoscalingv1.Scale, err error) {
 	obj, err := c.Fake.
 		Invokes(testing.NewUpdateSubresourceAction(integrationsResource, "scale", c.ns, scale), &autoscalingv1.Scale{})
+
+	if obj == nil {
+		return nil, err
+	}
+	return obj.(*autoscalingv1.Scale), err
+}
+
+func (c *FakeIntegrations) PatchScale(ctx context.Context, integrationName string, pt types.PatchType, data []byte, opts v1.PatchOptions) (result *autoscalingv1.Scale, err error) {
+	obj, err := c.Fake.
+		Invokes(testing.NewPatchSubresourceAction(integrationsResource, c.ns, integrationName, pt, data, "scale"), &autoscalingv1.Scale{})
 
 	if obj == nil {
 		return nil, err

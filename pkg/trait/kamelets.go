@@ -26,29 +26,23 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
 	kameletutils "github.com/apache/camel-k/pkg/kamelet"
 	"github.com/apache/camel-k/pkg/kamelet/repository"
-	"github.com/apache/camel-k/pkg/metadata"
 	"github.com/apache/camel-k/pkg/platform"
 	"github.com/apache/camel-k/pkg/util"
 	"github.com/apache/camel-k/pkg/util/digest"
 	"github.com/apache/camel-k/pkg/util/dsl"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/source"
+	"github.com/apache/camel-k/pkg/util/kamelets"
 )
 
-// The kamelets trait is a platform trait used to inject Kamelets into the integration runtime.
-//
-// +camel-k:trait=kamelets.
 type kameletsTrait struct {
-	BaseTrait `property:",squash"`
-	// Automatically inject all referenced Kamelets and their default configuration (enabled by default)
-	Auto *bool `property:"auto"`
-	// Comma separated list of Kamelet names to load into the current integration
-	List string `property:"list"`
+	BaseTrait
+	traitv1.KameletsTrait `property:",squash"`
 }
 
 type configurationKey struct {
@@ -82,7 +76,7 @@ func (t *kameletsTrait) IsPlatformTrait() bool {
 }
 
 func (t *kameletsTrait) Configure(e *Environment) (bool, error) {
-	if IsFalse(t.Enabled) {
+	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, true) {
 		return false, nil
 	}
 
@@ -90,24 +84,10 @@ func (t *kameletsTrait) Configure(e *Environment) (bool, error) {
 		return false, nil
 	}
 
-	if IsNilOrTrue(t.Auto) {
-		var kamelets []string
-		if t.List == "" {
-			sources, err := kubernetes.ResolveIntegrationSources(e.Ctx, e.Client, e.Integration, e.Resources)
-			if err != nil {
-				return false, err
-			}
-			metadata.Each(e.CamelCatalog, sources, func(_ int, meta metadata.IntegrationMetadata) bool {
-				util.StringSliceUniqueConcat(&kamelets, meta.Kamelets)
-				return true
-			})
-		}
-		// Check if a Kamelet is configured as default error handler URI
-		defaultErrorHandlerURI := e.Integration.Spec.GetConfigurationProperty(v1alpha1.ErrorHandlerAppPropertiesPrefix + ".deadLetterUri")
-		if defaultErrorHandlerURI != "" {
-			if strings.HasPrefix(defaultErrorHandlerURI, "kamelet:") {
-				kamelets = append(kamelets, source.ExtractKamelet(defaultErrorHandlerURI))
-			}
+	if pointer.BoolDeref(t.Auto, true) {
+		kamelets, err := kamelets.ExtractKameletFromSources(e.Ctx, e.Client, e.CamelCatalog, e.Resources, e.Integration)
+		if err != nil {
+			return false, err
 		}
 
 		if len(kamelets) > 0 {
@@ -167,7 +147,7 @@ func (t *kameletsTrait) collectKamelets(e *Environment) (map[string]*v1alpha1.Ka
 	sort.Strings(missingKamelets)
 
 	if len(missingKamelets) > 0 {
-		message := fmt.Sprintf("kamelets %s found, %s not found in repositories: %s",
+		message := fmt.Sprintf("kamelets [%s] found, [%s] not found in repositories: %s",
 			strings.Join(availableKamelets, ","),
 			strings.Join(missingKamelets, ","),
 			repo.String())
@@ -186,7 +166,7 @@ func (t *kameletsTrait) collectKamelets(e *Environment) (map[string]*v1alpha1.Ka
 		v1.IntegrationConditionKameletsAvailable,
 		corev1.ConditionTrue,
 		v1.IntegrationConditionKameletsAvailableReason,
-		fmt.Sprintf("kamelets %s found in repositories: %s", strings.Join(availableKamelets, ","), repo.String()),
+		fmt.Sprintf("kamelets [%s] found in repositories: %s", strings.Join(availableKamelets, ","), repo.String()),
 	)
 
 	return kamelets, nil

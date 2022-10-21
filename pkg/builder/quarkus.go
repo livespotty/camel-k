@@ -78,7 +78,10 @@ func loadCamelQuarkusCatalog(ctx *builderContext) error {
 }
 
 func generateQuarkusProject(ctx *builderContext) error {
-	p := GenerateQuarkusProjectCommon(ctx.Build.Runtime.Metadata["camel-quarkus.version"], ctx.Build.Runtime.Version, ctx.Build.Runtime.Metadata["quarkus.version"])
+	p := GenerateQuarkusProjectCommon(
+		ctx.Build.Runtime.Metadata["camel-quarkus.version"],
+		ctx.Build.Runtime.Version,
+		ctx.Build.Runtime.Metadata["quarkus.version"])
 
 	// Add all the properties from the build configuration
 	p.Properties.AddAll(ctx.Build.Maven.Properties)
@@ -115,13 +118,6 @@ func GenerateQuarkusProjectCommon(camelQuarkusVersion string, runtimeVersion str
 	// DependencyManagement
 	p.DependencyManagement.Dependencies = append(p.DependencyManagement.Dependencies,
 		maven.Dependency{
-			GroupID:    "org.apache.camel.quarkus",
-			ArtifactID: "camel-quarkus-bom",
-			Version:    camelQuarkusVersion,
-			Type:       "pom",
-			Scope:      "import",
-		},
-		maven.Dependency{
 			GroupID:    "org.apache.camel.k",
 			ArtifactID: "camel-k-runtime-bom",
 			Version:    runtimeVersion,
@@ -153,6 +149,7 @@ func buildQuarkusRunner(ctx *builderContext) error {
 	mc := maven.NewContext(path.Join(ctx.Path, "maven"))
 	mc.GlobalSettings = ctx.Maven.GlobalSettings
 	mc.UserSettings = ctx.Maven.UserSettings
+	mc.SettingsSecurity = ctx.Maven.SettingsSecurity
 	mc.LocalRepository = ctx.Build.Maven.LocalRepository
 	mc.AdditionalArguments = ctx.Build.Maven.CLIOptions
 
@@ -200,6 +197,7 @@ func computeQuarkusDependencies(ctx *builderContext) error {
 	mc := maven.NewContext(path.Join(ctx.Path, "maven"))
 	mc.GlobalSettings = ctx.Maven.GlobalSettings
 	mc.UserSettings = ctx.Maven.UserSettings
+	mc.SettingsSecurity = ctx.Maven.SettingsSecurity
 	mc.LocalRepository = ctx.Build.Maven.LocalRepository
 	mc.AdditionalArguments = ctx.Build.Maven.CLIOptions
 

@@ -164,6 +164,14 @@ func TestInstallKanikoBuildCacheFlag(t *testing.T) {
 	assert.Equal(t, true, installCmdOptions.KanikoBuildCache)
 }
 
+func TestInstallBuildPublishStrategyOptions(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "--build-publish-strategy-option", "foo1=bar1", "--build-publish-strategy-option", "foo2=bar2")
+	assert.Nil(t, err)
+	assert.Equal(t, "foo1=bar1", installCmdOptions.BuildPublishStrategyOptions[0])
+	assert.Equal(t, "foo2=bar2", installCmdOptions.BuildPublishStrategyOptions[1])
+}
+
 func TestInstallLocalRepositoryFlag(t *testing.T) {
 	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
 	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "--maven-local-repository", "someString")
@@ -392,4 +400,67 @@ func TestInstallMavenExtension(t *testing.T) {
 		"--maven-extension", "fi.yle.tools:aws-maven:1.4.2")
 	assert.Nil(t, err)
 	assert.Equal(t, "fi.yle.tools:aws-maven:1.4.2", installCmdOptions.MavenExtensions[0])
+}
+
+func TestInstallInfoLogging(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall)
+	assert.Nil(t, err)
+	assert.Equal(t, "info", installCmdOptions.LogLevel)
+}
+
+func TestInstallInfoLogging1(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "-z", "0")
+	assert.Nil(t, err)
+	assert.Equal(t, "0", installCmdOptions.LogLevel)
+}
+
+func TestInstallInfoLogging2(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "--log-level", "0")
+	assert.Nil(t, err)
+	assert.Equal(t, "0", installCmdOptions.LogLevel)
+}
+
+func TestInstallInfoLogging3(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "-z", "info")
+	assert.Nil(t, err)
+	assert.Equal(t, "info", installCmdOptions.LogLevel)
+}
+
+func TestInstallInfoLogging4(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "--log-level", "info")
+	assert.Nil(t, err)
+	assert.Equal(t, "info", installCmdOptions.LogLevel)
+}
+
+func TestInstallDebugLogging1(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "-z", "1")
+	assert.Nil(t, err)
+	assert.Equal(t, "1", installCmdOptions.LogLevel)
+}
+
+func TestInstallDebugLogging2(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "--log-level", "1")
+	assert.Nil(t, err)
+	assert.Equal(t, "1", installCmdOptions.LogLevel)
+}
+
+func TestInstallDebugLogging3(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "-z", "debug")
+	assert.Nil(t, err)
+	assert.Equal(t, "debug", installCmdOptions.LogLevel)
+}
+
+func TestInstallDebugLogging4(t *testing.T) {
+	installCmdOptions, rootCmd, _ := initializeInstallCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdInstall, "--log-level", "debug")
+	assert.Nil(t, err)
+	assert.Equal(t, "debug", installCmdOptions.LogLevel)
 }

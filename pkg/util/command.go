@@ -20,6 +20,7 @@ package util
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os/exec"
 
 	"golang.org/x/sync/errgroup"
@@ -27,18 +28,28 @@ import (
 
 // RunAndLog starts the provided command, scans its standard and error outputs line by line,
 // to feed the provided handlers, and waits until the scans complete and the command returns.
-func RunAndLog(ctx context.Context, cmd *exec.Cmd, stdOutF func(string), stdErrF func(string)) (err error) {
+func RunAndLog(ctx context.Context, cmd *exec.Cmd, stdOutF func(string), stdErrF func(string)) error {
+	stdOutF(fmt.Sprintf("Executed command: %s", cmd.String()))
+
 	stdOut, err := cmd.StdoutPipe()
 	if err != nil {
-		return
+		return err
 	}
 	stdErr, err := cmd.StderrPipe()
 	if err != nil {
-		return
+		return err
 	}
 	err = cmd.Start()
 	if err != nil {
-		return
+		scanOut := bufio.NewScanner(stdOut)
+		for scanOut.Scan() {
+			stdOutF(scanOut.Text())
+		}
+		scanErr := bufio.NewScanner(stdErr)
+		for scanErr.Scan() {
+			stdOutF(scanErr.Text())
+		}
+		return err
 	}
 	g, _ := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -55,13 +66,12 @@ func RunAndLog(ctx context.Context, cmd *exec.Cmd, stdOutF func(string), stdErrF
 		}
 		return nil
 	})
-	err = g.Wait()
-	if err != nil {
-		return
+	if err = g.Wait(); err != nil {
+		return err
 	}
-	err = cmd.Wait()
-	if err != nil {
-		return
+	if err = cmd.Wait(); err != nil {
+		return err
 	}
-	return
+
+	return nil
 }

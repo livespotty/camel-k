@@ -21,13 +21,16 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 
 	serving "knative.dev/serving/pkg/apis/serving/v1"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/util/camel"
 	"github.com/apache/camel-k/pkg/util/envvar"
 	"github.com/apache/camel-k/pkg/util/gzip"
@@ -42,12 +45,12 @@ const (
 
 func TestKnativeService(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	traitCatalog := NewCatalog(nil)
 
-	compressedRoute, err := gzip.CompressBase64([]byte(`from("undertow:test").log("hello")`))
-	assert.NoError(t, err)
+	compressedRoute, err := gzip.CompressBase64([]byte(`from("platform-http:test").log("hello")`))
+	require.NoError(t, err)
 
 	environment := Environment{
 		CamelCatalog: catalog,
@@ -87,10 +90,12 @@ func TestKnativeService(t *testing.T) {
 					{Type: "secret", Value: "my-secret"},
 					{Type: "property", Value: "my-property=my-property-value"},
 				},
-				Traits: map[string]v1.TraitSpec{
-					"knative-service": test.TraitSpecFromMap(t, map[string]interface{}{
-						"enabled": true,
-					}),
+				Traits: v1.Traits{
+					KnativeService: &traitv1.KnativeServiceTrait{
+						Trait: traitv1.Trait{
+							Enabled: pointer.Bool(true),
+						},
+					},
 				},
 			},
 		},
@@ -105,7 +110,11 @@ func TestKnativeService(t *testing.T) {
 				Build: v1.IntegrationPlatformBuildSpec{
 					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
 					Registry:        v1.RegistrySpec{Address: "registry"},
+					RuntimeVersion:  catalog.Runtime.Version,
 				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
 			},
 		},
 		EnvVars:        make([]corev1.EnvVar, 0),
@@ -116,7 +125,7 @@ func TestKnativeService(t *testing.T) {
 
 	err = traitCatalog.apply(&environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("knative"))
 	assert.NotNil(t, envvar.Get(environment.EnvVars, "CAMEL_KNATIVE_CONFIGURATION"))
@@ -183,7 +192,7 @@ func TestKnativeService(t *testing.T) {
 
 func TestKnativeServiceWithCustomContainerName(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	traitCatalog := NewCatalog(nil)
 
@@ -201,17 +210,19 @@ func TestKnativeServiceWithCustomContainerName(t *testing.T) {
 
 			Spec: v1.IntegrationSpec{
 				Profile: v1.TraitProfileKnative,
-				Traits: map[string]v1.TraitSpec{
-					"deployer": test.TraitSpecFromMap(t, map[string]interface{}{
-						"kind": "knative-service",
-					}),
-					"knative-service": test.TraitSpecFromMap(t, map[string]interface{}{
-						"enabled": true,
-						"auto":    false,
-					}),
-					"container": test.TraitSpecFromMap(t, map[string]interface{}{
-						"name": "my-container-name",
-					}),
+				Traits: v1.Traits{
+					Deployer: &traitv1.DeployerTrait{
+						Kind: "knative-service",
+					},
+					KnativeService: &traitv1.KnativeServiceTrait{
+						Trait: traitv1.Trait{
+							Enabled: pointer.Bool(true),
+						},
+						Auto: pointer.Bool(false),
+					},
+					Container: &traitv1.ContainerTrait{
+						Name: "my-container-name",
+					},
 				},
 			},
 		},
@@ -226,7 +237,11 @@ func TestKnativeServiceWithCustomContainerName(t *testing.T) {
 				Build: v1.IntegrationPlatformBuildSpec{
 					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
 					Registry:        v1.RegistrySpec{Address: "registry"},
+					RuntimeVersion:  catalog.Runtime.Version,
 				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
 			},
 		},
 		EnvVars:        make([]corev1.EnvVar, 0),
@@ -237,7 +252,7 @@ func TestKnativeServiceWithCustomContainerName(t *testing.T) {
 
 	err = traitCatalog.apply(&environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("knative-service"))
 	assert.NotNil(t, environment.GetTrait("container"))
@@ -248,17 +263,17 @@ func TestKnativeServiceWithCustomContainerName(t *testing.T) {
 
 	assert.NotNil(t, s)
 
-	trait := test.TraitSpecToMap(t, environment.Integration.Spec.Traits["container"])
+	trait := environment.Integration.Spec.Traits.Container
 	assert.Equal(
 		t,
-		trait["name"],
+		trait.Name,
 		s.Spec.ConfigurationSpec.Template.Spec.Containers[0].Name,
 	)
 }
 
 func TestKnativeServiceWithResr(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	traitCatalog := NewCatalog(nil)
 
@@ -304,7 +319,11 @@ func TestKnativeServiceWithResr(t *testing.T) {
 				Build: v1.IntegrationPlatformBuildSpec{
 					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
 					Registry:        v1.RegistrySpec{Address: "registry"},
+					RuntimeVersion:  catalog.Runtime.Version,
 				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
 			},
 		},
 		EnvVars:        make([]corev1.EnvVar, 0),
@@ -315,7 +334,7 @@ func TestKnativeServiceWithResr(t *testing.T) {
 
 	err = traitCatalog.apply(&environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("knative"))
 
@@ -325,12 +344,42 @@ func TestKnativeServiceWithResr(t *testing.T) {
 }
 
 func TestKnativeServiceWithRollout(t *testing.T) {
+	environment := createKnativeServiceTestEnvironment(t, &traitv1.KnativeServiceTrait{RolloutDuration: "60s"})
+	assert.NotEmpty(t, environment.ExecutedTraits)
+	assert.NotNil(t, environment.GetTrait("knative-service"))
+
+	ksvc := environment.Resources.GetKnativeService(func(service *serving.Service) bool {
+		return service.Name == KnativeServiceTestName
+	})
+	assert.NotNil(t, ksvc)
+
+	assert.Equal(t, ksvc.Annotations[knativeServingRolloutDurationAnnotation], "60s")
+}
+
+func TestKnativeServiceWithVisibility(t *testing.T) {
+	environment := createKnativeServiceTestEnvironment(t, &traitv1.KnativeServiceTrait{
+		Visibility: "cluster-local",
+	})
+	assert.NotEmpty(t, environment.ExecutedTraits)
+	assert.NotNil(t, environment.GetTrait("knative-service"))
+
+	ksvc := environment.Resources.GetKnativeService(func(service *serving.Service) bool {
+		return service.Name == KnativeServiceTestName
+	})
+	assert.NotNil(t, ksvc)
+
+	assert.Equal(t, ksvc.Labels[knativeServingVisibilityLabel], "cluster-local")
+}
+
+func createKnativeServiceTestEnvironment(t *testing.T, trait *traitv1.KnativeServiceTrait) *Environment {
+	t.Helper()
+
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	traitCatalog := NewCatalog(nil)
 
-	environment := Environment{
+	environment := &Environment{
 		CamelCatalog: catalog,
 		Catalog:      traitCatalog,
 		Integration: &v1.Integration{
@@ -359,10 +408,8 @@ func TestKnativeServiceWithRollout(t *testing.T) {
 						Language: v1.LanguageXML,
 					},
 				},
-				Traits: map[string]v1.TraitSpec{
-					"knative-service": test.TraitSpecFromMap(t, map[string]interface{}{
-						"rolloutDuration": "60s",
-					}),
+				Traits: v1.Traits{
+					KnativeService: trait,
 				},
 			},
 		},
@@ -374,24 +421,24 @@ func TestKnativeServiceWithRollout(t *testing.T) {
 		Platform: &v1.IntegrationPlatform{
 			Spec: v1.IntegrationPlatformSpec{
 				Cluster: v1.IntegrationPlatformClusterKubernetes,
+				Build: v1.IntegrationPlatformBuildSpec{
+					RuntimeVersion: catalog.Runtime.Version,
+				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
 			},
 		},
 		EnvVars:        make([]corev1.EnvVar, 0),
 		ExecutedTraits: make([]Trait, 0),
 		Resources:      kubernetes.NewCollection(),
 	}
+
 	environment.Platform.ResyncStatusFullConfig()
 
-	err = traitCatalog.apply(&environment)
+	err = traitCatalog.apply(environment)
 
-	assert.Nil(t, err)
-	assert.NotEmpty(t, environment.ExecutedTraits)
-	assert.NotNil(t, environment.GetTrait("knative-service"))
+	require.NoError(t, err)
 
-	ksvc := environment.Resources.GetKnativeService(func(service *serving.Service) bool {
-		return service.Name == KnativeServiceTestName
-	})
-	assert.NotNil(t, ksvc)
-
-	assert.Equal(t, ksvc.Annotations[knativeServingRolloutDurationAnnotation], "60s")
+	return environment
 }

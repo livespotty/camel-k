@@ -19,7 +19,6 @@ package v1
 
 import (
 	"strconv"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,16 +48,6 @@ func NewIntegrationPlatform(namespace string, name string) IntegrationPlatform {
 	}
 }
 
-// TraitProfileByName returns the trait profile corresponding to the given name (case insensitive)
-func TraitProfileByName(name string) TraitProfile {
-	for _, p := range AllTraitProfiles {
-		if strings.EqualFold(name, string(p)) {
-			return p
-		}
-	}
-	return ""
-}
-
 // Configurations --
 func (in *IntegrationPlatformSpec) Configurations() []ConfigurationSpec {
 	if in == nil {
@@ -66,6 +55,11 @@ func (in *IntegrationPlatformSpec) Configurations() []ConfigurationSpec {
 	}
 
 	return in.Configuration
+}
+
+// SetOperatorID sets the given operator id as an annotation
+func (in *IntegrationPlatform) SetOperatorID(operatorID string) {
+	SetAnnotation(&in.ObjectMeta, OperatorIDAnnotation, operatorID)
 }
 
 // Configurations --
@@ -190,6 +184,16 @@ func (b IntegrationPlatformBuildSpec) IsOptionEnabled(option string) bool {
 		return res
 	}
 	return false
+}
+
+// Add a publish strategy option
+func (b *IntegrationPlatformBuildSpec) AddOption(option string, value string) {
+	options := b.PublishStrategyOptions
+	if options == nil {
+		options = make(map[string]string)
+		b.PublishStrategyOptions = options
+	}
+	options[option] = value
 }
 
 // GetTimeout returns the specified duration or a default one

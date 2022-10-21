@@ -27,6 +27,7 @@ linters:
     - dupl
     - exhaustive
     - exhaustivestruct
+    - exhaustruct
     - forbidigo
     - funlen
     - gci
@@ -38,9 +39,9 @@ linters:
     - godox
     - goerr113
     - gofumpt
+    - golint
     - gomnd
     - gomoddirectives
-    - golint
     - interfacer
     - ireturn
     - lll
@@ -49,10 +50,11 @@ linters:
     - nestif
     - nilnil
     - nlreturn
+    - nosnakecase
     - paralleltest
+    - scopelint
     - tagliatelle
     - tenv
-    - scopelint
     - testpackage
     - varnamelen
     - whitespace

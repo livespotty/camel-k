@@ -22,6 +22,7 @@ import (
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/util/kubernetes"
+	"github.com/apache/camel-k/pkg/util/log"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -30,6 +31,27 @@ const (
 	// DefaultPlatformName is the standard name used for the integration platform.
 	DefaultPlatformName = "camel-k"
 )
+
+// LookupForPlatformName finds integration platform with given operator id as name in any namespace.
+func LookupForPlatformName(ctx context.Context, c k8sclient.Reader, name string) (*v1.IntegrationPlatform, error) {
+	platformList := v1.NewIntegrationPlatformList()
+
+	// get all integration platform instances on the cluster
+	err := c.List(ctx, &platformList)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if platform with same name as given operator id already exists
+	for _, pl := range platformList.Items {
+		if pl.Name == name {
+			// platform already exists installation not allowed
+			return &pl, nil
+		}
+	}
+
+	return nil, nil
+}
 
 func GetForResource(ctx context.Context, c k8sclient.Reader, o k8sclient.Object) (*v1.IntegrationPlatform, error) {
 	return GetOrFindForResource(ctx, c, o, true)
@@ -43,10 +65,15 @@ func GetOrFindLocalForResource(ctx context.Context, c k8sclient.Reader, o k8scli
 	return getOrFindForResource(ctx, c, o, active, true)
 }
 
+func GetOrFindLocal(ctx context.Context, c k8sclient.Reader, namespace string) (*v1.IntegrationPlatform, error) {
+	return findLocal(ctx, c, namespace, true)
+}
+
 func getOrFindForResource(ctx context.Context, c k8sclient.Reader, o k8sclient.Object, active bool, local bool) (*v1.IntegrationPlatform, error) {
 	if selectedPlatform, ok := o.GetAnnotations()[v1.PlatformSelectorAnnotation]; ok {
 		return get(ctx, c, o.GetNamespace(), selectedPlatform)
 	}
+
 	if it, ok := o.(*v1.Integration); ok {
 		return getOrFind(ctx, c, it.Namespace, it.Status.Platform, active, local)
 	} else if ik, ok := o.(*v1.IntegrationKit); ok {
@@ -74,7 +101,7 @@ func getOrFindAny(ctx context.Context, c k8sclient.Reader, namespace string, nam
 // getOrFindLocal returns the named platform or any other platform in the local namespace.
 func getOrFindLocal(ctx context.Context, c k8sclient.Reader, namespace string, name string, active bool) (*v1.IntegrationPlatform, error) {
 	if name != "" {
-		return kubernetes.GetIntegrationPlatform(ctx, c, name, namespace)
+		return get(ctx, c, namespace, name)
 	}
 
 	return findLocal(ctx, c, namespace, active)
@@ -113,6 +140,8 @@ func findAny(ctx context.Context, c k8sclient.Reader, namespace string, active b
 
 // findLocal returns the currently installed platform or any platform existing in local namespace.
 func findLocal(ctx context.Context, c k8sclient.Reader, namespace string, active bool) (*v1.IntegrationPlatform, error) {
+	log.Debug("Finding available platforms")
+
 	lst, err := ListPrimaryPlatforms(ctx, c, namespace)
 	if err != nil {
 		return nil, err
@@ -121,6 +150,7 @@ func findLocal(ctx context.Context, c k8sclient.Reader, namespace string, active
 	for _, platform := range lst.Items {
 		platform := platform // pin
 		if IsActive(&platform) {
+			log.Debugf("Found active local integration platform %s", platform.Name)
 			return &platform, nil
 		}
 	}
@@ -128,9 +158,11 @@ func findLocal(ctx context.Context, c k8sclient.Reader, namespace string, active
 	if !active && len(lst.Items) > 0 {
 		// does not require the platform to be active, just return one if present
 		res := lst.Items[0]
+		log.Debugf("Found local integration platform %s", res.Name)
 		return &res, nil
 	}
 
+	log.Debugf("Not found a local integration platform")
 	return nil, k8serrors.NewNotFound(v1.Resource("IntegrationPlatform"), DefaultPlatformName)
 }
 
@@ -142,8 +174,9 @@ func ListPrimaryPlatforms(ctx context.Context, c k8sclient.Reader, namespace str
 	}
 
 	filtered := v1.NewIntegrationPlatformList()
-	for _, pl := range lst.Items {
-		if val, present := pl.Annotations[v1.SecondaryPlatformAnnotation]; !present || val != "true" {
+	for i := range lst.Items {
+		pl := lst.Items[i]
+		if !IsSecondary(&pl) {
 			filtered.Items = append(filtered.Items, pl)
 		}
 	}

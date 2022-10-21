@@ -25,10 +25,13 @@
 
 set -e
 
-while getopts ":c:i:l:n:s:v:x:" opt; do
+while getopts ":b:c:i:l:n:q:s:v:x:" opt; do
   case "${opt}" in
+    b)
+      BUILD_CATALOG_SOURCE_NAME=${OPTARG}
+      ;;
     c)
-      BUILD_CATALOG_SOURCE=${OPTARG}
+      BUILD_CATALOG_SOURCE_NAMESPACE=${OPTARG}
       ;;
     i)
       IMAGE_NAMESPACE=${OPTARG}
@@ -38,6 +41,9 @@ while getopts ":c:i:l:n:s:v:x:" opt; do
       ;;
     n)
       IMAGE_NAME=${OPTARG}
+      ;;
+    q)
+      LOG_LEVEL=${OPTARG}
       ;;
     s)
       REGISTRY_INSECURE=${OPTARG}
@@ -92,9 +98,10 @@ export CUSTOM_VERSION=${IMAGE_VERSION}
 #
 # If bundle has been built and installed then use it
 #
-if [ -n "${BUILD_CATALOG_SOURCE}" ]; then
-  export KAMEL_INSTALL_OLM_SOURCE_NAMESPACE=${IMAGE_NAMESPACE}
-  export KAMEL_INSTALL_OLM_SOURCE=${BUILD_CATALOG_SOURCE}
+if [ -n "${BUILD_CATALOG_SOURCE_NAMESPACE}" ]; then
+  export KAMEL_INSTALL_OLM_SOURCE=${BUILD_CATALOG_SOURCE_NAME}
+  export KAMEL_INSTALL_OLM_SOURCE_NAMESPACE=${BUILD_CATALOG_SOURCE_NAMESPACE}
+  export KAMEL_INSTALL_OLM_CHANNEL="${NEW_XY_CHANNEL}"
 fi
 
 export KAMEL_INSTALL_MAVEN_REPOSITORIES=$(make get-staging-repo)
@@ -107,6 +114,10 @@ export KAMEL_INSTALL_OPERATOR_IMAGE=${CUSTOM_IMAGE}:${CUSTOM_VERSION}
 # (see kamel-build-bundle/build-bundle-image.sh)
 export KAMEL_INSTALL_OPERATOR_IMAGE_PULL_POLICY="Always"
 
+export CAMEL_K_TEST_LOG_LEVEL="${LOG_LEVEL}"
+if [ "${LOG_LEVEL}" == "debug" ]; then
+  export CAMEL_K_TEST_MAVEN_CLI_OPTIONS="-X ${CAMEL_K_TEST_MAVEN_CLI_OPTIONS}"
+fi
 export CAMEL_K_TEST_IMAGE_NAME=${CUSTOM_IMAGE}
 export CAMEL_K_TEST_IMAGE_VERSION=${CUSTOM_VERSION}
 export CAMEL_K_TEST_SAVE_FAILED_TEST_NAMESPACE=${SAVE_FAILED_TEST_NS}

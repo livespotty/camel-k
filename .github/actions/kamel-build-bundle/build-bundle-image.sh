@@ -23,7 +23,7 @@
 #
 ####
 
-set -e
+set +e
 
 while getopts ":i:l:n:s:v:" opt; do
   case "${opt}" in
@@ -102,26 +102,36 @@ popd
 #
 # Build with the PUSH host to ensure the correct image:tag
 # for docker to push the image.
+# Note: the CUSTOM_IMAGE must still reference the pull host
+# to allow the operator image to be found
 #
-export LOCAL_IMAGE_BUNDLE=${REGISTRY_PUSH_HOST}/${IMAGE_NAMESPACE}/camel-k-bundle:${IMAGE_VERSION}
+BUNDLE_IMAGE_BASE_NAME=$(basename $(make get-bundle-image))
+export PUSH_BUNDLE_LOCAL_IMAGE=${REGISTRY_PUSH_HOST}/${IMAGE_NAMESPACE}/${BUNDLE_IMAGE_BASE_NAME}
 export CUSTOM_IMAGE=${IMAGE_NAME}
+export CUSTOM_VERSION=${IMAGE_VERSION}
 
-export PREV_XY_CHANNEL="stable-$(make get-last-released-version | grep -Po '\d.\d')"
+export PREV_XY_CHANNEL="stable-$(make get-last-released-version | grep -Po '\d+\.\d+')"
 echo "PREV_XY_CHANNEL=${PREV_XY_CHANNEL}" >> $GITHUB_ENV
-export NEW_XY_CHANNEL=stable-$(make get-version | grep -Po "\d.\d")
+export NEW_XY_CHANNEL=stable-dev-$(make get-version | grep -Po "\d+\.\d+")
 echo "NEW_XY_CHANNEL=${NEW_XY_CHANNEL}" >> $GITHUB_ENV
 
-make bundle-build \
-  BUNDLE_IMAGE_NAME=${LOCAL_IMAGE_BUNDLE} \
-  DEFAULT_CHANNEL="${NEW_XY_CHANNEL}" \
-  CHANNELS="${NEW_XY_CHANNEL}"
+echo "BUNDLE_IMAGE_NAME=${PUSH_BUNDLE_LOCAL_IMAGE}"
+echo "DEFAULT_CHANNEL=${NEW_XY_CHANNEL}"
+echo "CHANNELS=${NEW_XY_CHANNEL}"
 
-docker push ${LOCAL_IMAGE_BUNDLE}
+make bundle-push \
+  BUNDLE_IMAGE_NAME="${PUSH_BUNDLE_LOCAL_IMAGE}" \
+  DEFAULT_CHANNEL="${NEW_XY_CHANNEL}" \
+  CHANNELS="${NEW_XY_CHANNEL}" 2>&1
+if [ $? != 0 ]; then
+  echo "Error: Making bundle failed."
+  exit 1
+fi
 
 #
 # Use the PULL host to ensure the correct image:tag
 # is passed into the tests for the deployment to pull from
 #
-BUILD_BUNDLE_LOCAL_IMAGE="${REGISTRY_PULL_HOST}/${IMAGE_NAMESPACE}/camel-k-bundle:${IMAGE_VERSION}"
-echo "Setting build-bundle-local-image to ${BUILD_BUNDLE_LOCAL_IMAGE}"
-echo "::set-output name=build-bundle-local-image::${BUILD_BUNDLE_LOCAL_IMAGE}"
+PULL_BUNDLE_LOCAL_IMAGE="${REGISTRY_PULL_HOST}/${IMAGE_NAMESPACE}/${BUNDLE_IMAGE_BASE_NAME}:${IMAGE_VERSION}"
+echo "Setting build-bundle-local-image to ${PULL_BUNDLE_LOCAL_IMAGE}"
+echo "::set-output name=build-bundle-local-image::${PULL_BUNDLE_LOCAL_IMAGE}"

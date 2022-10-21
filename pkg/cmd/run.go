@@ -34,6 +34,7 @@ import (
 	"io"
 	"io/fs"
 	"io/ioutil"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -59,9 +60,12 @@ import (
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/client"
-	platformutil "github.com/apache/camel-k/pkg/platform"
+	"github.com/apache/camel-k/pkg/cmd/local"
+	"github.com/apache/camel-k/pkg/cmd/source"
+	"github.com/apache/camel-k/pkg/platform"
 	"github.com/apache/camel-k/pkg/trait"
 	"github.com/apache/camel-k/pkg/util"
+	"github.com/apache/camel-k/pkg/util/camel"
 	"github.com/apache/camel-k/pkg/util/defaults"
 	"github.com/apache/camel-k/pkg/util/dsl"
 	"github.com/apache/camel-k/pkg/util/kubernetes"
@@ -73,7 +77,7 @@ import (
 	"github.com/apache/camel-k/pkg/util/watch"
 )
 
-var traitConfigRegexp = regexp.MustCompile(`^([a-z0-9-]+)((?:\.[a-z0-9-]+)(?:\[[0-9]+\]|\.[A-Za-z0-9-_]+)*)=(.*)$`)
+const usageDependency = `A dependency that should be included, e.g., "-d camel:mail" for a Camel component, "-d mvn:org.my:app:1.0" for a Maven dependency, "-d http(s)://my-repo/my-dependency.jar|targetPath=<path>&registry=<registry_URL>&skipChecksums=<true>&skipPOM=<true>" for custom dependencies located on an http server or "file://localPath[?targetPath=<path>&registry=<registry_URL>&skipChecksums=<true>&skipPOM=<true>]" for local files (experimental)`
 
 func newCmdRun(rootCmdOptions *RootCmdOptions) (*cobra.Command, *runCmdOptions) {
 	options := runCmdOptions{
@@ -81,22 +85,24 @@ func newCmdRun(rootCmdOptions *RootCmdOptions) (*cobra.Command, *runCmdOptions) 
 	}
 
 	cmd := cobra.Command{
-		Use:      "run [file to run]",
-		Short:    "Run a integration on Kubernetes",
-		Long:     `Deploys and execute a integration pod on Kubernetes.`,
-		Args:     options.validateArgs,
-		PreRunE:  options.decode,
-		RunE:     options.run,
-		PostRunE: options.postRun,
+		Use:               "run [file to run]",
+		Short:             "Run a integration on Kubernetes",
+		Long:              `Deploys and execute a integration pod on Kubernetes.`,
+		Args:              options.validateArgs,
+		PersistentPreRunE: options.decode,
+		PreRunE:           options.preRunE,
+		RunE:              options.run,
+		PostRunE:          options.postRun,
+		Annotations:       make(map[string]string),
 	}
 
 	cmd.Flags().String("name", "", "The integration name")
 	cmd.Flags().StringArrayP("connect", "c", nil, "A Service that the integration should bind to, specified as [[apigroup/]version:]kind:[namespace/]name")
-	cmd.Flags().StringArrayP("dependency", "d", nil, "A dependency that should be included, e.g., \"-d camel-mail\" for a Camel component, \"-d mvn:org.my:app:1.0\" for a Maven dependency or \"file://localPath[:targetPath]\" for local files (experimental)")
+	cmd.Flags().StringArrayP("dependency", "d", nil, usageDependency)
 	cmd.Flags().BoolP("wait", "w", false, "Wait for the integration to be running")
 	cmd.Flags().StringP("kit", "k", "", "The kit used to run the integration")
-	cmd.Flags().StringArrayP("property", "p", nil, "Add a runtime property or properties file (syntax: [my-key=my-value|file:/path/to/my-conf.properties])")
-	cmd.Flags().StringArray("build-property", nil, "Add a build time property or properties file (syntax: [my-key=my-value|file:/path/to/my-conf.properties])")
+	cmd.Flags().StringArrayP("property", "p", nil, "Add a runtime property or properties file from a path, a config map or a secret (syntax: [my-key=my-value|file:/path/to/my-conf.properties|[configmap|secret]:name])")
+	cmd.Flags().StringArray("build-property", nil, "Add a build time property or properties file from a path, a config map or a secret (syntax: [my-key=my-value|file:/path/to/my-conf.properties|[configmap|secret]:name]])")
 	cmd.Flags().StringArray("config", nil, "Add a runtime configuration from a Configmap, a Secret or a file (syntax: [configmap|secret|file]:name[/key], where name represents the local file path or the configmap/secret name and key optionally represents the configmap/secret key to be filtered)")
 	cmd.Flags().StringArray("resource", nil, "Add a runtime resource from a Configmap, a Secret or a file (syntax: [configmap|secret|file]:name[/key][@path], where name represents the local file path or the configmap/secret name, key optionally represents the configmap/secret key to be filtered and path represents the destination path)")
 	cmd.Flags().StringArray("maven-repository", nil, "Add a maven repository")
@@ -104,6 +110,7 @@ func newCmdRun(rootCmdOptions *RootCmdOptions) (*cobra.Command, *runCmdOptions) 
 	cmd.Flags().Bool("sync", false, "Synchronize the local source file with the cluster, republishing at each change")
 	cmd.Flags().Bool("dev", false, "Enable Dev mode (equivalent to \"-w --logs --sync\")")
 	cmd.Flags().Bool("use-flows", true, "Write yaml sources as Flow objects in the integration custom resource")
+	cmd.Flags().StringP("operator-id", "x", "camel-k", "Operator id selected to manage this integration.")
 	cmd.Flags().String("profile", "", "Trait profile used for deployment")
 	cmd.Flags().StringArrayP("trait", "t", nil, "Configure a trait. E.g. \"-t service.enabled=false\"")
 	cmd.Flags().StringP("output", "o", "", "Output format. One of: json|yaml")
@@ -115,6 +122,7 @@ func newCmdRun(rootCmdOptions *RootCmdOptions) (*cobra.Command, *runCmdOptions) 
 	cmd.Flags().StringArray("label", nil, "Add a label to the integration. E.g. \"--label my.company=hello\"")
 	cmd.Flags().StringArray("source", nil, "Add source file to your integration, this is added to the list of files listed as arguments of the command")
 	cmd.Flags().String("pod-template", "", "The path of the YAML file containing a PodSpec template to be used for the Integration pods")
+	cmd.Flags().Bool("force", false, "Force creation of integration regardless of potential misconfiguration.")
 
 	cmd.Flags().Bool("save", false, "Save the run parameters into the default kamel configuration file (kamel-config.yaml)")
 
@@ -136,6 +144,7 @@ type runCmdOptions struct {
 	IntegrationKit  string   `mapstructure:"kit" yaml:",omitempty"`
 	IntegrationName string   `mapstructure:"name" yaml:",omitempty"`
 	Profile         string   `mapstructure:"profile" yaml:",omitempty"`
+	OperatorID      string   `mapstructure:"operator-id" yaml:",omitempty"`
 	OutputFormat    string   `mapstructure:"output" yaml:",omitempty"`
 	PodTemplate     string   `mapstructure:"pod-template" yaml:",omitempty"`
 	Connects        []string `mapstructure:"connects" yaml:",omitempty"`
@@ -152,6 +161,16 @@ type runCmdOptions struct {
 	Labels          []string `mapstructure:"labels" yaml:",omitempty"`
 	Annotations     []string `mapstructure:"annotations" yaml:",omitempty"`
 	Sources         []string `mapstructure:"sources" yaml:",omitempty"`
+	RegistryOptions url.Values
+	Force           bool `mapstructure:"force" yaml:",omitempty"`
+}
+
+func (o *runCmdOptions) preRunE(cmd *cobra.Command, args []string) error {
+	if o.OutputFormat != "" {
+		// let the command work in offline mode
+		cmd.Annotations[offlineCommandLabel] = "true"
+	}
+	return o.RootCmdOptions.preRun(cmd, args)
 }
 
 func (o *runCmdOptions) decode(cmd *cobra.Command, args []string) error {
@@ -221,7 +240,7 @@ func (o *runCmdOptions) validateArgs(cmd *cobra.Command, args []string) error {
 		return errors.New("run expects at least 1 argument, received 0")
 	}
 
-	if _, err := ResolveSources(context.Background(), args, false, cmd); err != nil {
+	if _, err := source.Resolve(context.Background(), args, false, cmd); err != nil {
 		return errors.Wrap(err, "One of the provided sources is not reachable")
 	}
 
@@ -229,6 +248,10 @@ func (o *runCmdOptions) validateArgs(cmd *cobra.Command, args []string) error {
 }
 
 func (o *runCmdOptions) validate() error {
+	if o.OperatorID == "" {
+		return fmt.Errorf("cannot use empty operator id")
+	}
+
 	for _, volume := range o.Volumes {
 		volumeConfig := strings.Split(volume, ":")
 		if len(volumeConfig) != 2 || len(strings.TrimSpace(volumeConfig[0])) == 0 || len(strings.TrimSpace(volumeConfig[1])) == 0 {
@@ -238,9 +261,13 @@ func (o *runCmdOptions) validate() error {
 
 	propertyFiles := filterBuildPropertyFiles(o.Properties)
 	propertyFiles = append(propertyFiles, filterBuildPropertyFiles(o.BuildProperties)...)
-	err := validatePropertyFiles(propertyFiles)
+	err := local.ValidatePropertyFiles(propertyFiles)
 	if err != nil {
 		return err
+	}
+
+	if o.OutputFormat != "" && o.Dev {
+		return fmt.Errorf("cannot use --dev with -o/--output option")
 	}
 
 	for _, label := range o.Labels {
@@ -290,8 +317,7 @@ func (o *runCmdOptions) run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	catalog := trait.NewCatalog(c)
-	integration, err := o.createOrUpdateIntegration(cmd, c, args, catalog)
+	integration, err := o.createOrUpdateIntegration(cmd, c, args)
 	if err != nil {
 		return err
 	}
@@ -316,7 +342,7 @@ func (o *runCmdOptions) run(cmd *cobra.Command, args []string) error {
 	}
 
 	if o.Sync || o.Dev {
-		err = o.syncIntegration(cmd, c, args, catalog)
+		err = o.syncIntegration(cmd, c, args)
 		if err != nil {
 			return err
 		}
@@ -352,7 +378,7 @@ func (o *runCmdOptions) run(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if o.Logs || o.Dev {
-		err = k8slog.Print(o.Context, cmd, c, integration, cmd.OutOrStdout())
+		err = k8slog.Print(o.Context, cmd, c, integration, nil, cmd.OutOrStdout())
 		if err != nil {
 			return err
 		}
@@ -406,7 +432,7 @@ func (o *runCmdOptions) waitForIntegrationReady(cmd *cobra.Command, c client.Cli
 	return watch.HandleIntegrationStateChanges(o.Context, c, integration, handler)
 }
 
-func (o *runCmdOptions) syncIntegration(cmd *cobra.Command, c client.Client, sources []string, catalog trait.Finder) error {
+func (o *runCmdOptions) syncIntegration(cmd *cobra.Command, c client.Client, sources []string) error {
 	// Let's watch all relevant files when in dev mode
 	var files []string
 	files = append(files, sources...)
@@ -417,7 +443,7 @@ func (o *runCmdOptions) syncIntegration(cmd *cobra.Command, c client.Client, sou
 	files = append(files, filterFileLocation(o.OpenAPIs)...)
 
 	for _, s := range files {
-		ok, err := isLocalAndFileExists(s)
+		ok, err := source.IsLocalAndFileExists(s)
 		if err != nil {
 			return err
 		}
@@ -444,7 +470,7 @@ func (o *runCmdOptions) syncIntegration(cmd *cobra.Command, c client.Client, sou
 						newCmd.Args = o.validateArgs
 						newCmd.PreRunE = o.decode
 						newCmd.RunE = func(cmd *cobra.Command, args []string) error {
-							_, err := o.createOrUpdateIntegration(cmd, c, sources, catalog)
+							_, err := o.createOrUpdateIntegration(cmd, c, sources)
 							return err
 						}
 						newCmd.PostRunE = nil
@@ -467,8 +493,7 @@ func (o *runCmdOptions) syncIntegration(cmd *cobra.Command, c client.Client, sou
 	return nil
 }
 
-// nolint: gocyclo
-func (o *runCmdOptions) createOrUpdateIntegration(cmd *cobra.Command, c client.Client, sources []string, catalog trait.Finder) (*v1.Integration, error) {
+func (o *runCmdOptions) createOrUpdateIntegration(cmd *cobra.Command, c client.Client, sources []string) (*v1.Integration, error) {
 	namespace := o.Namespace
 	name := o.GetIntegrationName(sources)
 
@@ -476,25 +501,8 @@ func (o *runCmdOptions) createOrUpdateIntegration(cmd *cobra.Command, c client.C
 		return nil, errors.New("unable to determine integration name")
 	}
 
-	integration := &v1.Integration{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       v1.IntegrationKind,
-			APIVersion: v1.SchemeGroupVersion.String(),
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespace,
-			Name:      name,
-		},
-	}
-
-	existing := &v1.Integration{}
-	err := c.Get(o.Context, ctrl.ObjectKeyFromObject(integration), existing)
-	switch {
-	case err == nil:
-		integration = existing.DeepCopy()
-	case k8serrors.IsNotFound(err):
-		existing = nil
-	default:
+	integration, existing, err := o.getIntegration(cmd, c, namespace, name)
+	if err != nil {
 		return nil, err
 	}
 
@@ -514,145 +522,33 @@ func (o *runCmdOptions) createOrUpdateIntegration(cmd *cobra.Command, c client.C
 		Profile:        v1.TraitProfileByName(o.Profile),
 	}
 
-	for _, label := range o.Labels {
-		parts := strings.Split(label, "=")
-		if len(parts) == 2 {
-			if integration.Labels == nil {
-				integration.Labels = make(map[string]string)
-			}
-			integration.Labels[parts[0]] = parts[1]
-		}
-	}
+	o.applyLabels(integration)
 
-	for _, annotation := range o.Annotations {
-		parts := strings.SplitN(annotation, "=", 2)
-		if len(parts) == 2 {
-			if integration.Annotations == nil {
-				integration.Annotations = make(map[string]string)
-			}
-			integration.Annotations[parts[0]] = parts[1]
-		}
-	}
-
-	srcs := make([]string, 0, len(sources)+len(o.Sources))
-	srcs = append(srcs, sources...)
-	srcs = append(srcs, o.Sources...)
-
-	resolvedSources, err := ResolveSources(context.Background(), srcs, o.Compression, cmd)
-	if err != nil {
+	if err := o.applyAnnotations(cmd, c, integration); err != nil {
 		return nil, err
 	}
 
-	for _, source := range resolvedSources {
-		if o.UseFlows && !o.Compression && (strings.HasSuffix(source.Name, ".yaml") || strings.HasSuffix(source.Name, ".yml")) {
-			flows, err := dsl.FromYamlDSLString(source.Content)
-			if err != nil {
-				return nil, err
-			}
-			integration.Spec.AddFlows(flows...)
-		} else {
-			integration.Spec.AddSources(v1.SourceSpec{
-				DataSpec: v1.DataSpec{
-					Name:        source.Name,
-					Content:     source.Content,
-					Compression: source.Compress,
-				},
-			})
-		}
-	}
-
-	err = resolvePodTemplate(context.Background(), cmd, o.PodTemplate, &integration.Spec)
-	if err != nil {
+	if err := o.resolveSources(cmd, sources, integration); err != nil {
 		return nil, err
 	}
 
-	err = o.parseAndConvertToTrait(cmd, c, integration, o.Resources, resource.ParseResource, func(c *resource.Config) string { return c.String() }, "mount.resources")
-	if err != nil {
-		return nil, err
-	}
-	err = o.parseAndConvertToTrait(cmd, c, integration, o.Configs, resource.ParseConfig, func(c *resource.Config) string { return c.String() }, "mount.configs")
-	if err != nil {
-		return nil, err
-	}
-	err = o.parseAndConvertToTrait(cmd, c, integration, o.OpenAPIs, resource.ParseConfig, func(c *resource.Config) string { return c.Name() }, "openapi.configmaps")
-	if err != nil {
+	if err := resolvePodTemplate(context.Background(), cmd, o.PodTemplate, &integration.Spec); err != nil {
 		return nil, err
 	}
 
-	var platform *v1.IntegrationPlatform
-	for _, item := range o.Dependencies {
-		// TODO: accept URLs
-		if strings.HasPrefix(item, "file://") {
-			if platform == nil {
-				// let's also enable the registry trait if not explicitly disabled
-				if !contains(o.Traits, "registry.enabled=false") {
-					o.Traits = append(o.Traits, "registry.enabled=true")
-				}
-				platform, err = platformutil.GetOrFindForResource(o.Context, c, integration, true)
-				if err != nil {
-					return nil, err
-				}
-				if platform.Spec.Build.Registry.CA != "" {
-					fmt.Printf("We've noticed the image registry is configured with a custom certificate [%s] \n", platform.Spec.Build.Registry.CA)
-					fmt.Println("Please make sure Kamel CLI is configured to use it or the operation will fail.")
-					fmt.Println("More information can be found here https://nodejs.org/api/cli.html#cli_node_extra_ca_certs_file")
-				}
-				if platform.Spec.Build.Registry.Secret != "" {
-					fmt.Printf("We've noticed the image registry is configured with a Secret [%s] \n", platform.Spec.Build.Registry.Secret)
-					fmt.Println("Please configure Docker authentication correctly or the operation will fail (by default it's $HOME/.docker/config.json).")
-					fmt.Println("More information can be found here https://docs.docker.com/engine/reference/commandline/login/")
-				}
-			}
-			if err := uploadFileOrDirectory(platform, item, name, cmd, integration); err != nil {
-				return nil, errors.Wrap(err, fmt.Sprintf("Error trying to upload %s to the Image Registry.", item))
-			}
-		} else {
-			integration.Spec.AddDependency(item)
-		}
-	}
-
-	props, err := mergePropertiesWithPrecedence(o.Properties)
-	if err != nil {
+	if err := o.convertOptionsToTraits(cmd, c, integration); err != nil {
 		return nil, err
 	}
-	for _, key := range props.Keys() {
-		kv := fmt.Sprintf("%s=%s", key, props.GetString(key, ""))
-		propsTraits, err := convertToTraitParameter(kv, "camel.properties")
-		if err != nil {
-			return nil, err
-		}
-		o.Traits = append(o.Traits, propsTraits...)
-	}
 
-	// convert each build configuration to a builder trait property
-	buildProps, err := mergePropertiesWithPrecedence(o.BuildProperties)
-	if err != nil {
+	if err := o.applyDependencies(cmd, c, integration, name); err != nil {
 		return nil, err
 	}
-	for _, key := range buildProps.Keys() {
-		kv := fmt.Sprintf("%s=%s", key, buildProps.GetString(key, ""))
-		buildPropsTraits, err := convertToTraitParameter(kv, "builder.properties")
-		if err != nil {
-			return nil, err
-		}
-		o.Traits = append(o.Traits, buildPropsTraits...)
-	}
 
-	for _, item := range o.Volumes {
-		o.Traits = append(o.Traits, fmt.Sprintf("mount.volumes=%s", item))
-	}
-	for _, item := range o.EnvVars {
-		o.Traits = append(o.Traits, fmt.Sprintf("environment.vars=%s", item))
-	}
-	for _, item := range o.Connects {
-		o.Traits = append(o.Traits, fmt.Sprintf("service-binding.services=%s", item))
-	}
 	if len(o.Traits) > 0 {
-		traits, err := configureTraits(o.Traits, catalog)
-		if err != nil {
+		catalog := trait.NewCatalog(c)
+		if err := configureTraits(o.Traits, &integration.Spec.Traits, catalog); err != nil {
 			return nil, err
 		}
-		integration.Spec.Traits = traits
 	}
 
 	if o.OutputFormat != "" {
@@ -682,6 +578,143 @@ func showIntegrationOutput(cmd *cobra.Command, integration *v1.Integration, outp
 	return printer.PrintObj(integration, cmd.OutOrStdout())
 }
 
+func (o *runCmdOptions) getIntegration(cmd *cobra.Command, c client.Client, namespace, name string) (*v1.Integration, *v1.Integration, error) {
+	it := &v1.Integration{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       v1.IntegrationKind,
+			APIVersion: v1.SchemeGroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      name,
+		},
+	}
+
+	existing := &v1.Integration{}
+	if !isOfflineCommand(cmd) {
+		err := c.Get(o.Context, ctrl.ObjectKeyFromObject(it), existing)
+		switch {
+		case err == nil:
+			it = existing.DeepCopy()
+		case k8serrors.IsNotFound(err):
+			existing = nil
+		default:
+			return nil, nil, err
+		}
+	}
+
+	return it, existing, nil
+}
+
+func (o *runCmdOptions) applyLabels(it *v1.Integration) {
+	for _, label := range o.Labels {
+		parts := strings.Split(label, "=")
+		if len(parts) == 2 {
+			if it.Labels == nil {
+				it.Labels = make(map[string]string)
+			}
+			it.Labels[parts[0]] = parts[1]
+		}
+	}
+}
+
+func (o *runCmdOptions) applyAnnotations(cmd *cobra.Command, c client.Client, it *v1.Integration) error {
+	if it.Annotations == nil {
+		it.Annotations = make(map[string]string)
+	}
+
+	if !isOfflineCommand(cmd) && o.OperatorID != "" {
+		if err := verifyOperatorID(o.Context, c, o.OperatorID, cmd.OutOrStdout()); err != nil {
+			if o.Force {
+				o.PrintfVerboseErrf(cmd, "%s, use --force option or make sure to use a proper operator id", err.Error())
+			} else {
+				return err
+			}
+		}
+	}
+
+	// --operator-id={id} is a syntax sugar for '--annotation camel.apache.org/operator.id={id}'
+	it.SetOperatorID(strings.TrimSpace(o.OperatorID))
+
+	for _, annotation := range o.Annotations {
+		parts := strings.SplitN(annotation, "=", 2)
+		if len(parts) == 2 {
+			it.Annotations[parts[0]] = parts[1]
+		}
+	}
+
+	return nil
+}
+
+func (o *runCmdOptions) resolveSources(cmd *cobra.Command, sources []string, it *v1.Integration) error {
+	srcs := make([]string, 0, len(sources)+len(o.Sources))
+	srcs = append(srcs, sources...)
+	srcs = append(srcs, o.Sources...)
+
+	resolvedSources, err := source.Resolve(context.Background(), srcs, o.Compression, cmd)
+	if err != nil {
+		return err
+	}
+
+	for _, source := range resolvedSources {
+		if o.UseFlows && !o.Compression && source.IsYaml() {
+			flows, err := dsl.FromYamlDSLString(source.Content)
+			if err != nil {
+				return err
+			}
+			it.Spec.AddFlows(flows...)
+		} else {
+			it.Spec.AddSources(v1.SourceSpec{
+				DataSpec: v1.DataSpec{
+					Name:        source.Name,
+					Content:     source.Content,
+					Compression: source.Compress,
+				},
+			})
+		}
+	}
+
+	return nil
+}
+
+func (o *runCmdOptions) convertOptionsToTraits(cmd *cobra.Command, c client.Client, it *v1.Integration) error {
+	if err := o.parseAndConvertToTrait(cmd, c, it, o.Resources, resource.ParseResource,
+		func(c *resource.Config) string { return c.String() },
+		"mount.resources"); err != nil {
+		return err
+	}
+	if err := o.parseAndConvertToTrait(cmd, c, it, o.Configs, resource.ParseConfig,
+		func(c *resource.Config) string { return c.String() },
+		"mount.configs"); err != nil {
+		return err
+	}
+	if err := o.parseAndConvertToTrait(cmd, c, it, o.OpenAPIs, resource.ParseConfig,
+		func(c *resource.Config) string { return c.Name() },
+		"openapi.configmaps"); err != nil {
+		return err
+	}
+
+	if err := o.applyProperties(c); err != nil {
+		return err
+	}
+
+	if err := o.applyBuildProperties(c); err != nil {
+		return err
+	}
+
+	for _, item := range o.Volumes {
+		o.Traits = append(o.Traits, fmt.Sprintf("mount.volumes=%s", item))
+	}
+	for _, item := range o.EnvVars {
+		o.Traits = append(o.Traits, fmt.Sprintf("environment.vars=%s", item))
+	}
+	for _, item := range o.Connects {
+		o.Traits = append(o.Traits, fmt.Sprintf("service-binding.services=%s", item))
+	}
+
+	return nil
+}
+
 func (o *runCmdOptions) parseAndConvertToTrait(cmd *cobra.Command,
 	c client.Client, integration *v1.Integration, params []string,
 	parse func(string) (*resource.Config, error),
@@ -693,8 +726,7 @@ func (o *runCmdOptions) parseAndConvertToTrait(cmd *cobra.Command,
 			return err
 		}
 		// We try to autogenerate a configmap
-		_, err = parseConfigAndGenCm(o.Context, cmd, c, config, integration, o.Compression)
-		if err != nil {
+		if _, err := parseConfigAndGenCm(o.Context, cmd, c, config, integration, o.Compression); err != nil {
 			return err
 		}
 		o.Traits = append(o.Traits, convertToTrait(convert(config), traitParam))
@@ -706,9 +738,44 @@ func convertToTrait(value, traitParameter string) string {
 	return fmt.Sprintf("%s=%s", traitParameter, value)
 }
 
-func convertToTraitParameter(value, traitParameter string) ([]string, error) {
+func (o *runCmdOptions) applyProperties(c client.Client) error {
+	props, err := o.mergePropertiesWithPrecedence(c, o.Properties)
+	if err != nil {
+		return err
+	}
+	for _, key := range props.Keys() {
+		kv := fmt.Sprintf("%s=%s", key, props.GetString(key, ""))
+		propsTraits, err := o.convertToTraitParameter(c, kv, "camel.properties")
+		if err != nil {
+			return err
+		}
+		o.Traits = append(o.Traits, propsTraits...)
+	}
+
+	return nil
+}
+
+func (o *runCmdOptions) applyBuildProperties(c client.Client) error {
+	// convert each build configuration to a builder trait property
+	buildProps, err := o.mergePropertiesWithPrecedence(c, o.BuildProperties)
+	if err != nil {
+		return err
+	}
+	for _, key := range buildProps.Keys() {
+		kv := fmt.Sprintf("%s=%s", key, buildProps.GetString(key, ""))
+		buildPropsTraits, err := o.convertToTraitParameter(c, kv, "builder.properties")
+		if err != nil {
+			return err
+		}
+		o.Traits = append(o.Traits, buildPropsTraits...)
+	}
+
+	return nil
+}
+
+func (o *runCmdOptions) convertToTraitParameter(c client.Client, value, traitParameter string) ([]string, error) {
 	traits := make([]string, 0)
-	props, err := extractProperties(value)
+	props, err := o.extractProperties(c, value)
 	if err != nil {
 		return nil, err
 	}
@@ -728,6 +795,64 @@ func convertToTraitParameter(value, traitParameter string) ([]string, error) {
 	return traits, nil
 }
 
+func (o *runCmdOptions) applyDependencies(cmd *cobra.Command, c client.Client, it *v1.Integration, name string) error {
+	var platform *v1.IntegrationPlatform
+	var catalog *camel.RuntimeCatalog
+	for _, item := range o.Dependencies {
+		if strings.HasPrefix(item, "file://") || strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
+			if platform == nil {
+				var err error
+				platform, err = o.getPlatform(cmd, c, it)
+				if err != nil {
+					return err
+				}
+			}
+			if err := o.uploadDependency(platform, item, name, cmd, it); err != nil {
+				return errors.Wrap(err, fmt.Sprintf("Error trying to upload %s to the Image Registry.", item))
+			}
+		} else {
+			if catalog == nil {
+				// The catalog used for lightweight validation of Camel components.
+				// The exact runtime version is not used here since resolving the runtime version may be
+				// a costly operation and most of the use cases should be covered by the default catalog.
+				// And the validation only warns potential misusages of Camel components at the CLI level,
+				// so strictness of catalog version is not necessary here.
+				var err error
+				catalog, err = local.CreateCamelCatalog(o.Context)
+				if err != nil {
+					return err
+				}
+			}
+			addDependency(cmd, it, item, catalog)
+		}
+	}
+
+	return nil
+}
+
+func (o *runCmdOptions) getPlatform(cmd *cobra.Command, c client.Client, it *v1.Integration) (*v1.IntegrationPlatform, error) {
+	// let's also enable the registry trait if not explicitly disabled
+	if !contains(o.Traits, "registry.enabled=false") {
+		o.Traits = append(o.Traits, "registry.enabled=true")
+	}
+	pl, err := platform.GetOrFindForResource(o.Context, c, it, true)
+	if err != nil {
+		return nil, err
+	}
+	if ca := pl.Status.Build.Registry.CA; ca != "" {
+		o.PrintfVerboseOutf(cmd, "We've noticed the image registry is configured with a custom certificate [%s] \n", ca)
+		o.PrintVerboseOut(cmd, "Please make sure Kamel CLI is configured to use it or the operation will fail.")
+		o.PrintVerboseOut(cmd, "More information can be found here https://nodejs.org/api/cli.html#cli_node_extra_ca_certs_file")
+	}
+	if secret := pl.Status.Build.Registry.Secret; secret != "" {
+		o.PrintfVerboseOutf(cmd, "We've noticed the image registry is configured with a Secret [%s] \n", secret)
+		o.PrintVerboseOut(cmd, "Please configure Docker authentication correctly or the operation will fail (by default it's $HOME/.docker/config.json).")
+		o.PrintVerboseOut(cmd, "More information can be found here https://docs.docker.com/engine/reference/commandline/login/")
+	}
+
+	return pl, nil
+}
+
 func (o *runCmdOptions) GetIntegrationName(sources []string) string {
 	name := ""
 	if o.IntegrationName != "" {
@@ -737,6 +862,43 @@ func (o *runCmdOptions) GetIntegrationName(sources []string) string {
 		name = kubernetes.SanitizeName(sources[0])
 	}
 	return name
+}
+
+func (o *runCmdOptions) mergePropertiesWithPrecedence(c client.Client, items []string) (*properties.Properties, error) {
+	loPrecedenceProps := properties.NewProperties()
+	hiPrecedenceProps := properties.NewProperties()
+	for _, item := range items {
+		prop, err := o.extractProperties(c, item)
+		if err != nil {
+			return nil, err
+		}
+		// We consider file, secret and config map props to have a lower priority versus single properties
+		if strings.HasPrefix(item, "file:") || strings.HasPrefix(item, "secret:") || strings.HasPrefix(item, "configmap:") {
+			loPrecedenceProps.Merge(prop)
+		} else {
+			hiPrecedenceProps.Merge(prop)
+		}
+	}
+	// Any property contained in both collections will be merged
+	// giving precedence to the ones in hiPrecedenceProps
+	loPrecedenceProps.Merge(hiPrecedenceProps)
+	return loPrecedenceProps, nil
+}
+
+// The function parse the value and if it is a file (file:/path/), it will parse as property file
+// otherwise return a single property built from the item passed as `key=value`.
+func (o *runCmdOptions) extractProperties(c client.Client, value string) (*properties.Properties, error) {
+	switch {
+	case strings.HasPrefix(value, "file:"):
+		// we already validated the existence of files during validate()
+		return loadPropertyFile(strings.Replace(value, "file:", "", 1))
+	case strings.HasPrefix(value, "secret:"):
+		return loadPropertiesFromSecret(o.Context, c, o.Namespace, strings.Replace(value, "secret:", "", 1))
+	case strings.HasPrefix(value, "configmap:"):
+		return loadPropertiesFromConfigMap(o.Context, c, o.Namespace, strings.Replace(value, "configmap:", "", 1))
+	default:
+		return keyValueProps(value)
+	}
 }
 
 func loadPropertyFile(fileName string) (*properties.Properties, error) {
@@ -751,7 +913,7 @@ func loadPropertyFile(fileName string) (*properties.Properties, error) {
 	return p, nil
 }
 
-func resolvePodTemplate(ctx context.Context, cmd *cobra.Command, templateSrc string, spec *v1.IntegrationSpec) (err error) {
+func resolvePodTemplate(ctx context.Context, cmd *cobra.Command, templateSrc string, spec *v1.IntegrationSpec) error {
 	// check if template is set
 	if templateSrc == "" {
 		return nil
@@ -760,7 +922,7 @@ func resolvePodTemplate(ctx context.Context, cmd *cobra.Command, templateSrc str
 
 	// check if value is a path to the file
 	if _, err := os.Stat(templateSrc); err == nil {
-		rsc, err := ResolveSources(ctx, []string{templateSrc}, false, cmd)
+		rsc, err := source.Resolve(ctx, []string{templateSrc}, false, cmd)
 		if err == nil && len(rsc) > 0 {
 			templateSrc = rsc[0].Content
 		}
@@ -782,15 +944,73 @@ func resolvePodTemplate(ctx context.Context, cmd *cobra.Command, templateSrc str
 	return err
 }
 
-func uploadFileOrDirectory(platform *v1.IntegrationPlatform, item string, integrationName string, cmd *cobra.Command, integration *v1.Integration) error {
-	path := strings.TrimPrefix(item, "file://")
-	localPath := path
-	targetPath := ""
-	if i := strings.Index(path, ":"); i > 0 {
-		targetPath = path[i+1:]
-		localPath = path[:i]
+func parseFileURI(uri string) *url.URL {
+	file := new(url.URL)
+	file.Scheme = "file"
+	path := strings.TrimPrefix(uri, "file://")
+	i := strings.IndexByte(path, '?')
+	if i > 0 {
+		file.Path = path[:i]
+		file.RawQuery = path[i+1:]
+	} else {
+		file.Path = path
 	}
-	options := getSpectrumOptions(platform, cmd)
+	return file
+}
+
+func (o *runCmdOptions) getRegistry(platform *v1.IntegrationPlatform) string {
+	registry := o.RegistryOptions.Get("registry")
+	if registry != "" {
+		return registry
+	}
+	return platform.Status.Build.Registry.Address
+}
+
+func (o *runCmdOptions) skipChecksums() bool {
+	return o.RegistryOptions.Get("skipChecksums") == "true"
+}
+
+func (o *runCmdOptions) skipPom() bool {
+	return o.RegistryOptions.Get("skipPOM") == "true"
+}
+
+func (o *runCmdOptions) getTargetPath() string {
+	return o.RegistryOptions.Get("targetPath")
+}
+
+func (o *runCmdOptions) uploadDependency(platform *v1.IntegrationPlatform, item string, integrationName string, cmd *cobra.Command, integration *v1.Integration) error {
+	var localPath string
+	if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
+		idx := strings.LastIndex(item, "|")
+		var depURL string
+		if idx == -1 {
+			depURL = item
+			o.RegistryOptions = make(url.Values)
+		} else {
+			query := item[idx+1:]
+			options, err := url.ParseQuery(query)
+			if err != nil {
+				return errors.Wrap(err, fmt.Sprintf("invalid http dependency options %s", query))
+			}
+			o.RegistryOptions = options
+			depURL = item[:idx]
+		}
+
+		uri, err := url.Parse(depURL)
+		if err != nil {
+			return errors.Wrap(err, fmt.Sprintf("invalid http dependency url %s", depURL))
+		} else if localPath, err = downloadDependency(o.Context, *uri); err != nil {
+			return errors.Wrap(err, fmt.Sprintf("could not download http dependency %s", depURL))
+		}
+		// Remove the temporary file
+		defer os.Remove(localPath)
+	} else {
+		uri := parseFileURI(item)
+		o.RegistryOptions = uri.Query()
+		localPath = uri.Path
+	}
+	targetPath := o.getTargetPath()
+	options := o.getSpectrumOptions(platform, cmd)
 	dirName, err := getDirName(localPath)
 	if err != nil {
 		return err
@@ -812,25 +1032,25 @@ func uploadFileOrDirectory(platform *v1.IntegrationPlatform, item string, integr
 		switch {
 		case isPom(path):
 			gav := extractGavFromPom(path, gav)
-			return uploadAsMavenArtifact(gav, path, platform, integration.Namespace, options)
+			return o.uploadAsMavenArtifact(gav, path, platform, integration.Namespace, options, cmd)
 		case isJar(path):
 			// Try to upload pom in JAR and extract it's GAV
-			gav = uploadPomFromJar(gav, path, platform, integration.Namespace, options)
+			gav = o.uploadPomFromJar(gav, path, platform, integration.Namespace, options, cmd)
 			// add JAR to dependency list
 			dependency := fmt.Sprintf("mvn:%s:%s:%s:%s", gav.GroupID, gav.ArtifactID, gav.Type, gav.Version)
-			fmt.Printf("Added %s to the Integration's dependency list \n", dependency)
+			o.PrintfVerboseOutf(cmd, "Added %s to the Integration's dependency list \n", dependency)
 			integration.Spec.AddDependency(dependency)
 			// Upload JAR
-			return uploadAsMavenArtifact(gav, path, platform, integration.Namespace, options)
+			return o.uploadAsMavenArtifact(gav, path, platform, integration.Namespace, options, cmd)
 		default:
 			mountPath, err := getMountPath(targetPath, dirName, path)
 			if err != nil {
 				return err
 			}
 			dependency := fmt.Sprintf("registry-mvn:%s:%s:%s:%s@%s", gav.GroupID, gav.ArtifactID, gav.Type, gav.Version, mountPath)
-			fmt.Printf("Added %s to the Integration's dependency list \n", dependency)
+			o.PrintfVerboseOutf(cmd, "Added %s to the Integration's dependency list \n", dependency)
 			integration.Spec.AddDependency(dependency)
-			return uploadAsMavenArtifact(gav, path, platform, integration.Namespace, options)
+			return o.uploadAsMavenArtifact(gav, path, platform, integration.Namespace, options, cmd)
 		}
 	})
 }
@@ -849,9 +1069,8 @@ func getMountPath(targetPath string, dirName string, path string) (string, error
 	return filepath.Join(targetPath, localRelativePath), nil
 }
 
-// nolint:errcheck
-func uploadPomFromJar(gav maven.Dependency, path string, platform *v1.IntegrationPlatform, ns string, options spectrum.Options) maven.Dependency {
-	util.WithTempDir("camel-k", func(tmpDir string) error {
+func (o *runCmdOptions) uploadPomFromJar(gav maven.Dependency, path string, platform *v1.IntegrationPlatform, ns string, options spectrum.Options, cmd *cobra.Command) maven.Dependency {
+	_ = util.WithTempDir("camel-k", func(tmpDir string) error {
 		pomPath := filepath.Join(tmpDir, "pom.xml")
 		jar, err := zip.OpenReader(path)
 		if err != nil {
@@ -869,7 +1088,7 @@ func uploadPomFromJar(gav maven.Dependency, path string, platform *v1.Integratio
 				pomExtracted = extractFromZip(pomPath, f)
 			} else if regPomProperties.MatchString(f.Name) {
 				foundProperties = true
-				if dep, ok := extractGav(f, path); ok {
+				if dep, ok := o.extractGav(f, path, cmd); ok {
 					gav = dep
 				}
 			}
@@ -878,9 +1097,13 @@ func uploadPomFromJar(gav maven.Dependency, path string, platform *v1.Integratio
 			}
 		}
 		if pomExtracted {
-			gav.Type = "pom"
-			// Swallow error as this is not a mandatory step
-			uploadAsMavenArtifact(gav, pomPath, platform, ns, options)
+			if o.skipPom() {
+				o.PrintfVerboseOutf(cmd, "Skipping uploading extracted POM from %s \n", path)
+			} else {
+				gav.Type = "pom"
+				// Swallow error as this is not a mandatory step
+				_ = o.uploadAsMavenArtifact(gav, pomPath, platform, ns, options, cmd)
+			}
 		}
 		return nil
 	})
@@ -905,7 +1128,7 @@ func extractFromZip(dst string, src *zip.File) bool {
 	return err == nil
 }
 
-func extractGav(src *zip.File, localPath string) (maven.Dependency, bool) {
+func (o *runCmdOptions) extractGav(src *zip.File, localPath string, cmd *cobra.Command) (maven.Dependency, bool) {
 	rc, err := src.Open()
 	if err != nil {
 		return maven.Dependency{}, false
@@ -913,28 +1136,28 @@ func extractGav(src *zip.File, localPath string) (maven.Dependency, bool) {
 	defer rc.Close()
 	data, err := ioutil.ReadAll(rc)
 	if err != nil {
-		fmt.Printf("Error while reading pom.properties from [%s], switching to default: \n %s err \n", localPath, err)
+		o.PrintfVerboseErrf(cmd, "Error while reading pom.properties from [%s], switching to default: \n %s err \n", localPath, err)
 		return maven.Dependency{}, false
 	}
 	prop, err := properties.Load(data, properties.UTF8)
 	if err != nil {
-		fmt.Printf("Error while reading pom.properties from [%s], switching to default: \n %s err \n", localPath, err)
+		o.PrintfVerboseErrf(cmd, "Error while reading pom.properties from [%s], switching to default: \n %s err \n", localPath, err)
 		return maven.Dependency{}, false
 	}
 
 	groupID, ok := prop.Get("groupId")
 	if !ok {
-		fmt.Printf("Couldn't find groupId property while reading pom.properties from [%s], switching to default \n", localPath)
+		o.PrintfVerboseErrf(cmd, "Couldn't find groupId property while reading pom.properties from [%s], switching to default \n", localPath)
 		return maven.Dependency{}, false
 	}
 	artifactID, ok := prop.Get("artifactId")
 	if !ok {
-		fmt.Printf("Couldn't find artifactId property while reading pom.properties from [%s], switching to default \n", localPath)
+		o.PrintfVerboseErrf(cmd, "Couldn't find artifactId property while reading pom.properties from [%s], switching to default \n", localPath)
 		return maven.Dependency{}, false
 	}
 	version, ok := prop.Get("version")
 	if !ok {
-		fmt.Printf("Couldn't find version property while reading pom.properties from [%s], switching to default \n", localPath)
+		o.PrintfVerboseErrf(cmd, "Couldn't find version property while reading pom.properties from [%s], switching to default \n", localPath)
 		return maven.Dependency{}, false
 	}
 	return maven.Dependency{
@@ -945,15 +1168,19 @@ func extractGav(src *zip.File, localPath string) (maven.Dependency, bool) {
 	}, true
 }
 
-func uploadAsMavenArtifact(dependency maven.Dependency, path string, platform *v1.IntegrationPlatform, ns string, options spectrum.Options) error {
+func (o *runCmdOptions) uploadAsMavenArtifact(dependency maven.Dependency, path string, platform *v1.IntegrationPlatform, ns string, options spectrum.Options, cmd *cobra.Command) error {
 	artifactHTTPPath := getArtifactHTTPPath(dependency, platform, ns)
-	options.Target = fmt.Sprintf("%s/%s:%s", platform.Spec.Build.Registry.Address, artifactHTTPPath, dependency.Version)
+	options.Target = fmt.Sprintf("%s/%s:%s", o.getRegistry(platform), artifactHTTPPath, dependency.Version)
 	_, err := spectrum.Build(options, fmt.Sprintf("%s:.", path))
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Uploaded: %s to %s \n", path, options.Target)
-	return uploadChecksumFiles(path, options, platform, artifactHTTPPath, dependency)
+	o.PrintfVerboseOutf(cmd, "Uploaded: %s to %s \n", path, options.Target)
+	if o.skipChecksums() {
+		o.PrintfVerboseOutf(cmd, "Skipping generating and uploading checksum files for %s \n", path)
+		return nil
+	}
+	return o.uploadChecksumFiles(path, options, platform, artifactHTTPPath, dependency)
 }
 
 // Currently swallows errors because our Project model is incomplete.
@@ -984,18 +1211,18 @@ func extractGavFromPom(path string, gav maven.Dependency) maven.Dependency {
 	return gav
 }
 
-func uploadChecksumFiles(path string, options spectrum.Options, platform *v1.IntegrationPlatform, artifactHTTPPath string, dependency maven.Dependency) error {
+func (o *runCmdOptions) uploadChecksumFiles(path string, options spectrum.Options, platform *v1.IntegrationPlatform, artifactHTTPPath string, dependency maven.Dependency) error {
 	return util.WithTempDir("camel-k", func(tmpDir string) error {
 		// #nosec G401
-		if err := uploadChecksumFile(md5.New(), tmpDir, "_md5", path, options, platform, artifactHTTPPath, dependency); err != nil {
+		if err := o.uploadChecksumFile(md5.New(), tmpDir, "_md5", path, options, platform, artifactHTTPPath, dependency); err != nil {
 			return err
 		}
 		// #nosec G401
-		return uploadChecksumFile(sha1.New(), tmpDir, "_sha1", path, options, platform, artifactHTTPPath, dependency)
+		return o.uploadChecksumFile(sha1.New(), tmpDir, "_sha1", path, options, platform, artifactHTTPPath, dependency)
 	})
 }
 
-func uploadChecksumFile(hash hash.Hash, tmpDir string, ext string, path string, options spectrum.Options, platform *v1.IntegrationPlatform, artifactHTTPPath string, dependency maven.Dependency) error {
+func (o *runCmdOptions) uploadChecksumFile(hash hash.Hash, tmpDir string, ext string, path string, options spectrum.Options, platform *v1.IntegrationPlatform, artifactHTTPPath string, dependency maven.Dependency) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -1012,7 +1239,7 @@ func uploadChecksumFile(hash hash.Hash, tmpDir string, ext string, path string, 
 	if err = writeChecksumToFile(filepath, hash); err != nil {
 		return err
 	}
-	options.Target = fmt.Sprintf("%s/%s%s:%s", platform.Spec.Build.Registry.Address, artifactHTTPPath, ext, dependency.Version)
+	options.Target = fmt.Sprintf("%s/%s%s:%s", o.getRegistry(platform), artifactHTTPPath, ext, dependency.Version)
 	_, err = spectrum.Build(options, fmt.Sprintf("%s:.", filepath))
 	return err
 }
@@ -1028,15 +1255,19 @@ func writeChecksumToFile(filepath string, hash hash.Hash) error {
 	return err
 }
 
-func getSpectrumOptions(platform *v1.IntegrationPlatform, cmd *cobra.Command) spectrum.Options {
-	insecure := platform.Spec.Build.Registry.Insecure
+func (o *runCmdOptions) getSpectrumOptions(platform *v1.IntegrationPlatform, cmd *cobra.Command) spectrum.Options {
+	insecure := platform.Status.Build.Registry.Insecure
+	var stdout io.Writer
+	if o.Verbose {
+		stdout = cmd.OutOrStdout()
+	}
 	options := spectrum.Options{
 		PullInsecure:  true,
 		PushInsecure:  insecure,
 		PullConfigDir: "",
 		PushConfigDir: "",
 		Base:          "",
-		Stdout:        cmd.OutOrStdout(),
+		Stdout:        stdout,
 		Stderr:        cmd.OutOrStderr(),
 		Recursive:     false,
 	}
@@ -1050,11 +1281,11 @@ func getArtifactHTTPPath(dependency maven.Dependency, platform *v1.IntegrationPl
 	// Some vendors don't allow '/' or '.' in repository name so let's replace them with '_'
 	artifactHTTPPath = strings.ReplaceAll(artifactHTTPPath, "/", "_")
 	artifactHTTPPath = strings.ReplaceAll(artifactHTTPPath, ".", "_")
-	if platform.Spec.Cluster == v1.IntegrationPlatformClusterOpenShift {
-		// image must be uploaded in the namespace
-		artifactHTTPPath = fmt.Sprintf("%s/%s", ns, artifactHTTPPath)
+	organization := platform.Status.Build.Registry.Organization
+	if organization == "" {
+		organization = ns
 	}
-	return artifactHTTPPath
+	return fmt.Sprintf("%s/%s", organization, artifactHTTPPath)
 }
 
 func createDefaultGav(path string, dirName string, integrationName string) (maven.Dependency, error) {

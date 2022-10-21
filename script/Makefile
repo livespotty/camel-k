@@ -14,20 +14,21 @@
 # limitations under the License.
 
 VERSIONFILE := pkg/util/defaults/defaults.go
-VERSION ?= 1.9.0-SNAPSHOT
-OPERATOR_VERSION := $(subst -SNAPSHOT,,$(VERSION))
+VERSION ?= 1.11.0-SNAPSHOT
 LAST_RELEASED_IMAGE_NAME := camel-k-operator
-LAST_RELEASED_VERSION := 1.8.2
-RUNTIME_VERSION := 1.13.0
-BUILDAH_VERSION := 1.14.0
+LAST_RELEASED_VERSION ?= 1.10.1
+RUNTIME_VERSION := 1.14.0
+BUILDAH_VERSION := 1.23.3
 KANIKO_VERSION := 0.17.1
 INSTALL_DEFAULT_KAMELETS := true
-CONTROLLER_GEN_VERSION := v0.4.1
-OPERATOR_SDK_VERSION := v1.14.0
+CONTROLLER_GEN_VERSION := v0.6.1
+CODEGEN_VERSION := v0.23.5
+OPERATOR_SDK_VERSION := v1.16.0
 KUSTOMIZE_VERSION := v4.1.2
-BASE_IMAGE := adoptopenjdk/openjdk11:slim
+OPM_VERSION := v1.24.0
+BASE_IMAGE := docker.io/adoptopenjdk/openjdk11:slim
 LOCAL_REPOSITORY := /tmp/artifacts/m2
-IMAGE_NAME := docker.io/apache/camel-k
+IMAGE_NAME ?= docker.io/apache/camel-k
 
 #
 # Situations when user wants to override
@@ -38,35 +39,55 @@ IMAGE_NAME := docker.io/apache/camel-k
 #
 CUSTOM_IMAGE ?= $(IMAGE_NAME)
 CUSTOM_VERSION ?= $(VERSION)
+OPERATOR_VERSION := $(subst -SNAPSHOT,,$(CUSTOM_VERSION))
 
 METADATA_IMAGE_NAME := $(CUSTOM_IMAGE)-metadata
 BUNDLE_IMAGE_NAME ?= $(CUSTOM_IMAGE)-bundle
 RELEASE_GIT_REMOTE := origin
-GIT_COMMIT := $(shell git rev-list -1 HEAD)
+GIT_COMMIT := $(shell if [ -d .git ]; then git rev-list -1 HEAD; else echo "$(CUSTOM_VERSION)"; fi)
 LINT_GOGC := 10
 LINT_DEADLINE := 10m
 
 
 # olm bundle vars
-CHANNELS ?= $(OPERATOR_VERSION),candidate,stable,latest
-DEFAULT_CHANNEL ?= $(OPERATOR_VERSION)
+MANAGER := config/manager
+MANIFESTS := config/manifests
+CHANNELS ?= $(shell v=$(OPERATOR_VERSION) && echo "stable-$${v%\.[0-9]}"),candidate,latest
+DEFAULT_CHANNEL ?= $(shell v=$(OPERATOR_VERSION) && echo "stable-$${v%\.[0-9]}")
 PACKAGE := camel-k
-CSV_VERSION := $(CUSTOM_VERSION:-SNAPSHOT=)
+CSV_VERSION := $(OPERATOR_VERSION)
+CSV_NAME := $(PACKAGE).v$(CSV_VERSION)
+# Final CSV name that replaces the name required by the operator-sdk
+# Has to be replaced after the bundle has been generated
+CSV_PRODUCTION_NAME := $(LAST_RELEASED_IMAGE_NAME).v$(CSV_VERSION)
 CSV_DISPLAY_NAME := Camel K Operator
 CSV_SUPPORT := Camel
 CSV_REPLACES := $(LAST_RELEASED_IMAGE_NAME).v$(LAST_RELEASED_VERSION)
 CSV_FILENAME := $(PACKAGE).clusterserviceversion.yaml
-CSV_PATH := config/manifests/bases/$(CSV_FILENAME)
+CSV_PATH := $(MANIFESTS)/bases/$(CSV_FILENAME)
+CSV_PRODUCTION_PATH := bundle/manifests/$(CSV_FILENAME)
+
+# Test Bundle Index
+BUNDLE_INDEX := quay.io/operatorhubio/catalog:latest
+INDEX_DIR := index
+OPM := opm
 
 # Used to push pre-release artifacts
 STAGING_IMAGE_NAME := docker.io/camelk/camel-k
 
-STAGING_RUNTIME_REPO := https://repository.apache.org/content/repositories/orgapachecamel-1425
+STAGING_RUNTIME_REPO :=
 
 # Define here the repo containing the default Kamelet catalog (if any)
 KAMELET_CATALOG_REPO := https://github.com/apache/camel-kamelets.git
 # Optional branch for the default Kamelet catalog (change this to a tag before release)
-KAMELET_CATALOG_REPO_BRANCH := v0.8.0
+KAMELET_CATALOG_REPO_BRANCH := v0.9.0
+
+# When performing integration tests, it is not necessary to always execute build, especially
+# in e2e tests when lots of tests are being executed sequentially & the build has already taken place.
+# In this case, if DO_TEST_PREBUILD is set to false then TEST_PREBUILD will be set to blank
+# and those rules with a dependency on the build rule will no longer call it (see do-build)
+DO_TEST_PREBUILD ?= true
+TEST_PREBUILD = build
 
 # OLM (Operator Lifecycle Manager and Operator Hub): uncomment to override operator settings at build time
 #GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/olm.DefaultOperatorName=camel-k-operator
@@ -111,7 +132,14 @@ limitations under the License.
 endef
 
 export LICENSE_HEADER
-default: test
+default: build
+
+bump-replace:
+	@# Bump version and replace with the variables provided by the user
+	@sed -i 's/^VERSION ?= .*$//VERSION ?= $(VERSION)/' ./script/Makefile
+	@sed -i 's/^LAST_RELEASED_VERSION ?= .*$//LAST_RELEASED_VERSION ?= $(LAST_RELEASED_VERSION)/' ./script/Makefile
+
+bump: bump-replace codegen bundle
 
 # Generates the version file
 codegen:
@@ -158,84 +186,137 @@ codegen:
 
 	gofmt -w pkg/util/defaults/defaults.go
 
-generate: generate-deepcopy generate-crd generate-client generate-doc generate-keda generate-strimzi
-
-generate-client:
+generate: codegen-tools-install
+	@# We better force the developer to generate all the resources everytime as
+	@# it happens we tend to forget some code generation in the past
 	./script/gen_client.sh
-
-generate-crd: controller-gen
-	CONTROLLER_GEN=$(CONTROLLER_GEN) ./script/gen_crd.sh
-
-generate-doc:
+	./script/gen_crd.sh
 	./script/gen_doc.sh
-
-generate-deepcopy: controller-gen
 	cd pkg/apis/camel && $(CONTROLLER_GEN) paths="./..." object
-
-generate-keda:
 	cd addons/keda/duck && $(CONTROLLER_GEN) paths="./..." object
-
-generate-strimzi:
 	cd addons/strimzi/duck && $(CONTROLLER_GEN) paths="./..." object
 	./script/gen_client_strimzi.sh
 
-build: build-resources build-kamel build-compile-integration-tests build-submodules
+codegen-tools-install: controller-gen
+	@# We must force the installation to make sure we are using the correct version
+	@# Note: as there is no --version in the tools, we cannot rely on cached local versions
+	@echo "Installing k8s.io/code-generator tools with version $(CODEGEN_VERSION)"
+	go install k8s.io/code-generator/cmd/client-gen@$(CODEGEN_VERSION)
+	go install k8s.io/code-generator/cmd/lister-gen@$(CODEGEN_VERSION)
+	go install k8s.io/code-generator/cmd/informer-gen@$(CODEGEN_VERSION)
 
-test: build
+build: build-resources test build-kamel build-compile-integration-tests build-submodules
+
+ci-build: clean codegen set-module-version set-version check-licenses dir-licenses build-kamel cross-compile
+
+do-build: gotestfmt-install
+ifeq ($(DO_TEST_PREBUILD),true)
+TEST_PREBUILD = build
+else
+TEST_PREBUILD =
+endif
+
+gotestfmt-install:
+ifeq (, $(shell command -v gotestfmt 2> /dev/null))
+	go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+endif
+
+test: do-build
+	@echo "####### Running unit test..."
 	go test ./...
+	cd pkg/apis/camel && go test ./...
+	cd pkg/client/camel && go test ./...
+	cd pkg/kamelet/repository && go test ./...
 
-test-integration: build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/common -tags=integration $(TEST_INTEGRATION_COMMON_RUN) && \
-	go test -timeout 60m -v ./e2e/common/build -tags=integration $(TEST_INTEGRATION_COMMON_BUILD_RUN) && \
-	go test -timeout 60m -v ./e2e/common/cli -tags=integration $(TEST_INTEGRATION_COMMON_CLI_RUN) && \
-	go test -timeout 60m -v ./e2e/common/config -tags=integration $(TEST_INTEGRATION_COMMON_CONFIG_RUN) && \
-	go test -timeout 60m -v ./e2e/common/languages -tags=integration $(TEST_INTEGRATION_COMMON_LANG_RUN) && \
-	go test -timeout 60m -v ./e2e/common/traits -tags=integration $(TEST_INTEGRATION_COMMON_TRAITS_RUN)
+test-fmt: do-build
+	@echo "####### Running unit test..."
+	go test -v ./... -json 2>&1 | gotestfmt
+	cd pkg/apis/camel && go test -v ./... -json 2>&1 | gotestfmt
+	cd pkg/client/camel && go test -v ./... -json 2>&1 | gotestfmt
+	cd pkg/kamelet/repository && go test -v ./... -json 2>&1 | gotestfmt
 
-test-knative: build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/knative -tags=integration $(TEST_KNATIVE_RUN)
+#
+# Integration tests are located either as global or namespace
+# global:    tests can be executed using a pre-installed global operator
+#            with only the platform installed is a namespace
+#
+# namespace: tests must be executed using a namespace installed operator
+#            usually due to the test requiring specific parameters on the
+#            operator configuration
+#
 
-test-builder: build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/builder -tags=integration $(TEST_BUILDER_RUN)
 
-test-local: build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 30m -v ./e2e/local -tags=integration $(TEST_LOCAL_RUN)
+###############################
+#
+# GLOBAL INSTALL TESTS
+#
+###############################
 
-test-kamel-cli: build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/common/cli -tags=integration $(TEST_KAMEL_CLI)
+#
+# Note
+# This should execute all tests and not exit if one of the suites fail
+#
+test-integration: do-build
+	FAILED=0; STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)"; \
+	go test -timeout 90m -v ./e2e/global/common -tags=integration $(TEST_INTEGRATION_COMMON_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+	go test -timeout 90m -v ./e2e/global/common/build -tags=integration $(TEST_INTEGRATION_COMMON_BUILD_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+	go test -timeout 90m -v ./e2e/global/common/config -tags=integration $(TEST_INTEGRATION_COMMON_CONFIG_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+	go test -timeout 90m -v ./e2e/global/common/languages -tags=integration $(TEST_INTEGRATION_COMMON_LANG_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+	go test -timeout 90m -v ./e2e/global/common/traits -tags=integration $(TEST_INTEGRATION_COMMON_TRAITS_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+	exit $${FAILED}
 
-test-kustomize: build
+test-knative: do-build
 	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/common/kustomize -tags=integration $(TEST_KUSTOMIZE_RUN)
+	go test -timeout 90m -v ./e2e/global/knative -tags=integration $(TEST_KNATIVE_RUN) -json 2>&1 | gotestfmt
 
-test-quarkus-native: build
+test-builder: do-build
 	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/native -tags=integration $(TEST_QUARKUS_RUN)
+	go test -timeout 90m -v ./e2e/global/builder -tags=integration $(TEST_BUILDER_RUN) -json 2>&1 | gotestfmt
 
-test-service-binding: build
+test-service-binding: do-build
 	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/service-binding -tags=integration $(TEST_SERVICE_RUN)
+	go test -timeout 90m -v ./e2e/global/service-binding -tags=integration $(TEST_SERVICE_RUN) -json 2>&1 | gotestfmt
 
-test-upgrade: build
+test-local: do-build
 	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/upgrade -tags=integration $(TEST_UPGRADE_RUN)
+	go test -timeout 30m -v ./e2e/local -tags=integration $(TEST_LOCAL_RUN) -json 2>&1 | gotestfmt
 
-test-registry-maven-wagon: build
+test-registry-maven-wagon: do-build
 	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 60m -v ./e2e/registry -tags=integration $(TEST_REGISTRY_MAVEN_WAGON_RUN)
+	go test -timeout 90m -v ./e2e/global/registry -tags=integration $(TEST_REGISTRY_MAVEN_WAGON_RUN) -json 2>&1 | gotestfmt
+
+###############################
+#
+# NAMESPACED INSTALL TESTS
+#
+###############################
+
+test-install: do-build
+	FAILED=0; STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)"; \
+	go test -timeout 90m -v ./e2e/namespace/install/ -tags=integration $(TEST_INSTALL_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+	go test -timeout 90m -v ./e2e/namespace/install/cli -tags=integration $(TEST_INSTALL_CLI_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+	go test -timeout 90m -v ./e2e/namespace/install/kustomize -tags=integration $(TEST_INSTALL_KUSTOMIZE_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+	exit $${FAILED}
+
+test-quarkus-native: do-build
+	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
+	go test -timeout 90m -v ./e2e/namespace/native -tags=integration $(TEST_QUARKUS_RUN) -json 2>&1 | gotestfmt
+
+test-upgrade: do-build
+	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
+	go test -timeout 90m -v ./e2e/namespace/upgrade -tags=integration $(TEST_UPGRADE_RUN) -json 2>&1 | gotestfmt
 
 build-kamel:
-# Ensure the binary is statically linked when building on Linux due to ABI changes in newer glibc 2.32, otherwise
-# it would not run on older versions. See https://github.com/apache/camel-k/pull/2141#issuecomment-800990117
+	@echo "####### Building kamel CLI..."
+	@# Ensure the binary is statically linked when building on Linux due to ABI changes in newer glibc 2.32, otherwise
+	@# it would not run on older versions. See https://github.com/apache/camel-k/pull/2141#issuecomment-800990117
 ifeq ($(shell uname -s 2>/dev/null || echo Unknown),Linux)
 	CGO_ENABLED=0 go build $(GOFLAGS) -o kamel ./cmd/kamel/*.go
 else
 	go build $(GOFLAGS) -o kamel ./cmd/kamel/*.go
+endif
+ifeq ($(shell uname -m), arm64)
+	GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -o kamel.linux.arm ./cmd/kamel/*.go
 endif
 
 build-resources:
@@ -243,6 +324,7 @@ build-resources:
 	go generate ./pkg/...
 
 bundle-kamelets:
+	@echo "Preparing Kamelets bundle resource..."
 ifneq (,$(findstring release,$(MAKECMDGOALS)))
 ifneq (,$(findstring $(KAMELET_CATALOG_REPO_BRANCH), main))
 	@echo "You cannot set KAMELET_CATALOG_REPO_BRANCH=$(KAMELET_CATALOG_REPO_BRANCH) when doing a release"
@@ -255,9 +337,9 @@ build-submodules:
 	./script/build_submodules.sh
 
 build-compile-integration-tests:
-	go test -c -tags="integration" ./e2e/common
-	go test -c -tags="integration" ./e2e/knative
-	go test -c -tags="integration" ./e2e/builder
+	go test -run nope -tags="integration" ./e2e/global/... > /dev/null
+	go test -run nope -tags="integration" ./e2e/local/... > /dev/null
+	go test -run nope -tags="integration" ./e2e/namespace/... > /dev/null
 
 clean:
 	# disable gomodules when executing go clean:
@@ -274,16 +356,35 @@ clean:
 	rm -rf camel-k-client-*.tar.gz
 	rm -rf camel-k-examples-*.tar.gz
 	rm -rf bundle
+	rm -rf $(INDEX_DIR) $(INDEX_DIR).Dockerfile
 
 dep:
+	@echo "Cleaning dependencies..."
 	go mod tidy
+	cd pkg/apis/camel && go mod tidy
+	cd pkg/client/camel && go mod tidy
+	cd pkg/kamelet/repository && go mod tidy
+
+detect-os:
+ifeq '$(findstring ;,$(PATH))' ';'
+OS := Windows
+OS_LOWER := windows
+else
+OS := $(shell echo $$(uname 2>/dev/null) || echo Unknown)
+OS := $(patsubst CYGWIN%,Cygwin,$(OS))
+OS := $(patsubst MSYS%,MSYS,$(OS))
+OS := $(patsubst MINGW%,MSYS,$(OS))
+OS_LOWER := $(shell echo $(OS) | tr '[:upper:]' '[:lower:]')
+endif
 
 lint:
-	GOGC=$(LINT_GOGC) golangci-lint run --out-format tab --deadline $(LINT_DEADLINE)
+	GOGC=$(LINT_GOGC) golangci-lint run --config .golangci.yml --out-format tab --deadline $(LINT_DEADLINE) --verbose
 
 lint-fix:
-	GOGC=$(LINT_GOGC) golangci-lint run --out-format tab --deadline $(LINT_DEADLINE) --fix
+	GOGC=$(LINT_GOGC) golangci-lint run --config .golangci.yml --out-format tab --deadline $(LINT_DEADLINE) --fix
 
+dir-licenses:
+	./script/vendor-license-directory.sh
 
 check-licenses:
 	./script/check_licenses.sh
@@ -293,28 +394,53 @@ check-platform:
 
 # The below are dependencies needed for maven structured logs. We must bundle into the final container image.
 maven-overlay:
+	@echo "####### Preparing maven dependencies bundle..."
 	mkdir -p build/_maven_overlay
-	./script/maven_overlay.sh build/_maven_overlay
+	./script/maven_overlay.sh -s "$(STAGING_RUNTIME_REPO)" -d "$(CAMEL_K_RUNTIME_DIR)" $(RUNTIME_VERSION) build/_maven_overlay
 
-images: bundle-kamelets test maven-overlay
-	mkdir -p build/_maven_output
+kamel-overlay:
+	@echo "####### Copying kamel CLI to output build directory..."
 	mkdir -p build/_output/bin
-ifneq ($(shell uname -s 2>/dev/null || echo Unknown),Linux)
-	GOOS=linux go build $(GOFLAGS) -o build/_output/bin/kamel ./cmd/kamel/*.go
-else
 	cp kamel build/_output/bin
-endif
+
+images: build kamel-overlay maven-overlay bundle-kamelets
+	@echo "####### Building Camel K operator container image..."
+	mkdir -p build/_maven_output
 	docker build -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile .
 
-images-dev: bundle-kamelets test package-artifacts maven-overlay
+images-arch: build kamel-overlay maven-overlay bundle-kamelets
+	@echo "####### Building Camel K operator container image for multi architectures..."
 	mkdir -p build/_maven_output
-	mkdir -p build/_output/bin
-ifneq ($(shell uname -s 2>/dev/null || echo Unknown),Linux)
-	GOOS=linux go build $(GOFLAGS) -o build/_output/bin/kamel ./cmd/kamel/*.go
-else
-	cp kamel build/_output/bin
+	docker buildx rm --all-inactive --force
+	docker buildx create --append --name builder
+ifeq ($(shell uname -m), x86_x64)
+    	docker buildx build --platform=linux/amd64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
 endif
+ifeq ($(shell uname -m), aarch64)
+	docker buildx build --platform=linux/arm64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
+endif
+ifeq ($(shell uname -m), arm64)
+	docker buildx build --platform=linux/amd64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
+endif
+
+images-dev: build kamel-overlay maven-overlay bundle-kamelets package-artifacts
+	@echo "####### Building Camel K operator container development image..."
 	docker build -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile .
+
+images-arch-dev:  build kamel-overlay maven-overlay bundle-kamelets package-artifacts
+	@echo "####### Building Camel K operator container development image for multi architectures..."
+	docker buildx rm --all-inactive --force
+	docker buildx create --append --name builder
+ifeq ($(shell uname -m), x86_x64)
+	docker buildx build --platform=linux/amd64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
+endif
+ifeq ($(shell uname -m), aarch64)
+	docker buildx build --platform=linux/arm64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
+endif
+ifeq ($(shell uname -m), arm64)
+	mv kamel.linux.arm build/_output/bin/kamel
+	docker buildx build --platform=linux/amd64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
+endif
 
 images-push:
 	docker push $(CUSTOM_IMAGE):$(CUSTOM_VERSION)
@@ -335,6 +461,12 @@ get-last-released-img-name:
 get-last-released-version:
 	@echo $(LAST_RELEASED_VERSION)
 
+get-csv-name:
+	@echo $(CSV_PRODUCTION_NAME)
+
+get-bundle-image:
+	@echo $(BUNDLE_IMAGE_NAME)
+
 set-version:
 	./script/set_version.sh $(CUSTOM_VERSION) $(CUSTOM_IMAGE)
 
@@ -354,7 +486,7 @@ package-examples:
 
 package-artifacts:
 	# useful for development purpose only in order to include any local development runtime dependency
-	./script/package_maven_artifacts.sh $(RUNTIME_VERSION) $(CAMEL_K_RUNTIME_DIR)
+	./script/package_maven_artifacts.sh -s "$(STAGING_RUNTIME_REPO)" -d "$(CAMEL_K_RUNTIME_DIR)" $(RUNTIME_VERSION)
 
 release: clean codegen set-module-version set-version build-resources check-licenses build images images-push cross-compile package-examples git-tag
 
@@ -365,6 +497,11 @@ release-nightly: clean codegen set-module-version set-version build-resources bu
 release-helm:
 	./script/release_helm.sh
 
+release-kustomize:
+	RELEASE_VERSION=$(CUSTOM_VERSION) \
+	RELEASE_NAME=$(PACKAGE) \
+	./script/release_kustomize.sh
+
 install-crc:
 	./script/install_crc.sh $(CUSTOM_VERSION)
 install-minikube:
@@ -373,8 +510,8 @@ install-minikube:
 get-staging-repo:
 	@echo $(or ${STAGING_RUNTIME_REPO},https://repository.apache.org/content/repositories/snapshots@id=apache-snapshots@snapshots)
 
-.PHONY: build build-kamel build-resources dep codegen images images-dev images-push images-push-staging test check test-integration clean release cross-compile package-examples set-version git-tag release-notes check-licenses generate-deepcopy generate-client generate-doc build-resources release-helm release-staging release-nightly get-staging-repo get-version build-submodules set-module-version bundle-kamelets generate-keda generate-strimzi
-.PHONY: controller-gen kubectl kustomize operator-sdk
+.PHONY: do-build build build-kamel build-resources dep codegen images images-dev images-push images-push-staging test check test-integration clean release cross-compile package-examples set-version git-tag release-notes check-licenses generate-deepcopy generate-client generate-doc build-resources release-helm release-staging release-nightly get-staging-repo get-version build-submodules set-module-version bundle-kamelets generate-keda generate-strimzi
+.PHONY: controller-gen kubectl kustomize operator-sdk opm
 
 # find or download controller-gen if necessary
 controller-gen:
@@ -412,20 +549,15 @@ else
 KUSTOMIZE=$(shell command -v kustomize 2> /dev/null)
 endif
 
-operator-sdk:
+operator-sdk: detect-os
 ifeq (, $(shell command -v operator-sdk 2> /dev/null))
 	@{ \
 	set -e ;\
-	if [ "$(shell uname -s 2>/dev/null || echo Unknown)" == "Darwin" ] ; then \
-		curl \
-			-L https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_darwin_amd64 \
-			-o operator-sdk ; \
-	else \
-		curl \
-			-L https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_linux_amd64 \
-			-o operator-sdk ; \
-	fi ;\
+	curl \
+		-L https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$(OS_LOWER)_amd64 \
+		-o operator-sdk ; \
 	chmod +x operator-sdk ;\
+	mkdir -p $(GOBIN) ;\
 	mv operator-sdk $(GOBIN)/ ;\
 	}
 OPERATOR_SDK=$(GOBIN)/operator-sdk
@@ -438,7 +570,23 @@ else
 OPERATOR_SDK=$(shell command -v operator-sdk 2> /dev/null)
 endif
 
-.PHONY: generate-crd $(BUNDLE_CAMEL_APIS) bundle bundle-build
+opm:
+ifeq (, $(shell command -v opm 2> /dev/null))
+	@OPM_VERSION=$(OPM_VERSION) ./script/build_install_opm.sh
+OPM=$(GOBIN)/opm
+else
+OPM=$(shell command -v opm 2> /dev/null)
+endif
+
+yq:
+ifeq (, $(shell command -v yq 2> /dev/null))
+	@GO111MODULE=on go install github.com/mikefarah/yq/v3
+YQ=$(GOBIN)/yq
+else
+YQ=$(shell command -v yq 2> /dev/null)
+endif
+
+.PHONY: generate-crd $(BUNDLE_CAMEL_APIS) pre-bundle bundle bundle-build
 
 # - Have to copy pkg/apis since it is a module in its own right
 # - The dependency of v1alpha1 api on v1 results in duplication
@@ -480,13 +628,17 @@ pre-bundle:
 	@sed -i 's/projectName: .*/projectName: $(PACKAGE)/' PROJECT
 	@sed -i 's~^    containerImage: .*~    containerImage: $(CUSTOM_IMAGE):$(CUSTOM_VERSION)~' $(CSV_PATH)
 	@sed -i 's/^    support: .*/    support: $(CSV_SUPPORT)/' $(CSV_PATH)
-	@sed -i 's/^  name: .*.\(v.*\)/  name: $(PACKAGE).v$(CSV_VERSION)/' $(CSV_PATH)
+	@sed -i 's/^  name: .*.\(v.*\)/  name: $(CSV_NAME)/' $(CSV_PATH)
 	@sed -i 's/^  displayName: .*/  displayName: $(CSV_DISPLAY_NAME)/' $(CSV_PATH)
-	@sed -i 's/^  replaces: .*/  replaces: $(CSV_REPLACES)/' $(CSV_PATH)
 	@sed -i 's/^  version: .*/  version: $(CSV_VERSION)/' $(CSV_PATH)
-	@sed -i '/  version: ${CSV_VERSION}/a \ \ replaces: $(CSV_REPLACES)' $(CSV_PATH)
+	@if grep -q replaces $(CSV_PATH); \
+		then sed -i 's/^  replaces: .*/  replaces: $(CSV_REPLACES)/' $(CSV_PATH); \
+		else sed -i '/  version: ${CSV_VERSION}/a \ \ replaces: $(CSV_REPLACES)' $(CSV_PATH); \
+	fi
 
-bundle: set-version generate-crd $(BUNDLE_CAMEL_APIS) kustomize operator-sdk pre-bundle
+bundle: set-version generate-crd kustomize operator-sdk pre-bundle $(BUNDLE_CAMEL_APIS)
+	@# Display BUNDLE_METADATA_OPTS for debugging
+	$(info BUNDLE_METADATA_OPTS=$(BUNDLE_METADATA_OPTS))
 	@# Sets the operator image to the preferred image:tag
 	@cd config/manifests && $(KUSTOMIZE) edit set image $(IMAGE_NAME)=$(CUSTOM_IMAGE):$(CUSTOM_VERSION)
 	@# Build kustomize manifests
@@ -495,15 +647,28 @@ bundle: set-version generate-crd $(BUNDLE_CAMEL_APIS) kustomize operator-sdk pre
 			-q --overwrite --version $(OPERATOR_VERSION) \
 			--kustomize-dir config/manifests $(BUNDLE_METADATA_OPTS)
 	@# Move the dockerfile into the bundle directory
-ifeq ($(shell uname -s 2>/dev/null || echo Unknown),Darwin)
-	@mv bundle.Dockerfile bundle/Dockerfile && sed -i '' 's/bundle\///g' bundle/Dockerfile
-else
 	@mv bundle.Dockerfile bundle/Dockerfile && sed -i 's/bundle\///g' bundle/Dockerfile
-endif
 	@# Adds the licence headers to the csv file
 	./script/add_license.sh bundle/manifests ./script/headers/yaml.txt
+# Rename the CSV name to conform with the existing released operator versions
+# This cannot happen in pre-bundle as the operator-sdk generation expects a CSV name the same as PACKAGE
+	@sed -i "s/^  name: $(CSV_NAME)/  name: $(CSV_PRODUCTION_NAME)/" $(CSV_PRODUCTION_PATH)
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 # Build the bundle image.
 bundle-build: bundle
-	cd bundle && docker build -f Dockerfile -t $(BUNDLE_IMAGE_NAME) .
+	cd bundle && docker build -f Dockerfile -t $(BUNDLE_IMAGE_NAME):$(CUSTOM_VERSION) .
+
+.PHONY: bundle-push bundle-index
+
+bundle-push: bundle-build
+	docker push $(BUNDLE_IMAGE_NAME):$(CUSTOM_VERSION)
+
+#
+# Builds a test catalog index for installing the operator via an OLM
+#
+bundle-index: opm yq
+	BUNDLE_INDEX=$(BUNDLE_INDEX) INDEX_DIR=$(INDEX_DIR) PACKAGE=$(PACKAGE) YQ=$(YQ) \
+	OPM=$(OPM) BUNDLE_IMAGE=$(BUNDLE_IMAGE_NAME):$(CUSTOM_VERSION) CSV_NAME=$(CSV_PRODUCTION_NAME) \
+	CSV_SKIPS=$(CSV_SKIP_RANGE) CSV_REPLACES=$(CSV_REPLACES) CHANNELS="$(CHANNELS)" \
+	./script/build_bundle_index.sh

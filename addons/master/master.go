@@ -21,9 +21,11 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/metadata"
 	"github.com/apache/camel-k/pkg/resources"
 	"github.com/apache/camel-k/pkg/trait"
@@ -41,8 +43,8 @@ import (
 // It's recommended to use a different service account than "default" when running the integration.
 //
 // +camel-k:trait=master.
-type masterTrait struct {
-	trait.BaseTrait `property:",squash"`
+type Trait struct {
+	traitv1.Trait `property:",squash" json:",inline"`
 	// Enables automatic configuration of the trait.
 	Auto *bool `property:"auto" json:"auto,omitempty"`
 	// When this flag is active, the operator analyzes the source code to add dependencies required by delegate endpoints.
@@ -57,7 +59,12 @@ type masterTrait struct {
 	// Label that will be used to identify all pods contending the lock. Defaults to "camel.apache.org/integration".
 	LabelKey *string `property:"label-key" json:"labelKey,omitempty"`
 	// Label value that will be used to identify all pods contending the lock. Defaults to the integration name.
-	LabelValue           *string  `property:"label-value" json:"labelValue,omitempty"`
+	LabelValue *string `property:"label-value" json:"labelValue,omitempty"`
+}
+
+type masterTrait struct {
+	trait.BaseTrait
+	Trait                `property:",squash"`
 	delegateDependencies []string `json:"-"`
 }
 
@@ -78,7 +85,7 @@ var (
 )
 
 func (t *masterTrait) Configure(e *trait.Environment) (bool, error) {
-	if t.Enabled != nil && !*t.Enabled {
+	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, true) {
 		return false, nil
 	}
 
@@ -86,14 +93,17 @@ func (t *masterTrait) Configure(e *trait.Environment) (bool, error) {
 		return false, nil
 	}
 
-	if t.Auto == nil || *t.Auto {
+	if pointer.BoolDeref(t.Auto, true) {
 		// Check if the master component has been used
 		sources, err := kubernetes.ResolveIntegrationSources(e.Ctx, t.Client, e.Integration, e.Resources)
 		if err != nil {
 			return false, err
 		}
 
-		meta := metadata.ExtractAll(e.CamelCatalog, sources)
+		meta, err := metadata.ExtractAll(e.CamelCatalog, sources)
+		if err != nil {
+			return false, err
+		}
 
 		if t.Enabled == nil {
 			for _, endpoint := range meta.FromURIs {
@@ -104,7 +114,7 @@ func (t *masterTrait) Configure(e *trait.Environment) (bool, error) {
 			}
 		}
 
-		if t.Enabled == nil || !*t.Enabled {
+		if !pointer.BoolDeref(t.Enabled, false) {
 			return false, nil
 		}
 
@@ -139,7 +149,7 @@ func (t *masterTrait) Configure(e *trait.Environment) (bool, error) {
 		}
 	}
 
-	return t.Enabled != nil && *t.Enabled, nil
+	return pointer.BoolDeref(t.Enabled, true), nil
 }
 
 func (t *masterTrait) Apply(e *trait.Environment) error {
@@ -222,7 +232,8 @@ func (t *masterTrait) canUseLeases(e *trait.Environment) (bool, error) {
 	return kubernetes.CheckPermission(e.Ctx, t.Client, "coordination.k8s.io", "leases", e.Integration.Namespace, "", "create")
 }
 
-func findAdditionalDependencies(e *trait.Environment, meta metadata.IntegrationMetadata) (dependencies []string) {
+func findAdditionalDependencies(e *trait.Environment, meta metadata.IntegrationMetadata) []string {
+	var dependencies []string
 	for _, endpoint := range meta.FromURIs {
 		if uri.GetComponent(endpoint) == masterComponent {
 			parts := strings.Split(endpoint, ":")

@@ -26,10 +26,14 @@ import (
 	"testing"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/pkg/platform"
 	"github.com/apache/camel-k/pkg/trait"
 	"github.com/apache/camel-k/pkg/util/test"
+
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"k8s.io/utils/pointer"
 )
 
 const (
@@ -52,7 +56,10 @@ func initializeRunCmdOptions(t *testing.T) (*runCmdOptions, *cobra.Command, Root
 func initializeRunCmdOptionsWithOutput(t *testing.T) (*runCmdOptions, *cobra.Command, RootCmdOptions) {
 	t.Helper()
 
-	options, rootCmd := kamelTestPreAddCommandInit()
+	defaultIntegrationPlatform := v1.NewIntegrationPlatform("default", platform.DefaultPlatformName)
+	fakeClient, _ := test.NewFakeClient(&defaultIntegrationPlatform)
+
+	options, rootCmd := kamelTestPreAddCommandInitWithClient(fakeClient)
 	runCmdOptions := addTestRunCmdWithOutput(*options, rootCmd)
 	kamelTestPostAddCommandInit(t, rootCmd)
 
@@ -76,9 +83,6 @@ func addTestRunCmd(options RootCmdOptions, rootCmd *cobra.Command) *runCmdOption
 func addTestRunCmdWithOutput(options RootCmdOptions, rootCmd *cobra.Command) *runCmdOptions {
 	// add a testing version of run Command with output
 	runCmd, runOptions := newCmdRun(&options)
-	runCmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
-		return nil
-	}
 	runCmd.Args = test.ArbitraryArgs
 	rootCmd.AddCommand(runCmd)
 	return runOptions
@@ -130,6 +134,16 @@ func TestRunDevFlag(t *testing.T) {
 	_, err := test.ExecuteCommand(rootCmd, cmdRun, "--dev", integrationSource)
 	assert.Nil(t, err)
 	assert.Equal(t, true, runCmdOptions.Dev)
+}
+
+func TestRunDevModeOutputFlag(t *testing.T) {
+	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
+	_, err := test.ExecuteCommand(rootCmd, cmdRun, "--dev", "-o", "yaml", integrationSource)
+	assert.Equal(t, true, runCmdOptions.Dev)
+	assert.Equal(t, "yaml", runCmdOptions.OutputFormat)
+	assert.NotNil(t, err)
+	assert.Equal(t, "cannot use --dev with -o/--output option",
+		err.Error())
 }
 
 func TestRunEnvFlag(t *testing.T) {
@@ -259,6 +273,69 @@ f=g:h
 i=j\nk
 `
 
+func TestExtractProperties_SingleKeyValue(t *testing.T) {
+	correctValues := []string{"key=val", "key = val", "key= val", " key   =  val"}
+	runCmdOptions, _, _ := initializeRunCmdOptionsWithOutput(t)
+	for _, val := range correctValues {
+		prop, err := runCmdOptions.extractProperties(nil, val)
+		assert.Nil(t, err)
+		value, ok := prop.Get("key")
+		assert.True(t, ok)
+		assert.Equal(t, "val", value)
+	}
+}
+
+func TestExtractProperties_FromFile(t *testing.T) {
+	var tmpFile1 *os.File
+	var err error
+	if tmpFile1, err = ioutil.TempFile("", "camel-k-*.properties"); err != nil {
+		t.Error(err)
+	}
+
+	assert.Nil(t, tmpFile1.Close())
+	assert.Nil(t, ioutil.WriteFile(tmpFile1.Name(), []byte(`
+	key=value
+	#key2=value2
+	my.key=value
+	`), 0o400))
+	runCmdOptions, _, _ := initializeRunCmdOptionsWithOutput(t)
+	props, err := runCmdOptions.extractProperties(nil, "file:"+tmpFile1.Name())
+	assert.Nil(t, err)
+	assert.Equal(t, 2, props.Len())
+	for _, prop := range props.Keys() {
+		value, ok := props.Get(prop)
+		assert.True(t, ok)
+		assert.Equal(t, "value", value)
+	}
+}
+
+func TestExtractPropertiesFromFileAndSingleValue(t *testing.T) {
+	var tmpFile1 *os.File
+	var err error
+	if tmpFile1, err = ioutil.TempFile("", "camel-k-*.properties"); err != nil {
+		t.Error(err)
+	}
+
+	assert.Nil(t, tmpFile1.Close())
+	assert.Nil(t, ioutil.WriteFile(tmpFile1.Name(), []byte(`
+	key=value
+	#key2=value2
+	my.key=value
+	`), 0o400))
+
+	properties := []string{"key=override", "file:" + tmpFile1.Name(), "my.key = override"}
+	runCmdOptions, _, _ := initializeRunCmdOptionsWithOutput(t)
+	props, err := runCmdOptions.mergePropertiesWithPrecedence(nil, properties)
+	assert.Nil(t, err)
+	assert.Equal(t, 2, props.Len())
+	val, ok := props.Get("key")
+	assert.True(t, ok)
+	assert.Equal(t, "override", val)
+	val, ok = props.Get("my.key")
+	assert.True(t, ok)
+	assert.Equal(t, "override", val)
+}
+
 func TestAddPropertyFile(t *testing.T) {
 	var tmpFile *os.File
 	var err error
@@ -269,7 +346,8 @@ func TestAddPropertyFile(t *testing.T) {
 	assert.Nil(t, tmpFile.Close())
 	assert.Nil(t, ioutil.WriteFile(tmpFile.Name(), []byte(TestPropertyFileContent), 0o400))
 
-	properties, err := convertToTraitParameter("file:"+tmpFile.Name(), "trait.properties")
+	runCmdOptions, _, _ := initializeRunCmdOptionsWithOutput(t)
+	properties, err := runCmdOptions.convertToTraitParameter(nil, "file:"+tmpFile.Name(), "trait.properties")
 	assert.Nil(t, err)
 	assert.Equal(t, 3, len(properties))
 	assert.Equal(t, `trait.properties=a = b`, properties[0])
@@ -278,7 +356,8 @@ func TestAddPropertyFile(t *testing.T) {
 }
 
 func TestRunProperty(t *testing.T) {
-	properties, err := convertToTraitParameter(`key=value\nnewline`, "trait.properties")
+	runCmdOptions, _, _ := initializeRunCmdOptionsWithOutput(t)
+	properties, err := runCmdOptions.convertToTraitParameter(nil, `key=value\nnewline`, "trait.properties")
 	assert.Nil(t, err)
 	assert.Equal(t, 1, len(properties))
 	assert.Equal(t, `trait.properties=key = value\nnewline`, properties[0])
@@ -359,71 +438,25 @@ func TestConfigureTraits(t *testing.T) {
 	}
 	catalog := trait.NewCatalog(client)
 
-	traits, err := configureTraits(runCmdOptions.Traits, catalog)
+	traits := v1.Traits{}
+	err = configureTraits(runCmdOptions.Traits, &traits, catalog)
 
 	assert.Nil(t, err)
-	assert.Len(t, traits, 5)
-	assertTraitConfiguration(t, traits, "affinity", `{"podAffinity":false}`)
-	assertTraitConfiguration(t, traits, "container", `{"probesEnabled":false}`)
-	assertTraitConfiguration(t, traits, "environment", `{"containerMeta":false}`)
-	assertTraitConfiguration(t, traits, "jvm", `{"printCommand":false}`)
-	assertTraitConfiguration(t, traits, "prometheus", `{"podMonitor":false}`)
-}
-
-type customTrait struct {
-	trait.BaseTrait `property:",squash"`
-	// SimpleMap
-	SimpleMap  map[string]string            `property:"simple-map" json:"simpleMap,omitempty"`
-	DoubleMap  map[string]map[string]string `property:"double-map" json:"doubleMap,omitempty"`
-	SliceOfMap []map[string]string          `property:"slice-of-map" json:"sliceOfMap,omitempty"`
-}
-
-func (c customTrait) Configure(environment *trait.Environment) (bool, error) {
-	panic("implement me")
-}
-func (c customTrait) Apply(environment *trait.Environment) error {
-	panic("implement me")
-}
-
-var _ trait.Trait = &customTrait{}
-
-type customTraitFinder struct {
-}
-
-func (finder customTraitFinder) GetTrait(id string) trait.Trait {
-	if id == "custom" {
-		return &customTrait{}
-	}
-	return nil
-}
-
-func TestTraitsNestedConfig(t *testing.T) {
-	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, "run",
-		"--trait", "custom.simple-map.a=b",
-		"--trait", "custom.simple-map.y=z",
-		"--trait", "custom.double-map.m.n=q",
-		"--trait", "custom.double-map.m.o=w",
-		"--trait", "custom.slice-of-map[0].f=g",
-		"--trait", "custom.slice-of-map[3].f=h",
-		"--trait", "custom.slice-of-map[2].f=i",
-		"example.js")
-	// We will have an error because those traits are not existing
-	// however we want to test how those properties are mapped in the configuration
-	assert.NotNil(t, err)
-	catalog := &customTraitFinder{}
-	traits, err := configureTraits(runCmdOptions.Traits, catalog)
-
+	traitMap, err := trait.ToTraitMap(traits)
 	assert.Nil(t, err)
-	assert.Len(t, traits, 1)
-	assertTraitConfiguration(t, traits, "custom", `{"simpleMap":{"a":"b","y":"z"},"doubleMap":{"m":{"n":"q","o":"w"}},"sliceOfMap":[{"f":"g"},null,{"f":"i"},{"f":"h"}]}`)
+	assert.Len(t, traitMap, 5)
+	assertTraitConfiguration(t, traits.Affinity, &traitv1.AffinityTrait{PodAffinity: pointer.Bool(false)})
+	assertTraitConfiguration(t, traits.Container, &traitv1.ContainerTrait{DeprecatedProbesEnabled: pointer.Bool(false)})
+	assertTraitConfiguration(t, traits.Environment, &traitv1.EnvironmentTrait{ContainerMeta: pointer.Bool(false)})
+	assertTraitConfiguration(t, traits.JVM, &traitv1.JVMTrait{PrintCommand: pointer.Bool(false)})
+	assertTraitConfiguration(t, traits.Prometheus, &traitv1.PrometheusTrait{PodMonitor: pointer.Bool(false)})
 }
 
-func assertTraitConfiguration(t *testing.T, traits map[string]v1.TraitSpec, trait string, expected string) {
+func assertTraitConfiguration(t *testing.T, trait interface{}, expected interface{}) {
 	t.Helper()
 
-	assert.Contains(t, traits, trait)
-	assert.Equal(t, expected, string(traits[trait].Configuration.RawMessage))
+	assert.NotNil(t, trait)
+	assert.Equal(t, expected, trait)
 }
 
 func TestRunUseFlowsFlag(t *testing.T) {
@@ -481,50 +514,6 @@ func TestRunValidateArgs(t *testing.T) {
 	err = runCmdOptions.validateArgs(rootCmd, args)
 	assert.NotNil(t, err)
 	assert.Equal(t, "One of the provided sources is not reachable: missing file or unsupported scheme in missing_file", err.Error())
-}
-
-func TestRunBinaryResource(t *testing.T) {
-	binaryResourceSpec, err := binaryOrTextResource("file.ext", []byte{1, 2, 3, 4}, "application/octet-stream", false, v1.ResourceTypeData, "")
-	assert.Nil(t, err)
-	assert.Equal(t, "", binaryResourceSpec.Content)
-	assert.NotNil(t, binaryResourceSpec.RawContent)
-	assert.Equal(t, "file.ext", binaryResourceSpec.Name)
-	assert.Equal(t, "application/octet-stream", binaryResourceSpec.ContentType)
-	assert.False(t, binaryResourceSpec.Compression)
-}
-
-func TestRunBinaryCompressedResource(t *testing.T) {
-	data := []byte{1, 2, 3, 4}
-	base64Compressed, _ := compressToString(data)
-	binaryResourceSpec, err := binaryOrTextResource("file.ext", data, "application/octet-stream", true, v1.ResourceTypeData, "")
-	assert.Nil(t, err)
-	assert.Equal(t, base64Compressed, binaryResourceSpec.Content)
-	assert.Nil(t, binaryResourceSpec.RawContent)
-	assert.Equal(t, "file.ext", binaryResourceSpec.Name)
-	assert.Equal(t, "application/octet-stream", binaryResourceSpec.ContentType)
-	assert.True(t, binaryResourceSpec.Compression)
-}
-
-func TestRunTextResource(t *testing.T) {
-	textResourceSpec, err := binaryOrTextResource("file.ext", []byte("hello world"), "text/plain", false, v1.ResourceTypeData, "")
-	assert.Nil(t, err)
-	assert.Equal(t, "hello world", textResourceSpec.Content)
-	assert.Nil(t, textResourceSpec.RawContent)
-	assert.Equal(t, "file.ext", textResourceSpec.Name)
-	assert.Equal(t, "text/plain", textResourceSpec.ContentType)
-	assert.False(t, textResourceSpec.Compression)
-}
-
-func TestRunTextCompressedResource(t *testing.T) {
-	data := []byte("hello horld")
-	base64Compressed, _ := compressToString(data)
-	textResourceSpec, err := binaryOrTextResource("file.ext", []byte("hello horld"), "text/plain", true, v1.ResourceTypeData, "")
-	assert.Nil(t, err)
-	assert.Equal(t, base64Compressed, textResourceSpec.Content)
-	assert.Nil(t, textResourceSpec.RawContent)
-	assert.Equal(t, "file.ext", textResourceSpec.Name)
-	assert.Equal(t, "text/plain", textResourceSpec.ContentType)
-	assert.True(t, textResourceSpec.Compression)
 }
 
 func TestResolvePodTemplate(t *testing.T) {
@@ -594,14 +583,16 @@ func TestOutputYaml(t *testing.T) {
 	assert.Nil(t, ioutil.WriteFile(tmpFile.Name(), []byte(TestSrcContent), 0o400))
 	fileName := filepath.Base(tmpFile.Name())
 
-	buildCmdOptions, runCmd, _ := initializeRunCmdOptionsWithOutput(t)
+	runCmdOptions, runCmd, _ := initializeRunCmdOptionsWithOutput(t)
 	output, err := test.ExecuteCommand(runCmd, cmdRun, tmpFile.Name(), "-o", "yaml")
-	assert.Equal(t, "yaml", buildCmdOptions.OutputFormat)
+	assert.Equal(t, "yaml", runCmdOptions.OutputFormat)
 
 	assert.Nil(t, err)
 	assert.Equal(t, fmt.Sprintf(`apiVersion: camel.apache.org/v1
 kind: Integration
 metadata:
+  annotations:
+    camel.apache.org/operator.id: camel-k
   creationTimestamp: null
   name: %s
 spec:
@@ -610,6 +601,7 @@ spec:
       extends RouteBuilder {\n  @Override\n  public void configure() throws Exception
       {\n\t  from(\"timer:tick\")\n        .log(\"Hello Camel K!\");\n  }\n}\n"
     name: %s
+  traits: {}
 status: {}
 `, fileName, fileName), output)
 }
@@ -625,14 +617,16 @@ func TestTrait(t *testing.T) {
 	assert.Nil(t, ioutil.WriteFile(tmpFile.Name(), []byte(TestSrcContent), 0o400))
 	fileName := filepath.Base(tmpFile.Name())
 
-	buildCmdOptions, runCmd, _ := initializeRunCmdOptionsWithOutput(t)
+	runCmdOptions, runCmd, _ := initializeRunCmdOptionsWithOutput(t)
 	output, err := test.ExecuteCommand(runCmd, cmdRun, tmpFile.Name(), "-o", "yaml", "-t", "mount.configs=configmap:my-cm", "--connect", "my-service-binding")
-	assert.Equal(t, "yaml", buildCmdOptions.OutputFormat)
+	assert.Equal(t, "yaml", runCmdOptions.OutputFormat)
 
 	assert.Nil(t, err)
 	assert.Equal(t, fmt.Sprintf(`apiVersion: camel.apache.org/v1
 kind: Integration
 metadata:
+  annotations:
+    camel.apache.org/operator.id: camel-k
   creationTimestamp: null
   name: %s
 spec:
@@ -643,13 +637,11 @@ spec:
     name: %s
   traits:
     mount:
-      configuration:
-        configs:
-        - configmap:my-cm
+      configs:
+      - configmap:my-cm
     service-binding:
-      configuration:
-        services:
-        - my-service-binding
+      services:
+      - my-service-binding
 status: {}
 `, fileName, fileName), output)
 }
@@ -664,9 +656,42 @@ func TestMissingTrait(t *testing.T) {
 	assert.Nil(t, tmpFile.Close())
 	assert.Nil(t, ioutil.WriteFile(tmpFile.Name(), []byte(TestSrcContent), 0o400))
 
-	buildCmdOptions, runCmd, _ := initializeRunCmdOptionsWithOutput(t)
+	runCmdOptions, runCmd, _ := initializeRunCmdOptionsWithOutput(t)
 	output, err := test.ExecuteCommand(runCmd, cmdRun, tmpFile.Name(), "-o", "yaml", "-t", "bogus.fail=i-must-fail")
-	assert.Equal(t, "yaml", buildCmdOptions.OutputFormat)
+	assert.Equal(t, "yaml", runCmdOptions.OutputFormat)
 	assert.Equal(t, "Error: bogus.fail=i-must-fail is not a valid trait property\n", output)
 	assert.NotNil(t, err)
+}
+
+func TestResolveYamlPodTemplateWithSupplementalGroups(t *testing.T) {
+	_, rootCmd, _ := initializeRunCmdOptions(t)
+	templateText := `
+securityContext:
+  supplementalGroups:
+    - 666
+`
+	integrationSpec := v1.IntegrationSpec{}
+	err := resolvePodTemplate(context.TODO(), rootCmd, templateText, &integrationSpec)
+	assert.Nil(t, err)
+	assert.NotNil(t, integrationSpec.PodTemplate)
+	assert.NotNil(t, integrationSpec.PodTemplate.Spec)
+	assert.NotNil(t, integrationSpec.PodTemplate.Spec.SecurityContext)
+	assert.NotNil(t, integrationSpec.PodTemplate.Spec.SecurityContext.SupplementalGroups)
+	assert.Equal(t, 1, len(integrationSpec.PodTemplate.Spec.SecurityContext.SupplementalGroups))
+	assert.Contains(t, integrationSpec.PodTemplate.Spec.SecurityContext.SupplementalGroups, int64(666))
+}
+
+func TestResolveJsonPodTemplateWithSupplementalGroups(t *testing.T) {
+	_, rootCmd, _ := initializeRunCmdOptions(t)
+	minifiedYamlTemplate := `{"securityContext":{"supplementalGroups":[666]}}`
+
+	integrationSpec := v1.IntegrationSpec{}
+	err := resolvePodTemplate(context.TODO(), rootCmd, minifiedYamlTemplate, &integrationSpec)
+	assert.Nil(t, err)
+	assert.NotNil(t, integrationSpec.PodTemplate)
+	assert.NotNil(t, integrationSpec.PodTemplate.Spec)
+	assert.NotNil(t, integrationSpec.PodTemplate.Spec.SecurityContext)
+	assert.NotNil(t, integrationSpec.PodTemplate.Spec.SecurityContext.SupplementalGroups)
+	assert.Equal(t, 1, len(integrationSpec.PodTemplate.Spec.SecurityContext.SupplementalGroups))
+	assert.Contains(t, integrationSpec.PodTemplate.Spec.SecurityContext.SupplementalGroups, int64(666))
 }

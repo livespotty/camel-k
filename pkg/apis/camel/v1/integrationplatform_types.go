@@ -27,7 +27,7 @@ import (
 
 // IntegrationPlatformSpec defines the desired state of IntegrationPlatform
 type IntegrationPlatformSpec struct {
-	// what kind of cluster you're running (ie, plain Kubernetes or Openshift)
+	// what kind of cluster you're running (ie, plain Kubernetes or OpenShift)
 	Cluster IntegrationPlatformCluster `json:"cluster,omitempty"`
 	// the profile you wish to use. It will apply certain traits which are required by the specific profile chosen.
 	// It usually relates the Cluster with the optional definition of special profiles (ie, Knative)
@@ -37,7 +37,7 @@ type IntegrationPlatformSpec struct {
 	// Deprecated: not used
 	Resources IntegrationPlatformResourcesSpec `json:"resources,omitempty"`
 	// list of traits to be executed for all the Integration/IntegrationKits built from this IntegrationPlatform
-	Traits map[string]TraitSpec `json:"traits,omitempty"`
+	Traits Traits `json:"traits,omitempty"`
 	// list of configuration properties to be attached to all the Integration/IntegrationKits built from this IntegrationPlatform
 	Configuration []ConfigurationSpec `json:"configuration,omitempty"`
 	// configuration to be executed to all Kamelets controlled by this IntegrationPlatform
@@ -52,7 +52,8 @@ type IntegrationPlatformResourcesSpec struct {
 // IntegrationPlatformStatus defines the observed state of IntegrationPlatform
 type IntegrationPlatformStatus struct {
 	IntegrationPlatformSpec `json:",inline"`
-
+	// ObservedGeneration is the most recent generation observed for this IntegrationPlatform.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// defines in what phase the IntegrationPlatform is found
 	Phase IntegrationPlatformPhase `json:"phase,omitempty"`
 	// which are the conditions met (particularly useful when in ERROR phase)
@@ -95,7 +96,7 @@ type IntegrationPlatformList struct {
 type IntegrationPlatformCluster string
 
 const (
-	// IntegrationPlatformClusterOpenShift is used when targeting a OpenShift cluster
+	// IntegrationPlatformClusterOpenShift is used when targeting an OpenShift cluster
 	IntegrationPlatformClusterOpenShift IntegrationPlatformCluster = "OpenShift"
 	// IntegrationPlatformClusterKubernetes is used when targeting a Kubernetes cluster
 	IntegrationPlatformClusterKubernetes IntegrationPlatformCluster = "Kubernetes"
@@ -103,23 +104,6 @@ const (
 
 // AllIntegrationPlatformClusters --
 var AllIntegrationPlatformClusters = []IntegrationPlatformCluster{IntegrationPlatformClusterOpenShift, IntegrationPlatformClusterKubernetes}
-
-// TraitProfile represents lists of traits that are enabled for the specific installation/integration
-type TraitProfile string
-
-const (
-	// TraitProfileOpenShift is used by default on OpenShift clusters
-	TraitProfileOpenShift TraitProfile = "OpenShift"
-	// TraitProfileKubernetes is used by default on Kubernetes clusters
-	TraitProfileKubernetes TraitProfile = "Kubernetes"
-	// TraitProfileKnative is used by default on OpenShift/Kubernetes clusters powered by Knative
-	TraitProfileKnative TraitProfile = "Knative"
-	// DefaultTraitProfile is the trait profile used as default when no other profile is set
-	DefaultTraitProfile = TraitProfileKubernetes
-)
-
-// AllTraitProfiles contains all allowed profiles
-var AllTraitProfiles = []TraitProfile{TraitProfileKubernetes, TraitProfileKnative, TraitProfileOpenShift}
 
 // IntegrationPlatformBuildSpec contains platform related build information.
 // This configuration can be used to tune the behavior of the Integration/IntegrationKit image builds.
@@ -176,7 +160,7 @@ const (
 	IntegrationPlatformBuildPublishStrategyKaniko IntegrationPlatformBuildPublishStrategy = "Kaniko"
 	// IntegrationPlatformBuildPublishStrategyS2I uses the Source to Images (S2I) feature
 	// (https://docs.openshift.com/container-platform/4.9/openshift_images/create-images.html#images-create-s2i_create-images)
-	// provided by an Openshift cluster in order to create and push the images to the registry. It is the default choice on Openshift cluster
+	// provided by an OpenShift cluster in order to create and push the images to the registry. It is the default choice on OpenShift cluster
 	IntegrationPlatformBuildPublishStrategyS2I IntegrationPlatformBuildPublishStrategy = "S2I"
 	// IntegrationPlatformBuildPublishStrategySpectrum uses Spectrum project (https://github.com/container-tools/spectrum)
 	// in order to push the incremental images to the image repository. It is the default choice on vanilla Kubernetes cluster

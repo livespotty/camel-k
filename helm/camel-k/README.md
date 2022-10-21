@@ -79,6 +79,10 @@ Camel K chart and their default values. The chart allows configuration of an `In
 | `platform.build.registry.insecure`     | Indicates if the registry is not secured                                  | true                           |
 | `platform.cluster`                     | The kind of Kubernetes cluster (Kubernetes or OpenShift)                  | `Kubernetes`                   |
 | `platform.profile`                     | The trait profile to use (Knative, Kubernetes or OpenShift)               | auto                           |
+| `operator.global`                      | Indicates if the operator should watch all namespaces                     | `false`                        |
+| `operator.resources`                   | The resource requests and limits to use for the operator                  |                                |
+| `operator.securityContext`             | The (container-related) securityContext to use for the operator           |                                |
+| `operator.tolerations`                 | The list of tolerations to use for the operator                           |                                |
 
 ## Contributing
 

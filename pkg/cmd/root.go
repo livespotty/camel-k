@@ -26,6 +26,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"golang.org/x/term"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -39,6 +40,7 @@ superpowers.
 `
 
 // RootCmdOptions --.
+// nolint: containedctx
 type RootCmdOptions struct {
 	RootContext   context.Context    `mapstructure:"-"`
 	Context       context.Context    `mapstructure:"-"`
@@ -46,6 +48,7 @@ type RootCmdOptions struct {
 	_client       client.Client      `mapstructure:"-"`
 	KubeConfig    string             `mapstructure:"kube-config"`
 	Namespace     string             `mapstructure:"namespace"`
+	Verbose       bool               `mapstructure:"verbose" yaml:",omitempty"`
 }
 
 // NewKamelCommand --.
@@ -57,7 +60,6 @@ func NewKamelCommand(ctx context.Context) (*cobra.Command, error) {
 		ContextCancel: childCancel,
 	}
 
-	var err error
 	cmd := kamelPreAddCommandInit(&options)
 	addKamelSubcommands(cmd, &options)
 
@@ -65,7 +67,7 @@ func NewKamelCommand(ctx context.Context) (*cobra.Command, error) {
 		return cmd, err
 	}
 
-	err = kamelPostAddCommandInit(cmd)
+	err := kamelPostAddCommandInit(cmd)
 
 	return cmd, err
 }
@@ -82,6 +84,10 @@ func kamelPreAddCommandInit(options *RootCmdOptions) *cobra.Command {
 
 	cmd.PersistentFlags().StringVar(&options.KubeConfig, "kube-config", os.Getenv("KUBECONFIG"), "Path to the kube config file to use for CLI requests")
 	cmd.PersistentFlags().StringVarP(&options.Namespace, "namespace", "n", "", "Namespace to use for all operations")
+	cmd.PersistentFlags().BoolVarP(&options.Verbose, "verbose", "V", false, "Verbose logging")
+
+	cobra.AddTemplateFunc("wrappedFlagUsages", wrappedFlagUsages)
+	cmd.SetUsageTemplate(usageTemplate)
 
 	return &cmd
 }
@@ -142,9 +148,11 @@ func addKamelSubcommands(cmd *cobra.Command, options *RootCmdOptions) {
 	cmd.AddCommand(cmdOnly(newCmdInit(options)))
 	cmd.AddCommand(cmdOnly(newCmdDebug(options)))
 	cmd.AddCommand(cmdOnly(newCmdDump(options)))
-	cmd.AddCommand(newCmdLocal(options))
+	cmd.AddCommand(cmdOnly(newCmdLocal(options)))
 	cmd.AddCommand(cmdOnly(newCmdBind(options)))
+	cmd.AddCommand(cmdOnly(newCmdPromote(options)))
 	cmd.AddCommand(newCmdKamelet(options))
+	cmd.AddCommand(cmdOnly(newCmdConfig(options)))
 }
 
 func addHelpSubCommands(cmd *cobra.Command, options *RootCmdOptions) error {
@@ -175,9 +183,13 @@ func (command *RootCmdOptions) preRun(cmd *cobra.Command, _ []string) error {
 			return errors.Wrap(err, "cannot get command client")
 		}
 		if command.Namespace == "" {
-			current, err := c.GetCurrentNamespace(command.KubeConfig)
-			if err != nil {
-				return errors.Wrap(err, "cannot get current namespace")
+			current := viper.GetString("kamel.config.default-namespace")
+			if current == "" {
+				defaultNS, err := c.GetCurrentNamespace(command.KubeConfig)
+				if err != nil {
+					return errors.Wrap(err, "cannot get current namespace")
+				}
+				current = defaultNS
 			}
 			err = cmd.Flag("namespace").Value.Set(current)
 			if err != nil {
@@ -237,3 +249,44 @@ func (command *RootCmdOptions) GetCamelCmdClient() (*v1.CamelV1Client, error) {
 func (command *RootCmdOptions) NewCmdClient() (client.Client, error) {
 	return client.NewOutOfClusterClient(command.KubeConfig)
 }
+
+func (command *RootCmdOptions) PrintVerboseOut(cmd *cobra.Command, a ...interface{}) {
+	if command.Verbose {
+		fmt.Fprintln(cmd.OutOrStdout(), a...)
+	}
+}
+
+func (command *RootCmdOptions) PrintfVerboseOutf(cmd *cobra.Command, format string, a ...interface{}) {
+	if command.Verbose {
+		fmt.Fprintf(cmd.OutOrStdout(), format, a...)
+	}
+}
+func (command *RootCmdOptions) PrintfVerboseErrf(cmd *cobra.Command, format string, a ...interface{}) {
+	if command.Verbose {
+		fmt.Fprintf(cmd.ErrOrStderr(), format, a...)
+	}
+}
+
+func wrappedFlagUsages(cmd *cobra.Command) string {
+	width := 80
+	if w, _, err := term.GetSize(0); err == nil {
+		width = w
+	}
+	return cmd.Flags().FlagUsagesWrapped(width - 1)
+}
+
+var usageTemplate = `Usage:{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if .HasAvailableSubCommands}}
+
+Available Commands:{{range .Commands}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+Flags:
+{{ wrappedFlagUsages . | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+Global Flags:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableSubCommands}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
+`

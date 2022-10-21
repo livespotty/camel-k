@@ -18,6 +18,7 @@ limitations under the License.
 package defaults
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 
@@ -28,12 +29,16 @@ func BaseImage() string {
 	return envOrDefault(baseImage, "KAMEL_BASE_IMAGE", "RELATED_IMAGE_BASE")
 }
 
+func OperatorImage() string {
+	return envOrDefault(fmt.Sprintf("%s:%s", ImageName, Version), "KAMEL_OPERATOR_IMAGE", "KAMEL_K_TEST_OPERATOR_CURRENT_IMAGE")
+}
+
 func InstallDefaultKamelets() bool {
 	return boolEnvOrDefault(installDefaultKamelets, "KAMEL_INSTALL_DEFAULT_KAMELETS")
 }
 
 func OperatorID() string {
-	return envOrDefault("", "KAMEL_OPERATOR_ID")
+	return envOrDefault("", "KAMEL_OPERATOR_ID", "OPERATOR_ID")
 }
 
 func boolEnvOrDefault(def bool, envs ...string) bool {

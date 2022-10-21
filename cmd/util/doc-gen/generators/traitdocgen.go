@@ -63,6 +63,9 @@ type traitDocGen struct {
 	generatedTraitFiles []string
 }
 
+// traitDocGen implements Generator interface.
+var _ generator.Generator = &traitDocGen{}
+
 func NewTraitDocGen(arguments *args.GeneratorArgs) generator.Generator {
 	return &traitDocGen{
 		DefaultGen: generator.DefaultGen{},
@@ -84,8 +87,12 @@ func (g *traitDocGen) Filter(context *generator.Context, t *types.Type) bool {
 }
 
 func (g *traitDocGen) GenerateType(context *generator.Context, t *types.Type, out io.Writer) error {
-	docDir := g.arguments.CustomArgs.(*CustomArgs).DocDir
-	traitPath := g.arguments.CustomArgs.(*CustomArgs).TraitPath
+	customArgs, ok := g.arguments.CustomArgs.(*CustomArgs)
+	if !ok {
+		return fmt.Errorf("type assertion failed: %v", g.arguments.CustomArgs)
+	}
+	docDir := customArgs.DocDir
+	traitPath := customArgs.TraitPath
 	traitID := getTraitID(t)
 	traitFile := traitID + ".adoc"
 	filename := path.Join(docDir, traitPath, traitFile)
@@ -108,8 +115,12 @@ func (g *traitDocGen) Finalize(c *generator.Context, w io.Writer) error {
 }
 
 func (g *traitDocGen) FinalizeNav(*generator.Context) error {
-	docDir := g.arguments.CustomArgs.(*CustomArgs).DocDir
-	navPath := g.arguments.CustomArgs.(*CustomArgs).NavPath
+	customArgs, ok := g.arguments.CustomArgs.(*CustomArgs)
+	if !ok {
+		return fmt.Errorf("type assertion failed: %v", g.arguments.CustomArgs)
+	}
+	docDir := customArgs.DocDir
+	navPath := customArgs.NavPath
 	filename := path.Join(docDir, navPath)
 
 	return util.WithFileContent(filename, func(file *os.File, data []byte) error {
@@ -248,7 +259,7 @@ func escapeASCIIDoc(text string) string {
 	return strings.ReplaceAll(text, "|", "\\|")
 }
 
-func split(doc []string, startMarker, endMarker string) (pre []string, post []string) {
+func split(doc []string, startMarker, endMarker string) ([]string, []string) {
 	if len(doc) == 0 {
 		return nil, nil
 	}
@@ -266,7 +277,8 @@ func split(doc []string, startMarker, endMarker string) (pre []string, post []st
 			break
 		}
 	}
-	pre = doc[0:idx]
+	pre := doc[0:idx]
+	post := []string{}
 	if idy < len(doc) {
 		post = doc[idy+1:]
 	}
@@ -299,7 +311,8 @@ func isPlatformTrait(traitID string) bool {
 	return t.IsPlatformTrait()
 }
 
-func determineProfiles(traitID string) (profiles []string) {
+func determineProfiles(traitID string) []string {
+	var profiles []string
 	catalog := trait.NewCatalog(nil)
 	for _, p := range v1.AllTraitProfiles {
 		traits := catalog.TraitsForProfile(p)

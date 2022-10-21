@@ -23,7 +23,7 @@ import (
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 )
 
-// NewRuntimeCatalog --.
+// NewRuntimeCatalog creates a runtime catalog with the given catalog spec.
 func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
 	catalog := RuntimeCatalog{}
 	catalog.CamelCatalogSpec = spec
@@ -32,6 +32,7 @@ func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
 	catalog.schemesByID = make(map[string]v1.CamelScheme)
 	catalog.languageDependencies = make(map[string]string)
 	catalog.javaTypeDependencies = make(map[string]string)
+	catalog.loaderByArtifact = make(map[string]string)
 
 	for id, artifact := range catalog.Artifacts {
 		for _, scheme := range artifact.Schemes {
@@ -66,10 +67,14 @@ func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
 		}
 	}
 
+	for id, loader := range catalog.Loaders {
+		catalog.loaderByArtifact[loader.ArtifactID] = id
+	}
+
 	return &catalog
 }
 
-// RuntimeCatalog --.
+// RuntimeCatalog represents the data structure for a runtime catalog.
 type RuntimeCatalog struct {
 	v1.CamelCatalogSpec
 
@@ -78,17 +83,44 @@ type RuntimeCatalog struct {
 	schemesByID          map[string]v1.CamelScheme
 	languageDependencies map[string]string
 	javaTypeDependencies map[string]string
+	loaderByArtifact     map[string]string
 }
 
-// HasArtifact --.
+// HasArtifact checks if the given artifact is present in the catalog.
 func (c *RuntimeCatalog) HasArtifact(artifact string) bool {
-	if !strings.HasPrefix(artifact, "camel-") {
-		artifact = "camel-" + artifact
+	a := artifact
+	if !strings.HasPrefix(a, "camel-") {
+		if c.Runtime.Provider == v1.RuntimeProviderQuarkus {
+			a = "camel-quarkus-" + a
+		} else {
+			a = "camel-" + a
+		}
 	}
 
-	_, ok := c.Artifacts[artifact]
+	_, ok := c.Artifacts[a]
 
 	return ok
+}
+
+// HasLoaderByArtifact checks if the given artifact is a loader in the catalog.
+func (c *RuntimeCatalog) HasLoaderByArtifact(artifact string) bool {
+	a := artifact
+	if !strings.HasPrefix(a, "camel-") {
+		if c.Runtime.Provider == v1.RuntimeProviderQuarkus {
+			a = "camel-quarkus-" + a
+		} else {
+			a = "camel-" + a
+		}
+	}
+
+	_, ok := c.loaderByArtifact[a]
+
+	return ok
+}
+
+// IsValidArtifact returns true if the given artifact is an artifact or loader in the catalog.
+func (c *RuntimeCatalog) IsValidArtifact(artifact string) bool {
+	return c.HasArtifact(artifact) || c.HasLoaderByArtifact(artifact)
 }
 
 // GetArtifactByScheme returns the artifact corresponding to the given component scheme.
@@ -127,11 +159,6 @@ func (c *RuntimeCatalog) GetLanguageDependency(language string) (string, bool) {
 func (c *RuntimeCatalog) GetJavaTypeDependency(camelType string) (string, bool) {
 	javaType, ok := c.javaTypeDependencies[camelType]
 	return javaType, ok
-}
-
-// GetCamelVersion returns the Camel version the runtime is based on.
-func (c *RuntimeCatalog) GetCamelVersion() string {
-	return c.Runtime.Metadata["camel.version"]
 }
 
 // VisitArtifacts --.

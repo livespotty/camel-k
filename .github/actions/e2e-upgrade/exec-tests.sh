@@ -25,7 +25,7 @@
 
 set -e
 
-while getopts ":b:d:l:n:s:v:x:" opt; do
+while getopts ":b:d:l:n:q:s:v:x:" opt; do
   case "${opt}" in
     b)
       KAMEL_BINARY=${OPTARG}
@@ -38,6 +38,9 @@ while getopts ":b:d:l:n:s:v:x:" opt; do
       ;;
     n)
       IMAGE_NAME=${OPTARG}
+      ;;
+    q)
+      LOG_LEVEL=${OPTARG}
       ;;
     s)
       REGISTRY_INSECURE=${OPTARG}
@@ -112,6 +115,10 @@ export KAMEL_INSTALL_OPERATOR_IMAGE_PULL_POLICY="Always"
 # Despite building a bundle we don't want it installed immediately so no OLM_INDEX_BUNDLE var
 
 # Configure test options
+export CAMEL_K_TEST_LOG_LEVEL="${LOG_LEVEL}"
+if [ "${LOG_LEVEL}" == "debug" ]; then
+  export CAMEL_K_TEST_MAVEN_CLI_OPTIONS="-X ${CAMEL_K_TEST_MAVEN_CLI_OPTIONS}"
+fi
 export CAMEL_K_PREV_IIB=quay.io/operatorhubio/catalog:latest
 export CAMEL_K_NEW_IIB=${BUNDLE_INDEX_IMAGE}
 export CAMEL_K_PREV_UPGRADE_CHANNEL=${PREV_XY_CHANNEL}
@@ -121,4 +128,4 @@ export KAMEL_K_TEST_OPERATOR_CURRENT_IMAGE=${CUSTOM_IMAGE}:${CUSTOM_VERSION}
 export CAMEL_K_TEST_SAVE_FAILED_TEST_NAMESPACE=${SAVE_FAILED_TEST_NS}
 
 # Then run integration tests
-make test-upgrade
+DO_TEST_PREBUILD=false make test-upgrade

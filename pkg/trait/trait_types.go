@@ -27,7 +27,7 @@ import (
 	"github.com/pkg/errors"
 
 	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/api/batch/v1beta1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -76,7 +76,7 @@ type Trait interface {
 	// RequiresIntegrationPlatform indicates that the trait cannot work without an integration platform set
 	RequiresIntegrationPlatform() bool
 
-	// IsAllowedInProfile tels if the trait supports the given profile
+	// IsAllowedInProfile tells if the trait supports the given profile
 	IsAllowedInProfile(v1.TraitProfile) bool
 
 	// Order is the order in which the trait should be executed in the normal flow
@@ -115,9 +115,7 @@ func NewBaseTrait(id string, order int) BaseTrait {
 
 // BaseTrait is the root trait with noop implementations for hooks.
 type BaseTrait struct {
-	TraitID ID `json:"-"`
-	// Can be used to enable or disable a trait. All traits share this common property.
-	Enabled        *bool         `property:"enabled" json:"enabled,omitempty"`
+	TraitID        ID            `json:"-"`
 	Client         client.Client `json:"-"`
 	ExecutionOrder int           `json:"-"`
 	L              log.Logger    `json:"-"`
@@ -168,6 +166,7 @@ type ControllerStrategySelector interface {
 }
 
 // An Environment provides the context for the execution of the traits.
+// nolint: containedctx
 type Environment struct {
 	CamelCatalog   *camel.RuntimeCatalog
 	RuntimeVersion string
@@ -252,6 +251,20 @@ func (e *Environment) IntegrationKitInPhase(phases ...v1.IntegrationKitPhase) bo
 	return false
 }
 
+func (e *Environment) PlatformInPhase(phases ...v1.IntegrationPlatformPhase) bool {
+	if e.Platform == nil {
+		return false
+	}
+
+	for _, phase := range phases {
+		if e.Platform.Status.Phase == phase {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (e *Environment) InPhase(c v1.IntegrationKitPhase, i v1.IntegrationPhase) bool {
 	return e.IntegrationKitInPhase(c) && e.IntegrationInPhase(i)
 }
@@ -295,7 +308,8 @@ func (e *Environment) DetermineControllerStrategy() (ControllerStrategy, error) 
 	return defaultStrategy, nil
 }
 
-func (e *Environment) getControllerStrategyChoosers() (res []ControllerStrategySelector) {
+func (e *Environment) getControllerStrategyChoosers() []ControllerStrategySelector {
+	var res []ControllerStrategySelector
 	for _, t := range e.ConfiguredTraits {
 		if cc, ok := t.(ControllerStrategySelector); ok {
 			res = append(res, cc)
@@ -326,7 +340,7 @@ func (e *Environment) GetIntegrationPodSpec() *corev1.PodSpec {
 	}
 
 	// Cronjob
-	cronJob := e.Resources.GetCronJob(func(c *v1beta1.CronJob) bool {
+	cronJob := e.Resources.GetCronJob(func(c *batchv1.CronJob) bool {
 		return c.Name == e.Integration.Name
 	})
 	if cronJob != nil {
@@ -608,7 +622,9 @@ func convertToKeyToPath(k, v string) []corev1.KeyToPath {
 	if k == "" {
 		return nil
 	}
-
+	if v == "" {
+		v = k
+	}
 	kp := []corev1.KeyToPath{
 		{
 			Key:  k,
@@ -666,9 +682,11 @@ func (e *Environment) collectConfigurations(configurationType string) []map[stri
 
 func (e *Environment) GetIntegrationContainerName() string {
 	containerName := defaultContainerName
-	dt := e.Catalog.GetTrait(containerTraitID)
-	if dt != nil {
-		containerName = dt.(*containerTrait).Name
+
+	if dt := e.Catalog.GetTrait(containerTraitID); dt != nil {
+		if ct, ok := dt.(*containerTrait); ok {
+			containerName = ct.Name
+		}
 	}
 	return containerName
 }
@@ -685,9 +703,10 @@ func (e *Environment) getIntegrationContainerPort() *corev1.ContainerPort {
 	}
 
 	portName := ""
-	t := e.Catalog.GetTrait(containerTraitID)
-	if t != nil {
-		portName = t.(*containerTrait).PortName
+	if t := e.Catalog.GetTrait(containerTraitID); t != nil {
+		if ct, ok := t.(*containerTrait); ok {
+			portName = ct.PortName
+		}
 	}
 	if portName == "" {
 		portName = defaultContainerPortName

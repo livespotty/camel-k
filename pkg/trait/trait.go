@@ -29,13 +29,24 @@ import (
 	"github.com/apache/camel-k/pkg/client"
 	"github.com/apache/camel-k/pkg/platform"
 	"github.com/apache/camel-k/pkg/util/kubernetes"
+	"github.com/apache/camel-k/pkg/util/log"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func Apply(ctx context.Context, c client.Client, integration *v1.Integration, kit *v1.IntegrationKit) (*Environment, error) {
+	var ilog log.Logger
+	switch {
+	case integration != nil:
+		ilog = log.ForIntegration(integration)
+	case kit != nil:
+		ilog = log.ForIntegrationKit(kit)
+	default:
+		ilog = log.WithValues("Function", "trait.Apply")
+	}
+
 	environment, err := newEnvironment(ctx, c, integration, kit)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "error creating trait environment")
 	}
 
 	catalog := NewCatalog(c)
@@ -56,12 +67,20 @@ func Apply(ctx context.Context, c client.Client, integration *v1.Integration, ki
 		}
 	}
 
+	switch {
+	case integration != nil:
+		ilog.Debug("Applied traits to Integration", "integration", integration.Name, "namespace", integration.Namespace)
+	case kit != nil:
+		ilog.Debug("Applied traits to Integration kit", "integration kit", kit.Name, "namespace", kit.Namespace)
+	default:
+		ilog.Debug("Applied traits")
+	}
 	return environment, nil
 }
 
 // newEnvironment creates a Environment from the given data.
 func newEnvironment(ctx context.Context, c client.Client, integration *v1.Integration, kit *v1.IntegrationKit) (*Environment, error) {
-	if integration == nil && ctx == nil {
+	if integration == nil && kit == nil {
 		return nil, errors.New("neither integration nor kit are set")
 	}
 
@@ -84,6 +103,10 @@ func newEnvironment(ctx context.Context, c client.Client, integration *v1.Integr
 		}
 	}
 
+	//
+	// kit can still be nil if integration kit is yet
+	// to finish building and be assigned to the integration
+	//
 	env := Environment{
 		Ctx:                   ctx,
 		Platform:              pl,
