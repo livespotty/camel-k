@@ -21,8 +21,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	"github.com/apache/camel-k/pkg/util/test"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +32,7 @@ func addTestUninstallCmd(options *RootCmdOptions, rootCmd *cobra.Command) *unins
 	uninstallCmd.RunE = func(c *cobra.Command, args []string) error {
 		return nil
 	}
-	uninstallCmd.Args = test.ArbitraryArgs
+	uninstallCmd.Args = ArbitraryArgs
 	rootCmd.AddCommand(uninstallCmd)
 	return installOptions
 }
@@ -42,10 +42,10 @@ func TestUninstallOlmFlags(t *testing.T) {
 
 	uninstallCmdOptions := addTestUninstallCmd(options, cmd)
 
-	kamelTestPostAddCommandInit(t, cmd)
+	kamelTestPostAddCommandInit(t, cmd, options)
 
-	_, err := test.ExecuteCommand(cmd, "uninstall", "--olm=false", "--olm-operator-name", "my-operator")
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(cmd, "uninstall", "--olm=false", "--olm-operator-name", "my-operator")
+	require.NoError(t, err)
 	assert.False(t, uninstallCmdOptions.OlmEnabled)
 	assert.Equal(t, "my-operator", uninstallCmdOptions.OlmOptions.OperatorName)
 }
@@ -55,13 +55,14 @@ func TestUninstallSkipFlags(t *testing.T) {
 
 	uninstallCmdOptions := addTestUninstallCmd(options, cmd)
 
-	kamelTestPostAddCommandInit(t, cmd)
+	kamelTestPostAddCommandInit(t, cmd, options)
 
-	_, err := test.ExecuteCommand(cmd, "uninstall", "--skip-crd", "--skip-cluster-roles", "--skip-integration-platform")
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(cmd, "uninstall", "--skip-crd", "--skip-cluster-roles", "--skip-integration-platform", "--skip-integration-profile")
+	require.NoError(t, err)
 	assert.True(t, uninstallCmdOptions.SkipCrd)
 	assert.True(t, uninstallCmdOptions.SkipClusterRoles)
 	assert.True(t, uninstallCmdOptions.SkipIntegrationPlatform)
+	assert.True(t, uninstallCmdOptions.SkipIntegrationProfile)
 }
 
 func TestUninstallAllFlag(t *testing.T) {
@@ -69,11 +70,12 @@ func TestUninstallAllFlag(t *testing.T) {
 
 	uninstallCmdOptions := addTestUninstallCmd(options, cmd)
 
-	kamelTestPostAddCommandInit(t, cmd)
+	kamelTestPostAddCommandInit(t, cmd, options)
 
-	_, err := test.ExecuteCommand(cmd, "uninstall", "--all")
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(cmd, "uninstall", "--all")
+	require.NoError(t, err)
 	assert.True(t, uninstallCmdOptions.SkipCrd)
 	assert.True(t, uninstallCmdOptions.SkipClusterRoles)
 	assert.False(t, uninstallCmdOptions.SkipIntegrationPlatform)
+	assert.False(t, uninstallCmdOptions.SkipIntegrationProfile)
 }

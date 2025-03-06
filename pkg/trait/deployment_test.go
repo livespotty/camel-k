@@ -21,29 +21,18 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/test"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/internal"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
-
-func TestConfigureDisabledDeploymentTraitDoesNotSucceed(t *testing.T) {
-	deploymentTrait, environment := createNominalDeploymentTest()
-	deploymentTrait.Enabled = pointer.Bool(false)
-
-	configured, err := deploymentTrait.Configure(environment)
-
-	assert.Nil(t, err)
-	assert.False(t, configured)
-	conditions := environment.Integration.Status.Conditions
-	assert.Len(t, conditions, 1)
-	assert.Equal(t, "explicitly disabled", conditions[0].Message)
-}
 
 func TestConfigureDeploymentTraitWhileIntegrationIsRunningDoesSucceed(t *testing.T) {
 	deploymentTrait, environment := createNominalDeploymentTest()
@@ -55,29 +44,29 @@ func TestConfigureDeploymentTraitWhileIntegrationIsRunningDoesSucceed(t *testing
 	)
 	environment.Integration.Status.Phase = v1.IntegrationPhaseRunning
 
-	configured, err := deploymentTrait.Configure(environment)
-
-	assert.Nil(t, err)
+	configured, condition, err := deploymentTrait.Configure(environment)
 	assert.True(t, configured)
+	require.NoError(t, err)
+	assert.Nil(t, condition)
 }
 
 func TestConfigureDeploymentTraitDoesSucceed(t *testing.T) {
 	deploymentTrait, environment := createNominalDeploymentTest()
 
-	configured, err := deploymentTrait.Configure(environment)
-
-	assert.Nil(t, err)
+	configured, condition, err := deploymentTrait.Configure(environment)
 	assert.True(t, configured)
+	require.NoError(t, err)
+	assert.Nil(t, condition)
 }
 
 func TestConfigureDeploymentTraitWhileBuildingKitDoesNotSucceed(t *testing.T) {
 	deploymentTrait, environment := createNominalDeploymentTest()
 	environment.Integration.Status.Phase = v1.IntegrationPhaseBuildingKit
 
-	configured, err := deploymentTrait.Configure(environment)
-
-	assert.Nil(t, err)
+	configured, condition, err := deploymentTrait.Configure(environment)
 	assert.False(t, configured)
+	require.NoError(t, err)
+	assert.Nil(t, condition)
 }
 
 func TestConfigureDeploymentTraitWhileWaitingPlatformDoesNotSucceed(t *testing.T) {
@@ -85,26 +74,26 @@ func TestConfigureDeploymentTraitWhileWaitingPlatformDoesNotSucceed(t *testing.T
 	environment.Integration.Status.Phase = v1.IntegrationPhaseBuildingKit
 	environment.IntegrationKit.Status.Phase = v1.IntegrationKitPhaseWaitingForPlatform
 
-	configured, err := deploymentTrait.Configure(environment)
-
-	assert.Nil(t, err)
+	configured, condition, err := deploymentTrait.Configure(environment)
 	assert.False(t, configured)
+	require.NoError(t, err)
+	assert.Nil(t, condition)
 }
 
 func TestApplyDeploymentTraitWhileResolvingKitDoesNotSucceed(t *testing.T) {
 	deploymentTrait, environment := createNominalDeploymentTest()
 	environment.Integration.Status.Phase = v1.IntegrationPhaseBuildingKit
 
-	configured, err := deploymentTrait.Configure(environment)
-
-	assert.Nil(t, err)
+	configured, condition, err := deploymentTrait.Configure(environment)
 	assert.False(t, configured)
+	require.NoError(t, err)
+	assert.Nil(t, condition)
 }
 
 func TestApplyDeploymentTraitWhileDeployingIntegrationDoesSucceed(t *testing.T) {
 	deploymentTrait, environment := createNominalDeploymentTest()
 	err := deploymentTrait.Apply(environment)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	deployment := environment.Resources.GetDeployment(func(deployment *appsv1.Deployment) bool { return true })
 	assert.NotNil(t, deployment)
@@ -122,7 +111,7 @@ func TestApplyDeploymentTraitWhileRunningIntegrationDoesSucceed(t *testing.T) {
 
 	err := deploymentTrait.Apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	deployment := environment.Resources.GetDeployment(func(deployment *appsv1.Deployment) bool { return true })
 	assert.NotNil(t, deployment)
@@ -139,7 +128,7 @@ func TestApplyDeploymentTraitWithProgressDeadline(t *testing.T) {
 
 	err := deploymentTrait.Apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	deployment := environment.Resources.GetDeployment(func(deployment *appsv1.Deployment) bool { return true })
 	assert.NotNil(t, deployment)
@@ -149,7 +138,7 @@ func TestApplyDeploymentTraitWithProgressDeadline(t *testing.T) {
 
 func TestApplyDeploymentTraitWitRecresteStrategy(t *testing.T) {
 	deploymentTrait, environment := createNominalDeploymentTest()
-	maxSurge := 10
+	maxSurge := intstr.FromInt(10)
 
 	deploymentTrait.Strategy = appsv1.RecreateDeploymentStrategyType
 	deploymentTrait.RollingUpdateMaxSurge = &maxSurge
@@ -158,7 +147,7 @@ func TestApplyDeploymentTraitWitRecresteStrategy(t *testing.T) {
 
 	err := deploymentTrait.Apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	deployment := environment.Resources.GetDeployment(func(deployment *appsv1.Deployment) bool { return true })
 	assert.NotNil(t, deployment)
@@ -177,7 +166,7 @@ func TestApplyDeploymentTraitWitRollingUpdateStrategy(t *testing.T) {
 
 		err := deploymentTrait.Apply(environment)
 
-		assert.Nil(t, err)
+		require.NoError(t, err)
 
 		deployment := environment.Resources.GetDeployment(func(deployment *appsv1.Deployment) bool { return true })
 		assert.NotNil(t, deployment)
@@ -189,7 +178,7 @@ func TestApplyDeploymentTraitWitRollingUpdateStrategy(t *testing.T) {
 	t.Run("with surge", func(t *testing.T) {
 		deploymentTrait, environment := createNominalDeploymentTest()
 
-		maxSurge := 10
+		maxSurge := intstr.FromInt(10)
 
 		deploymentTrait.Strategy = appsv1.RollingUpdateDeploymentStrategyType
 		deploymentTrait.RollingUpdateMaxSurge = &maxSurge
@@ -198,7 +187,7 @@ func TestApplyDeploymentTraitWitRollingUpdateStrategy(t *testing.T) {
 
 		err := deploymentTrait.Apply(environment)
 
-		assert.Nil(t, err)
+		require.NoError(t, err)
 
 		deployment := environment.Resources.GetDeployment(func(deployment *appsv1.Deployment) bool { return true })
 		assert.NotNil(t, deployment)
@@ -206,14 +195,39 @@ func TestApplyDeploymentTraitWitRollingUpdateStrategy(t *testing.T) {
 		assert.Equal(t, appsv1.RollingUpdateDeploymentStrategyType, deployment.Spec.Strategy.Type)
 		assert.NotNil(t, deployment.Spec.Strategy.RollingUpdate)
 		assert.Nil(t, deployment.Spec.Strategy.RollingUpdate.MaxUnavailable)
-		assert.Equal(t, maxSurge, deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntValue())
+		assert.Equal(t, maxSurge, *deployment.Spec.Strategy.RollingUpdate.MaxSurge)
 	})
 
 	t.Run("with surge and unavailable", func(t *testing.T) {
 		deploymentTrait, environment := createNominalDeploymentTest()
 
-		maxSurge := 10
-		maxUnavailable := 11
+		maxSurge := intstr.FromInt(10)
+		maxUnavailable := intstr.FromInt(11)
+
+		deploymentTrait.Strategy = appsv1.RollingUpdateDeploymentStrategyType
+		deploymentTrait.RollingUpdateMaxSurge = &maxSurge
+		deploymentTrait.RollingUpdateMaxUnavailable = &maxUnavailable
+
+		environment.Integration.Status.Phase = v1.IntegrationPhaseRunning
+
+		err := deploymentTrait.Apply(environment)
+
+		require.NoError(t, err)
+
+		deployment := environment.Resources.GetDeployment(func(deployment *appsv1.Deployment) bool { return true })
+		assert.NotNil(t, deployment)
+		assert.Equal(t, "integration-name", deployment.Name)
+		assert.Equal(t, appsv1.RollingUpdateDeploymentStrategyType, deployment.Spec.Strategy.Type)
+		assert.NotNil(t, deployment.Spec.Strategy.RollingUpdate)
+		assert.Equal(t, maxUnavailable, *deployment.Spec.Strategy.RollingUpdate.MaxUnavailable)
+		assert.Equal(t, maxSurge, *deployment.Spec.Strategy.RollingUpdate.MaxSurge)
+	})
+
+	t.Run("with surge and unavailable in percentage values", func(t *testing.T) {
+		deploymentTrait, environment := createNominalDeploymentTest()
+
+		maxSurge := intstr.FromString("10%")
+		maxUnavailable := intstr.FromString("11%")
 
 		deploymentTrait.Strategy = appsv1.RollingUpdateDeploymentStrategyType
 		deploymentTrait.RollingUpdateMaxSurge = &maxSurge
@@ -230,15 +244,15 @@ func TestApplyDeploymentTraitWitRollingUpdateStrategy(t *testing.T) {
 		assert.Equal(t, "integration-name", deployment.Name)
 		assert.Equal(t, appsv1.RollingUpdateDeploymentStrategyType, deployment.Spec.Strategy.Type)
 		assert.NotNil(t, deployment.Spec.Strategy.RollingUpdate)
-		assert.Equal(t, maxUnavailable, deployment.Spec.Strategy.RollingUpdate.MaxUnavailable.IntValue())
-		assert.Equal(t, maxSurge, deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntValue())
+		assert.Equal(t, maxUnavailable, *deployment.Spec.Strategy.RollingUpdate.MaxUnavailable)
+		assert.Equal(t, maxSurge, *deployment.Spec.Strategy.RollingUpdate.MaxSurge)
 	})
+
 }
 
 func createNominalDeploymentTest() (*deploymentTrait, *Environment) {
 	trait, _ := newDeploymentTrait().(*deploymentTrait)
-	trait.Enabled = pointer.Bool(true)
-	trait.Client, _ = test.NewFakeClient(&appsv1.Deployment{
+	trait.Client, _ = internal.NewFakeClient(&appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "integration-name",
 			Namespace: "namespace",
@@ -265,10 +279,17 @@ func createNominalDeploymentTest() (*deploymentTrait, *Environment) {
 		},
 	})
 
+	// disable the knative service api
+	fakeClient := trait.Client.(*internal.FakeClient) //nolint
+	fakeClient.DisableAPIGroupDiscovery("serving.knative.dev/v1")
+
 	replicas := int32(3)
+	catalog, _ := camel.QuarkusCatalog()
 
 	environment := &Environment{
-		Catalog: NewCatalog(nil),
+		CamelCatalog: catalog,
+		Catalog:      NewCatalog(nil),
+		Client:       trait.Client,
 		Integration: &v1.Integration{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "integration-name",

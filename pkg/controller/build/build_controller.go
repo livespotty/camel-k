@@ -21,7 +21,9 @@ import (
 	"context"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/errors"
+	"github.com/apache/camel-k/v2/pkg/util/log"
+
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
@@ -32,16 +34,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
-	camelevent "github.com/apache/camel-k/pkg/event"
-	"github.com/apache/camel-k/pkg/platform"
-	"github.com/apache/camel-k/pkg/util/monitoring"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	camelevent "github.com/apache/camel-k/v2/pkg/event"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/util/monitoring"
+)
+
+const (
+	requeueAfterDuration    = 5 * time.Second
+	podRequeueAfterDuration = 1 * time.Second
 )
 
 // Add creates a new Build Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func Add(mgr manager.Manager, c client.Client) error {
+func Add(ctx context.Context, mgr manager.Manager, c client.Client) error {
 	return add(mgr, newReconciler(mgr, c))
 }
 
@@ -66,7 +73,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		Named("build-controller").
 		// Watch for changes to primary resource Build
 		For(&v1.Build{}, builder.WithPredicates(
-			platform.FilteringFuncs{
+			platform.FilteringFuncs[ctrl.Object]{
 				UpdateFunc: func(e event.UpdateEvent) bool {
 					oldBuild, ok := e.ObjectOld.(*v1.Build)
 					if !ok {
@@ -107,7 +114,7 @@ type reconcileBuild struct {
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
 func (r *reconcileBuild) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	rlog := Log.WithValues("request-namespace", request.Namespace, "request-name", request.Name)
-	rlog.Info("Reconciling Build")
+	rlog.Debug("Reconciling Build")
 
 	// Make sure the operator is allowed to act on namespace
 	if ok, err := platform.IsOperatorAllowedOnNamespace(ctx, r.client, request.Namespace); err != nil {
@@ -121,7 +128,7 @@ func (r *reconcileBuild) Reconcile(ctx context.Context, request reconcile.Reques
 	var instance v1.Build
 
 	if err := r.client.Get(ctx, request.NamespacedName, &instance); err != nil {
-		if errors.IsNotFound(err) {
+		if k8serrors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
@@ -141,12 +148,21 @@ func (r *reconcileBuild) Reconcile(ctx context.Context, request reconcile.Reques
 	targetLog := rlog.ForBuild(target)
 
 	var actions []Action
+	ip, err := platform.GetForResource(ctx, r.client, &instance)
+	if err != nil {
+		rlog.Error(err, "Could not find a platform bound to this Build")
+		return reconcile.Result{}, err
+	}
+	buildMonitor := Monitor{
+		maxRunningBuilds:   ip.Status.Build.MaxRunningBuilds,
+		buildOrderStrategy: ip.Status.Build.BuildConfiguration.OrderStrategy,
+	}
 
-	switch instance.Spec.Strategy {
+	switch instance.BuilderConfiguration().Strategy {
 	case v1.BuildStrategyPod:
 		actions = []Action{
 			newInitializePodAction(r.reader),
-			newScheduleAction(r.reader),
+			newScheduleAction(r.reader, buildMonitor),
 			newMonitorPodAction(r.reader),
 			newErrorRecoveryAction(),
 			newErrorAction(),
@@ -154,7 +170,7 @@ func (r *reconcileBuild) Reconcile(ctx context.Context, request reconcile.Reques
 	case v1.BuildStrategyRoutine:
 		actions = []Action{
 			newInitializeRoutineAction(),
-			newScheduleAction(r.reader),
+			newScheduleAction(r.reader, buildMonitor),
 			newMonitorRoutineAction(),
 			newErrorRecoveryAction(),
 			newErrorAction(),
@@ -166,57 +182,76 @@ func (r *reconcileBuild) Reconcile(ctx context.Context, request reconcile.Reques
 		a.InjectLogger(targetLog)
 		a.InjectRecorder(r.recorder)
 
-		if a.CanHandle(target) {
-			targetLog.Infof("Invoking action %s", a.Name())
+		if !a.CanHandle(target) {
+			continue
+		}
 
-			newTarget, err := a.Handle(ctx, target)
+		targetLog.Debugf("Invoking action %s", a.Name())
+
+		newTarget, err := a.Handle(ctx, target)
+		if err != nil {
+			camelevent.NotifyBuildError(ctx, r.client, r.recorder, &instance, newTarget, err)
+			return reconcile.Result{}, err
+		}
+
+		if newTarget != nil {
+			err := r.update(ctx, targetLog, &instance, newTarget)
 			if err != nil {
-				camelevent.NotifyBuildError(ctx, r.client, r.recorder, &instance, newTarget, err)
 				return reconcile.Result{}, err
 			}
 
-			if newTarget != nil {
-				if res, err := r.update(ctx, &instance, newTarget); err != nil {
-					camelevent.NotifyBuildError(ctx, r.client, r.recorder, &instance, newTarget, err)
-					return res, err
-				}
-
-				if newTarget.Status.Phase != instance.Status.Phase {
-					targetLog.Info(
-						"state transition",
-						"phase-from", instance.Status.Phase,
-						"phase-to", newTarget.Status.Phase,
-					)
-				}
-
-				target = newTarget
-			}
-
-			// handle one action at time so the resource
-			// is always at its latest state
-			camelevent.NotifyBuildUpdated(ctx, r.client, r.recorder, &instance, newTarget)
-
-			break
+			target = newTarget
 		}
+
+		// handle one action at time so the resource
+		// is always at its latest state
+		camelevent.NotifyBuildUpdated(ctx, r.client, r.recorder, &instance, newTarget)
+
+		break
 	}
 
 	if target.Status.Phase == v1.BuildPhaseScheduling || target.Status.Phase == v1.BuildPhaseFailed {
 		// Requeue scheduling (resp. failed) build so that it re-enters the build (resp. recovery) working queue
-		return reconcile.Result{RequeueAfter: 5 * time.Second}, nil
+		return reconcile.Result{RequeueAfter: requeueAfterDuration}, nil
 	}
 
-	if target.Spec.Strategy == v1.BuildStrategyPod &&
+	if target.BuilderConfiguration().Strategy == v1.BuildStrategyPod &&
 		(target.Status.Phase == v1.BuildPhasePending || target.Status.Phase == v1.BuildPhaseRunning) {
 		// Requeue running Build to poll Pod and signal timeout
-		return reconcile.Result{RequeueAfter: 1 * time.Second}, nil
+		return reconcile.Result{RequeueAfter: podRequeueAfterDuration}, nil
 	}
 
 	return reconcile.Result{}, nil
 }
 
-func (r *reconcileBuild) update(ctx context.Context, base *v1.Build, target *v1.Build) (reconcile.Result, error) {
+func (r *reconcileBuild) update(ctx context.Context, l log.Logger, base *v1.Build, target *v1.Build) error {
 	target.Status.ObservedGeneration = base.Generation
-	err := r.client.Status().Patch(ctx, target, ctrl.MergeFrom(base))
 
-	return reconcile.Result{}, err
+	if err := r.client.Status().Patch(ctx, target, ctrl.MergeFrom(base)); err != nil {
+		camelevent.NotifyBuildError(ctx, r.client, r.recorder, base, target, err)
+		return err
+	}
+
+	if target.Status.Phase != base.Status.Phase {
+		l.Info(
+			"State transition",
+			"phase-from", base.Status.Phase,
+			"phase-to", target.Status.Phase,
+		)
+
+		if target.Status.Phase == v1.BuildPhaseError || target.Status.Phase == v1.BuildPhaseFailed {
+			reason := string(target.Status.Phase)
+
+			if target.Status.Failure != nil {
+				reason = target.Status.Failure.Reason
+			}
+
+			l.Info(
+				"Build error",
+				"reason", reason,
+				"error-message", target.Status.Error)
+		}
+	}
+
+	return nil
 }

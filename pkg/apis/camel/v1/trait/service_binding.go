@@ -17,11 +17,15 @@ limitations under the License.
 
 package trait
 
+// WARNING: This trait is no longer in use.
+//
+
 // The Service Binding trait allows users to connect to Services in Kubernetes:
 // https://github.com/k8s-service-bindings/spec#service-binding
 // As the specification is still evolving this is subject to change.
 //
 // +camel-k:trait=service-binding.
+// +camel-k:internal.
 type ServiceBindingTrait struct {
 	Trait `property:",squash" json:",inline"`
 	// List of Services in the form [[apigroup/]version:]kind:[namespace/]name

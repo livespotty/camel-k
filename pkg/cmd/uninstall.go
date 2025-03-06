@@ -19,23 +19,25 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/client-go/rest"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/util/olm"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/util/olm"
+	"github.com/apache/camel-k/v2/pkg/util/watch"
 )
 
 func newCmdUninstall(rootCmdOptions *RootCmdOptions) (*cobra.Command, *uninstallCmdOptions) {
@@ -44,11 +46,12 @@ func newCmdUninstall(rootCmdOptions *RootCmdOptions) (*cobra.Command, *uninstall
 	}
 
 	cmd := cobra.Command{
-		Use:     "uninstall",
-		Short:   "Uninstall Camel K from a Kubernetes cluster",
-		Long:    `Uninstalls Camel K from a Kubernetes or OpenShift cluster.`,
-		PreRunE: options.decode,
-		RunE:    options.uninstall,
+		Use:        "uninstall",
+		Short:      "Uninstall Camel K from a Kubernetes cluster",
+		Long:       `Uninstalls Camel K from a Kubernetes or OpenShift cluster.`,
+		Deprecated: "consider using Kustomize, Helm or OLM (see https://camel.apache.org/camel-k/next/installation/uninstalling.html)",
+		PreRunE:    options.decode,
+		RunE:       options.uninstall,
 	}
 
 	cmd.Flags().Bool("skip-operator", false, "Do not uninstall the Camel K Operator in the current namespace")
@@ -58,10 +61,12 @@ func newCmdUninstall(rootCmdOptions *RootCmdOptions) (*cobra.Command, *uninstall
 	cmd.Flags().Bool("skip-cluster-role-bindings", true, "Do not uninstall the Camel K Cluster Role Bindings")
 	cmd.Flags().Bool("skip-cluster-roles", true, "Do not uninstall the Camel K Cluster Roles")
 	cmd.Flags().Bool("skip-integration-platform", false, "Do not uninstall the Camel K Integration Platform in the current namespace")
+	cmd.Flags().Bool("skip-integration-profile", false, "Do not uninstall the Camel K Integration Profile in the current namespace")
 	cmd.Flags().Bool("skip-service-accounts", false, "Do not uninstall the Camel K Service Accounts in the current namespace")
 	cmd.Flags().Bool("skip-config-maps", false, "Do not uninstall the Camel K Config Maps in the current namespace")
 	cmd.Flags().Bool("skip-registry-secret", false, "Do not uninstall the Camel K Registry Secret in the current namespace")
 	cmd.Flags().Bool("skip-kamelets", false, "Do not uninstall the Kamelets in the current namespace")
+	cmd.Flags().Bool("skip-camel-catalogs", false, "Do not uninstall the Camel Catalogs in the current namespace")
 	cmd.Flags().Bool("global", false, "Indicates that a global installation is going to be uninstalled (affects OLM)")
 	cmd.Flags().Bool("olm", true, "Try to uninstall via OLM (Operator Lifecycle Manager) if available")
 	cmd.Flags().String("olm-operator-name", "", "Name of the Camel K operator in the OLM source or marketplace")
@@ -82,10 +87,12 @@ type uninstallCmdOptions struct {
 	SkipClusterRoleBindings bool `mapstructure:"skip-cluster-role-bindings"`
 	SkipClusterRoles        bool `mapstructure:"skip-cluster-roles"`
 	SkipIntegrationPlatform bool `mapstructure:"skip-integration-platform"`
+	SkipIntegrationProfile  bool `mapstructure:"skip-integration-profile"`
 	SkipServiceAccounts     bool `mapstructure:"skip-service-accounts"`
 	SkipConfigMaps          bool `mapstructure:"skip-config-maps"`
 	SkipRegistrySecret      bool `mapstructure:"skip-registry-secret"`
 	SkipKamelets            bool `mapstructure:"skip-kamelets"`
+	SkipCamelCatalogs       bool `mapstructure:"skip-camel-catalogs"`
 	Global                  bool `mapstructure:"global"`
 	OlmEnabled              bool `mapstructure:"olm"`
 	UninstallAll            bool `mapstructure:"all"`
@@ -99,13 +106,14 @@ var defaultListOptions = metav1.ListOptions{
 
 func (o *uninstallCmdOptions) decode(cmd *cobra.Command, _ []string) error {
 	path := pathToRoot(cmd)
-	if err := decodeKey(o, path); err != nil {
+
+	if err := decodeKey(o, path, o.Flags.AllSettings()); err != nil {
 		return err
 	}
 
-	o.OlmOptions.OperatorName = viper.GetString(path + ".olm-operator-name")
-	o.OlmOptions.Package = viper.GetString(path + ".olm-package")
-	o.OlmOptions.GlobalNamespace = viper.GetString(path + ".olm-global-namespace")
+	o.OlmOptions.OperatorName = o.Flags.GetString(path + ".olm-operator-name")
+	o.OlmOptions.Package = o.Flags.GetString(path + ".olm-package")
+	o.OlmOptions.GlobalNamespace = o.Flags.GetString(path + ".olm-global-namespace")
 
 	return nil
 }
@@ -123,16 +131,23 @@ func (o *uninstallCmdOptions) uninstall(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "Camel K Integration Platform removed from namespace %s\n", o.Namespace)
 	}
 
+	if !o.SkipIntegrationProfile {
+		if err = o.uninstallIntegrationProfile(o.Context, c); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Camel K Integration Profile removed from namespace %s\n", o.Namespace)
+	}
+
 	if err = o.uninstallNamespaceResources(o.Context, cmd, c); err != nil {
 		return err
 	}
 
-	// nolint: ifshort
+	//nolint: ifshort
 	uninstallViaOLM := false
 	if o.OlmEnabled {
 		var err error
-		if uninstallViaOLM, err = olm.IsAPIAvailable(o.Context, c, o.Namespace); err != nil {
-			return errors.Wrap(err, "error while checking OLM availability. Run with '--olm=false' to skip this check")
+		if uninstallViaOLM, err = olm.IsAPIAvailable(c); err != nil {
+			return fmt.Errorf("error while checking OLM availability. Run with '--olm=false' to skip this check: %w", err)
 		}
 
 		if uninstallViaOLM {
@@ -154,6 +169,19 @@ func (o *uninstallCmdOptions) uninstall(cmd *cobra.Command, _ []string) error {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Camel K Operator removed from namespace %s\n", o.Namespace)
+
+			// Let's wait the Pod has completed all the tasks before removing roles, as it may cause
+			// problems during the shutdown
+
+			pod := platform.GetOperatorPod(o.Context, c, o.Namespace)
+			if pod != nil {
+				tctx, cancel := context.WithTimeout(o.Context, 15*time.Second)
+				defer cancel()
+				err := watch.WaitPodToTerminate(tctx, c, pod)
+				if err != nil {
+					return fmt.Errorf("error while waiting the operator pod to terminate gracefully: %w", err)
+				}
+			}
 		}
 
 		if err = o.uninstallNamespaceRoles(o.Context, cmd, c); err != nil {
@@ -202,7 +230,7 @@ func (o *uninstallCmdOptions) uninstallClusterWideResources(ctx context.Context,
 		if k8serrors.IsForbidden(err) {
 			// Let's print a warning message and continue
 			fmt.Fprintln(cmd.ErrOrStderr(), "Current user is not authorized to remove the operator ServiceAccount from the cluster role bindings")
-		} else if err != nil {
+		} else {
 			return err
 		}
 	}
@@ -236,6 +264,12 @@ func (o *uninstallCmdOptions) uninstallNamespaceRoles(ctx context.Context, cmd *
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Camel K Role Bindings removed from namespace", o.Namespace)
+
+		KEP1755Namespace := "kube-public"
+		if err := o.uninstallKEP1755RoleBindings(ctx, c, KEP1755Namespace); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Camel K Role Bindings removed from namespace", KEP1755Namespace)
 	}
 
 	if !o.SkipRoles {
@@ -277,13 +311,24 @@ func (o *uninstallCmdOptions) uninstallNamespaceResources(ctx context.Context, c
 		fmt.Fprintln(cmd.OutOrStdout(), "Camel K Platform Kamelets removed from namespace", o.Namespace)
 	}
 
+	if !o.SkipCamelCatalogs {
+		if err := o.uninstallCamelCatalogs(ctx, c); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Camel K Platform Camel Catalogs removed from namespace", o.Namespace)
+	}
+
 	return nil
 }
 
 func (o *uninstallCmdOptions) uninstallCrd(ctx context.Context, c client.Client) error {
+	httpCli, err := rest.HTTPClientFor(c.GetConfig())
+	if err != nil {
+		return err
+	}
 	restClient, err := apiutil.RESTClientForGVK(
 		schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1"}, false,
-		c.GetConfig(), serializer.NewCodecFactory(c.GetScheme()))
+		c.GetConfig(), serializer.NewCodecFactory(c.GetScheme()), httpCli)
 	if err != nil {
 		return err
 	}
@@ -329,6 +374,24 @@ func (o *uninstallCmdOptions) uninstallRoleBindings(ctx context.Context, c clien
 
 	for _, roleBinding := range roleBindings.Items {
 		err := api.RoleBindings(o.Namespace).Delete(ctx, roleBinding.Name, metav1.DeleteOptions{})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (o *uninstallCmdOptions) uninstallKEP1755RoleBindings(ctx context.Context, c client.Client, namespace string) error {
+	api := c.RbacV1()
+
+	roleBindings, err := api.RoleBindings(namespace).List(ctx, defaultListOptions)
+	if err != nil {
+		return err
+	}
+
+	for _, roleBinding := range roleBindings.Items {
+		err := api.RoleBindings(namespace).Delete(ctx, roleBinding.Name, metav1.DeleteOptions{})
 		if err != nil {
 			return err
 		}
@@ -417,13 +480,29 @@ func (o *uninstallCmdOptions) uninstallServiceAccounts(ctx context.Context, c cl
 }
 
 func (o *uninstallCmdOptions) uninstallIntegrationPlatform(ctx context.Context, c client.Client) error {
-	integrationPlatforms, err := c.CamelV1().IntegrationPlatforms(o.Namespace).List(ctx, defaultListOptions)
+	integrationPlatforms, err := c.CamelV1().IntegrationPlatforms(o.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
 	for _, integrationPlatform := range integrationPlatforms.Items {
 		err := c.CamelV1().IntegrationPlatforms(o.Namespace).Delete(ctx, integrationPlatform.GetName(), metav1.DeleteOptions{})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (o *uninstallCmdOptions) uninstallIntegrationProfile(ctx context.Context, c client.Client) error {
+	configurations, err := c.CamelV1().IntegrationProfiles(o.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+
+	for _, configuration := range configurations.Items {
+		err := c.CamelV1().IntegrationProfiles(o.Namespace).Delete(ctx, configuration.GetName(), metav1.DeleteOptions{})
 		if err != nil {
 			return err
 		}
@@ -469,18 +548,34 @@ func (o *uninstallCmdOptions) uninstallRegistrySecret(ctx context.Context, c cli
 }
 
 func (o *uninstallCmdOptions) uninstallKamelets(ctx context.Context, c client.Client) error {
-	kameletList := v1alpha1.NewKameletList()
+	kameletList := v1.NewKameletList()
 	if err := c.List(ctx, &kameletList, ctrl.InNamespace(o.Namespace)); err != nil {
 		return err
 	}
 
 	for i := range kameletList.Items {
 		// remove only platform Kamelets (user-defined Kamelets should be skipped)
-		if kameletList.Items[i].Labels[v1alpha1.KameletBundledLabel] == "true" {
+		if kameletList.Items[i].Labels[v1.KameletBundledLabel] == "true" {
 			err := c.Delete(ctx, &kameletList.Items[i])
 			if err != nil {
 				return err
 			}
+		}
+	}
+
+	return nil
+}
+
+func (o *uninstallCmdOptions) uninstallCamelCatalogs(ctx context.Context, c client.Client) error {
+	camelCatalogList := v1.NewCamelCatalogList()
+	if err := c.List(ctx, &camelCatalogList, ctrl.InNamespace(o.Namespace)); err != nil {
+		return err
+	}
+
+	for i := range camelCatalogList.Items {
+		err := c.Delete(ctx, &camelCatalogList.Items[i])
+		if err != nil {
+			return err
 		}
 	}
 

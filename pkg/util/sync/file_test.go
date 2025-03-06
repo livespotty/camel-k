@@ -19,18 +19,18 @@ package sync
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFile(t *testing.T) {
 	file, err := os.CreateTemp("", "camel-k-test-*")
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	defer func() {
 		_ = os.Remove(file.Name())
 	}()
@@ -38,12 +38,12 @@ func TestFile(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(100*time.Second))
 	defer cancel()
 	changes, err := File(ctx, file.Name())
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	time.Sleep(100 * time.Millisecond)
 	expectedNumChanges := 3
 	for i := 0; i < expectedNumChanges; i++ {
-		if err := ioutil.WriteFile(file.Name(), []byte("data-"+strconv.Itoa(i)), 0o600); err != nil {
+		if err := os.WriteFile(file.Name(), []byte("data-"+strconv.Itoa(i)), 0o600); err != nil {
 			t.Error(err)
 		}
 		time.Sleep(350 * time.Millisecond)

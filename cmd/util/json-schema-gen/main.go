@@ -20,17 +20,19 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
-	"github.com/apache/camel-k/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/io"
+
+	"github.com/apache/camel-k/v2/pkg/util"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	clientscheme "k8s.io/client-go/kubernetes/scheme"
 
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 func main() {
@@ -42,7 +44,7 @@ func main() {
 	schema := os.Args[2]
 	path := os.Args[3]
 	isArray := os.Args[4] == "true"
-	destination := os.Args[5]
+	destination := filepath.Clean(os.Args[5])
 
 	if err := generate(crd, schema, path, isArray, destination); err != nil {
 		panic(err)
@@ -55,7 +57,7 @@ func generate(crdFilename, dslFilename, path string, isArray bool, destination s
 		return err
 	}
 	if !isArray && dslSchema["type"] == "array" {
-		// nolint: forcetypeassert
+		//nolint:forcetypeassert
 		dslSchema = dslSchema["items"].(map[string]interface{})
 	}
 
@@ -99,7 +101,7 @@ func generate(crdFilename, dslFilename, path string, isArray bool, destination s
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(destination, result, 0o600)
+	return os.WriteFile(destination, result, io.FilePerm600)
 }
 
 func remapRef(ref string) string {

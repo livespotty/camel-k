@@ -20,11 +20,11 @@ package builder
 import (
 	"context"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/log"
-	"github.com/apache/camel-k/pkg/util/maven"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/log"
+	"github.com/apache/camel-k/v2/pkg/util/maven"
 )
 
 const (
@@ -64,7 +64,7 @@ type Task interface {
 type Step interface {
 	ID() string
 	Phase() int32
-	execute(*builderContext) error
+	execute(context *builderContext) error
 }
 
 type resource struct {
@@ -72,7 +72,7 @@ type resource struct {
 	Content []byte
 }
 
-// nolint: containedctx
+//nolint:containedctx
 type builderContext struct {
 	client.Client
 	C                 context.Context

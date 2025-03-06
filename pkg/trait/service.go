@@ -22,12 +22,16 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/metadata"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/metadata"
+)
+
+const (
+	serviceTraitID    = "service"
+	serviceTraitOrder = 1500
 )
 
 type serviceTrait struct {
@@ -35,74 +39,65 @@ type serviceTrait struct {
 	traitv1.ServiceTrait `property:",squash"`
 }
 
-const serviceTraitID = "service"
-
 func newServiceTrait() Trait {
 	return &serviceTrait{
-		BaseTrait: NewBaseTrait(serviceTraitID, 1500),
+		BaseTrait: NewBaseTrait(serviceTraitID, serviceTraitOrder),
 	}
 }
 
-// IsAllowedInProfile overrides default.
-func (t *serviceTrait) IsAllowedInProfile(profile v1.TraitProfile) bool {
-	return profile.Equal(v1.TraitProfileKubernetes) ||
-		profile.Equal(v1.TraitProfileOpenShift)
-}
-
-func (t *serviceTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, true) {
-		if e.Integration != nil {
-			e.Integration.Status.SetCondition(
-				v1.IntegrationConditionServiceAvailable,
-				corev1.ConditionFalse,
-				v1.IntegrationConditionServiceNotAvailableReason,
-				"explicitly disabled",
-			)
+func (t *serviceTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil {
+		return false, nil, nil
+	}
+	if !ptr.Deref(t.Enabled, true) {
+		return false, NewIntegrationCondition(
+			"Service",
+			v1.IntegrationConditionServiceAvailable,
+			corev1.ConditionFalse,
+			v1.IntegrationConditionServiceNotAvailableReason,
+			"explicitly disabled",
+		), nil
+	}
+	// in case the knative-service and service trait are enabled, the knative-service has priority
+	// then this service is disabled
+	if e.GetTrait(knativeServiceTraitID) != nil {
+		knativeServiceTrait, _ := e.GetTrait(knativeServiceTraitID).(*knativeServiceTrait)
+		if ptr.Deref(knativeServiceTrait.Enabled, true) {
+			return false, NewIntegrationConditionPlatformDisabledWithMessage("Service", "knative-service trait has priority over this trait"), nil
 		}
-
-		return false, nil
 	}
 
 	if !e.IntegrationInRunningPhases() {
-		return false, nil
+		return false, nil, nil
 	}
 
-	if pointer.BoolDeref(t.Auto, true) {
-		sources, err := kubernetes.ResolveIntegrationSources(e.Ctx, t.Client, e.Integration, e.Resources)
+	if ptr.Deref(t.Auto, true) {
+		exposeHTTPServices, err := e.ConsumeMeta(false, func(meta metadata.IntegrationMetadata) bool {
+			return meta.ExposesHTTPServices
+		})
+		var condition *TraitCondition
 		if err != nil {
-			e.Integration.Status.SetCondition(
+			condition = NewIntegrationCondition(
+				"Service",
 				v1.IntegrationConditionServiceAvailable,
 				corev1.ConditionFalse,
 				v1.IntegrationConditionServiceNotAvailableReason,
 				err.Error(),
 			)
-
-			return false, err
+			return false, condition, err
 		}
 
-		meta, err := metadata.ExtractAll(e.CamelCatalog, sources)
-		if err != nil {
-			return false, err
-		}
-		if !meta.ExposesHTTPServices {
-			e.Integration.Status.SetCondition(
-				v1.IntegrationConditionServiceAvailable,
-				corev1.ConditionFalse,
-				v1.IntegrationConditionServiceNotAvailableReason,
-				"no http service required",
-			)
-
-			return false, nil
-		}
+		t.Enabled = ptr.To(exposeHTTPServices)
 	}
-	return true, nil
+
+	return ptr.Deref(t.Enabled, false), nil, nil
 }
 
 func (t *serviceTrait) Apply(e *Environment) error {
 	svc := e.Resources.GetServiceForIntegration(e.Integration)
 	// add a new service if not already created
 	if svc == nil {
-		svc = getServiceFor(e)
+		svc = t.getServiceFor(e.Integration.Name, e.Integration.Namespace)
 
 		var serviceType corev1.ServiceType
 		if t.Type != nil {
@@ -116,7 +111,7 @@ func (t *serviceTrait) Apply(e *Environment) error {
 			default:
 				return fmt.Errorf("unsupported service type: %s", *t.Type)
 			}
-		} else if pointer.BoolDeref(t.NodePort, false) {
+		} else if ptr.Deref(t.NodePort, false) {
 			t.L.ForIntegration(e.Integration).Infof("Integration %s/%s should no more use the flag node-port as it is deprecated, use type instead", e.Integration.Namespace, e.Integration.Name)
 			serviceType = corev1.ServiceTypeNodePort
 		}
@@ -126,23 +121,28 @@ func (t *serviceTrait) Apply(e *Environment) error {
 	return nil
 }
 
-func getServiceFor(e *Environment) *corev1.Service {
+func (t *serviceTrait) getServiceFor(itName, itNamespace string) *corev1.Service {
+	labels := map[string]string{
+		v1.IntegrationLabel: itName,
+	}
+	for k, v := range t.Labels {
+		labels[k] = v
+	}
 	return &corev1.Service{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Service",
 			APIVersion: "v1",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      e.Integration.Name,
-			Namespace: e.Integration.Namespace,
-			Labels: map[string]string{
-				v1.IntegrationLabel: e.Integration.Name,
-			},
+			Name:        itName,
+			Namespace:   itNamespace,
+			Labels:      labels,
+			Annotations: t.Annotations,
 		},
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{},
 			Selector: map[string]string{
-				v1.IntegrationLabel: e.Integration.Name,
+				v1.IntegrationLabel: itName,
 			},
 		},
 	}

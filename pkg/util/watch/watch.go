@@ -23,9 +23,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
 )
 
 // HandleIntegrationStateChanges watches an Integration resource and invoke the given handler when its status changes.
@@ -173,6 +174,8 @@ func HandlePlatformStateChanges(ctx context.Context, c client.Client, platform *
 
 // HandleIntegrationPlatformEvents watches all events related to the given integration platform.
 // This function blocks until the handler function returns true or either the events channel or the context is closed.
+//
+//nolint:nestif
 func HandleIntegrationPlatformEvents(ctx context.Context, c client.Client, p *v1.IntegrationPlatform,
 	handler func(event *corev1.Event) bool) error {
 	watcher, err := c.CoreV1().Events(p.Namespace).
@@ -198,6 +201,7 @@ func HandleIntegrationPlatformEvents(ctx context.Context, c client.Client, p *v1
 			if !ok {
 				return nil
 			}
+
 			if e.Object != nil {
 				if evt, ok := e.Object.(*corev1.Event); ok {
 					if isAllowed(lastEvent, evt, p.CreationTimestamp.UnixNano()) {
@@ -208,6 +212,31 @@ func HandleIntegrationPlatformEvents(ctx context.Context, c client.Client, p *v1
 					}
 				}
 			}
+		}
+	}
+}
+
+// WaitPodToTerminate will wait for a given pod to teminate.
+func WaitPodToTerminate(ctx context.Context, c client.Client, pod *corev1.Pod) error {
+	opts := metav1.ListOptions{
+		TypeMeta:      metav1.TypeMeta{},
+		FieldSelector: fmt.Sprintf("metadata.name=%s", pod.Name),
+	}
+	watcher, err := c.CoreV1().Pods(pod.Namespace).Watch(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	defer watcher.Stop()
+
+	for {
+		select {
+		case event := <-watcher.ResultChan():
+			if event.Type == watch.Deleted {
+				return nil
+			}
+		case <-ctx.Done():
+			return nil
 		}
 	}
 }

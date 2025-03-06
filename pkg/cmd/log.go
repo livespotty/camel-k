@@ -22,8 +22,8 @@ import (
 	"fmt"
 	"time"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	k8slog "github.com/apache/camel-k/pkg/util/kubernetes/log"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	k8slog "github.com/apache/camel-k/v2/pkg/util/kubernetes/log"
 	"github.com/spf13/cobra"
 	k8errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,7 +42,7 @@ func newCmdLog(rootCmdOptions *RootCmdOptions) (*cobra.Command, *logCmdOptions) 
 		Long:    `Print the logs of an integration.`,
 		Aliases: []string{"logs"},
 		Args:    options.validate,
-		PreRunE: decode(&options),
+		PreRunE: decode(&options, options.Flags),
 		RunE:    options.run,
 	}
 
@@ -95,6 +95,8 @@ func (o *logCmdOptions) run(cmd *cobra.Command, args []string) error {
 	currLogMsg := ""
 	newLogMsg := ""
 
+	// wrong deprecation notice --> https://github.com/kubernetes/apimachinery/issues/153
+	//nolint:staticcheck
 	err = wait.PollImmediate(pollInterval, pollTimeout, func() (bool, error) {
 		//
 		// Reduce repetition of messages by tracking the last message

@@ -21,19 +21,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"sort"
 	"strings"
 
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
-	"github.com/google/go-github/v32/github"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/google/go-github/v52/github"
 	"golang.org/x/oauth2"
 
 	"k8s.io/apimachinery/pkg/util/yaml"
-
-	"github.com/gregjones/httpcache"
 )
 
 type githubKameletRepository struct {
@@ -44,11 +43,11 @@ type githubKameletRepository struct {
 	ref        string
 }
 
-func newGithubKameletRepository(owner, repo, path, ref string) KameletRepository {
-	httpClient := httpcache.NewMemoryCacheTransport().Client()
+func newGithubKameletRepository(ctx context.Context, owner, repo, path, ref string) KameletRepository {
+	httpClient := &http.Client{}
 	if token, ok := os.LookupEnv("GITHUB_TOKEN"); ok {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
-		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
+		ctx := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 		httpClient = oauth2.NewClient(ctx, ts)
 	}
 
@@ -61,7 +60,7 @@ func newGithubKameletRepository(owner, repo, path, ref string) KameletRepository
 	}
 }
 
-// Enforce type
+// Enforce type.
 var _ KameletRepository = &githubKameletRepository{}
 
 func (c *githubKameletRepository) List(ctx context.Context) ([]string, error) {
@@ -79,7 +78,7 @@ func (c *githubKameletRepository) List(ctx context.Context) ([]string, error) {
 	return res, nil
 }
 
-func (c *githubKameletRepository) Get(ctx context.Context, name string) (*v1alpha1.Kamelet, error) {
+func (c *githubKameletRepository) Get(ctx context.Context, name string) (*v1.Kamelet, error) {
 	dir, err := c.listFiles(ctx)
 	if err != nil {
 		return nil, err
@@ -113,32 +112,42 @@ func (c *githubKameletRepository) listFiles(ctx context.Context) ([]*github.Repo
 	return dir, err
 }
 
-func (c *githubKameletRepository) downloadKamelet(ctx context.Context, url string) (*v1alpha1.Kamelet, error) {
+func (c *githubKameletRepository) downloadKamelet(ctx context.Context, url string) (*v1.Kamelet, error) {
+	return downloadGithubKamelet(ctx, url, c.httpClient)
+}
+
+func downloadGithubKamelet(ctx context.Context, url string, httpClient *http.Client) (*v1.Kamelet, error) {
+	parsedURL, err := neturl.Parse(url)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != 200 {
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("cannot download file %s: %d %s", url, resp.StatusCode, resp.Status)
 	}
 
-	content, err := ioutil.ReadAll(resp.Body)
+	content, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-	if strings.HasSuffix(url, ".yaml") || strings.HasSuffix(url, ".yml") {
+	if strings.HasSuffix(parsedURL.Path, ".yaml") || strings.HasSuffix(parsedURL.Path, ".yml") {
 		content, err = yaml.ToJSON(content)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	var kamelet v1alpha1.Kamelet
+	var kamelet v1.Kamelet
 	if err := json.Unmarshal(content, &kamelet); err != nil {
 		return nil, err
 	}

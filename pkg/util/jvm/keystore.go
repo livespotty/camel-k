@@ -23,18 +23,22 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
+	"path/filepath"
 	"strings"
 
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/log"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/log"
+)
+
+const (
+	keystoreSize = 10
 )
 
 var (
 	logger = log.WithName("keytool")
 
-	loggerInfo  = func(s string) { logger.Info(s) }
-	loggerError = func(s string) { logger.Error(nil, s) }
+	loggerInfo  = func(s string) string { logger.Info(s); return s }
+	loggerError = func(s string) string { logger.Error(nil, s); return s }
 )
 
 func GenerateKeystore(ctx context.Context, keystoreDir, keystoreName, keystorePass string, data [][]byte) error {
@@ -45,7 +49,7 @@ func GenerateKeystore(ctx context.Context, keystoreDir, keystoreName, keystorePa
 		cmd.Stdin = bytes.NewReader(data)
 		// keytool logs info messages to stderr, as stdout is used to output results,
 		// otherwise it logs error messages to stdout.
-		err := util.RunAndLog(ctx, cmd, loggerError, loggerInfo)
+		err := util.RunAndLog(ctx, cmd, loggerInfo, loggerError)
 		if err != nil {
 			return err
 		}
@@ -56,13 +60,13 @@ func GenerateKeystore(ctx context.Context, keystoreDir, keystoreName, keystorePa
 	// JVM truststore.
 	javaHome, ok := os.LookupEnv("JAVA_HOME")
 	if ok {
-		caCertsPath := path.Join(javaHome, "lib/security/cacerts")
+		caCertsPath := filepath.Join(javaHome, "lib/security/cacerts")
 		args := strings.Fields(fmt.Sprintf("-importkeystore -noprompt -srckeystore %s -srcstorepass %s -destkeystore %s -deststorepass %s", caCertsPath, "changeit", keystoreName, keystorePass))
 		cmd := exec.CommandContext(ctx, "keytool", args...)
 		cmd.Dir = keystoreDir
 		// keytool logs info messages to stderr, as stdout is used to output results,
 		// otherwise it logs error messages to stdout.
-		err := util.RunAndLog(ctx, cmd, loggerError, loggerInfo)
+		err := util.RunAndLog(ctx, cmd, loggerInfo, loggerError)
 		if err != nil {
 			return err
 		}
@@ -75,5 +79,5 @@ func GenerateKeystore(ctx context.Context, keystoreDir, keystoreName, keystorePa
 // The keytool CLI mandates a password at least 6 characters long
 // to access any key stores.
 func NewKeystorePassword() string {
-	return util.RandomString(10)
+	return util.RandomString(keystoreSize)
 }

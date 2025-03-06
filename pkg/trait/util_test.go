@@ -21,62 +21,54 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
 
+	"github.com/apache/camel-k/v2/pkg/internal"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToTraitMap(t *testing.T) {
 	traits := v1.Traits{
 		Container: &traitv1.ContainerTrait{
-			Trait: traitv1.Trait{
-				Enabled: pointer.Bool(true),
-				Configuration: configurationFromMap(t, map[string]interface{}{
-					"name": "test-container",
-					"port": 8082,
-				}),
-			},
-			Auto:            pointer.Bool(false),
-			Expose:          pointer.Bool(true),
-			Port:            8081,
-			PortName:        "http-8081",
-			ServicePort:     81,
-			ServicePortName: "http-81",
+			PlatformBaseTrait: traitv1.PlatformBaseTrait{},
+			Name:              "test-container",
+			Auto:              ptr.To(false),
+			Expose:            ptr.To(true),
+			Port:              8081,
+			PortName:          "http-8081",
+			ServicePort:       81,
+			ServicePortName:   "http-81",
 		},
 		Service: &traitv1.ServiceTrait{
 			Trait: traitv1.Trait{
-				Enabled: pointer.Bool(true),
+				Enabled: ptr.To(true),
 			},
 		},
 		Addons: map[string]v1.AddonTrait{
-			"tracing": ToAddonTrait(t, map[string]interface{}{
+			"telemetry": toAddonTrait(t, map[string]interface{}{
 				"enabled": true,
 			}),
 		},
 	}
 	expected := Options{
 		"container": {
-			"enabled":         true,
 			"auto":            false,
 			"expose":          true,
 			"port":            float64(8081),
 			"portName":        "http-8081",
 			"servicePort":     float64(81),
 			"servicePortName": "http-81",
-			"configuration": map[string]interface{}{
-				"name": "test-container",
-				"port": float64(8082),
-			},
+			"name":            "test-container",
 		},
 		"service": {
 			"enabled": true,
 		},
 		"addons": {
-			"tracing": map[string]interface{}{
+			"telemetry": map[string]interface{}{
 				"enabled": true,
 			},
 		},
@@ -84,44 +76,8 @@ func TestToTraitMap(t *testing.T) {
 
 	traitMap, err := ToTraitMap(traits)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, expected, traitMap)
-}
-
-func TestToPropertyMap(t *testing.T) {
-	trait := traitv1.ContainerTrait{
-		Trait: traitv1.Trait{
-			Enabled: pointer.Bool(true),
-			Configuration: configurationFromMap(t, map[string]interface{}{
-				"name": "test-container",
-				"port": 8082,
-			}),
-		},
-		Auto:            pointer.Bool(false),
-		Expose:          pointer.Bool(true),
-		Port:            8081,
-		PortName:        "http-8081",
-		ServicePort:     81,
-		ServicePortName: "http-81",
-	}
-	expected := map[string]interface{}{
-		"enabled":         true,
-		"auto":            false,
-		"expose":          true,
-		"port":            float64(8081),
-		"portName":        "http-8081",
-		"servicePort":     float64(81),
-		"servicePortName": "http-81",
-		"configuration": map[string]interface{}{
-			"name": "test-container",
-			"port": float64(8082),
-		},
-	}
-
-	propMap, err := ToPropertyMap(trait)
-
-	assert.NoError(t, err)
-	assert.Equal(t, expected, propMap)
 }
 
 func TestMigrateLegacyConfiguration(t *testing.T) {
@@ -131,13 +87,9 @@ func TestMigrateLegacyConfiguration(t *testing.T) {
 		"port":            float64(8081),
 		"portName":        "http-8081",
 		"servicePortName": "http-81",
-		"configuration": map[string]interface{}{
-			"auto":        true,
-			"expose":      true,
-			"name":        "test-container",
-			"port":        float64(8082),
-			"servicePort": float64(81),
-		},
+		"expose":          true,
+		"name":            "test-container",
+		"servicePort":     float64(81),
 	}
 	expected := map[string]interface{}{
 		"enabled":         true,
@@ -152,7 +104,7 @@ func TestMigrateLegacyConfiguration(t *testing.T) {
 
 	err := MigrateLegacyConfiguration(trait)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, expected, trait)
 }
 
@@ -164,160 +116,50 @@ func TestMigrateLegacyConfiguration_invalidConfiguration(t *testing.T) {
 
 	err := MigrateLegacyConfiguration(trait)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestToTrait(t *testing.T) {
 	config := map[string]interface{}{
-		"enabled":         true,
 		"auto":            false,
 		"expose":          true,
 		"port":            8081,
 		"portName":        "http-8081",
 		"servicePort":     81,
 		"servicePortName": "http-81",
-		"configuration": map[string]interface{}{
-			"name": "test-container",
-			"port": float64(8082),
-		},
+		"name":            "test-container",
 	}
 	expected := traitv1.ContainerTrait{
-		Trait: traitv1.Trait{
-			Enabled: pointer.Bool(true),
-			Configuration: configurationFromMap(t, map[string]interface{}{
-				"name": "test-container",
-				"port": 8082,
-			}),
-		},
-		Auto:            pointer.Bool(false),
-		Expose:          pointer.Bool(true),
-		Port:            8081,
-		PortName:        "http-8081",
-		ServicePort:     81,
-		ServicePortName: "http-81",
+		PlatformBaseTrait: traitv1.PlatformBaseTrait{},
+		Name:              "test-container",
+		Auto:              ptr.To(false),
+		Expose:            ptr.To(true),
+		Port:              8081,
+		PortName:          "http-8081",
+		ServicePort:       81,
+		ServicePortName:   "http-81",
 	}
 
 	trait := traitv1.ContainerTrait{}
 	err := ToTrait(config, &trait)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, expected, trait)
 }
 
 func TestSameTraits(t *testing.T) {
-	t.Run("empty traits", func(t *testing.T) {
-		oldKlb := &v1alpha1.KameletBinding{
-			Spec: v1alpha1.KameletBindingSpec{
-				Integration: &v1.IntegrationSpec{
-					Traits: v1.Traits{},
-				},
-			},
-		}
-		newKlb := &v1alpha1.KameletBinding{
-			Spec: v1alpha1.KameletBindingSpec{
-				Integration: &v1.IntegrationSpec{
-					Traits: v1.Traits{},
-				},
-			},
-		}
-
-		ok, err := KameletBindingsHaveSameTraits(oldKlb, newKlb)
-		assert.NoError(t, err)
-		assert.True(t, ok)
-	})
-
-	t.Run("same traits", func(t *testing.T) {
-		oldKlb := &v1alpha1.KameletBinding{
-			Spec: v1alpha1.KameletBindingSpec{
-				Integration: &v1.IntegrationSpec{
-					Traits: v1.Traits{
-						Container: &traitv1.ContainerTrait{
-							Image: "foo/bar:1",
-						},
-					},
-				},
-			},
-		}
-		newKlb := &v1alpha1.KameletBinding{
-			Spec: v1alpha1.KameletBindingSpec{
-				Integration: &v1.IntegrationSpec{
-					Traits: v1.Traits{
-						Container: &traitv1.ContainerTrait{
-							Image: "foo/bar:1",
-						},
-					},
-				},
-			},
-		}
-
-		ok, err := KameletBindingsHaveSameTraits(oldKlb, newKlb)
-		assert.NoError(t, err)
-		assert.True(t, ok)
-	})
-
-	t.Run("not same traits", func(t *testing.T) {
-		oldKlb := &v1alpha1.KameletBinding{
-			Spec: v1alpha1.KameletBindingSpec{
-				Integration: &v1.IntegrationSpec{
-					Traits: v1.Traits{
-						Container: &traitv1.ContainerTrait{
-							Image: "foo/bar:1",
-						},
-					},
-				},
-			},
-		}
-		newKlb := &v1alpha1.KameletBinding{
-			Spec: v1alpha1.KameletBindingSpec{
-				Integration: &v1.IntegrationSpec{
-					Traits: v1.Traits{
-						Owner: &traitv1.OwnerTrait{
-							TargetAnnotations: []string{"foo"},
-						},
-					},
-				},
-			},
-		}
-
-		ok, err := KameletBindingsHaveSameTraits(oldKlb, newKlb)
-		assert.NoError(t, err)
-		assert.False(t, ok)
-	})
-
-	t.Run("same traits with annotations", func(t *testing.T) {
-		oldKlb := &v1alpha1.KameletBinding{
-			Spec: v1alpha1.KameletBindingSpec{
-				Integration: &v1.IntegrationSpec{
-					Traits: v1.Traits{
-						Container: &traitv1.ContainerTrait{
-							Image: "foo/bar:1",
-						},
-					},
-				},
-			},
-		}
-		newKlb := &v1alpha1.KameletBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Annotations: map[string]string{
-					v1.TraitAnnotationPrefix + "container.image": "foo/bar:1",
-				},
-			},
-		}
-
-		ok, err := KameletBindingsHaveSameTraits(oldKlb, newKlb)
-		assert.NoError(t, err)
-		assert.True(t, ok)
-	})
+	c, err := internal.NewFakeClient()
+	require.NoError(t, err)
 
 	t.Run("same traits with annotations only", func(t *testing.T) {
-		oldKlb := &v1alpha1.KameletBinding{
+		oldKlb := &v1.Pipe{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{
 					v1.TraitAnnotationPrefix + "container.image": "foo/bar:1",
 				},
 			},
 		}
-		newKlb := &v1alpha1.KameletBinding{
+		newKlb := &v1.Pipe{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{
 					v1.TraitAnnotationPrefix + "container.image": "foo/bar:1",
@@ -325,45 +167,20 @@ func TestSameTraits(t *testing.T) {
 			},
 		}
 
-		ok, err := KameletBindingsHaveSameTraits(oldKlb, newKlb)
-		assert.NoError(t, err)
+		ok, err := PipesHaveSameTraits(c, oldKlb, newKlb)
+		require.NoError(t, err)
 		assert.True(t, ok)
-	})
-
-	t.Run("not same traits with annotations", func(t *testing.T) {
-		oldKlb := &v1alpha1.KameletBinding{
-			Spec: v1alpha1.KameletBindingSpec{
-				Integration: &v1.IntegrationSpec{
-					Traits: v1.Traits{
-						Container: &traitv1.ContainerTrait{
-							Image: "foo/bar:1",
-						},
-					},
-				},
-			},
-		}
-		newKlb := &v1alpha1.KameletBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Annotations: map[string]string{
-					v1.TraitAnnotationPrefix + "container.image": "foo/bar:2",
-				},
-			},
-		}
-
-		ok, err := KameletBindingsHaveSameTraits(oldKlb, newKlb)
-		assert.NoError(t, err)
-		assert.False(t, ok)
 	})
 
 	t.Run("not same traits with annotations only", func(t *testing.T) {
-		oldKlb := &v1alpha1.KameletBinding{
+		oldKlb := &v1.Pipe{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{
 					v1.TraitAnnotationPrefix + "container.image": "foo/bar:1",
 				},
 			},
 		}
-		newKlb := &v1alpha1.KameletBinding{
+		newKlb := &v1.Pipe{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{
 					v1.TraitAnnotationPrefix + "container.image": "foo/bar:2",
@@ -371,8 +188,80 @@ func TestSameTraits(t *testing.T) {
 			},
 		}
 
-		ok, err := KameletBindingsHaveSameTraits(oldKlb, newKlb)
-		assert.NoError(t, err)
+		ok, err := PipesHaveSameTraits(c, oldKlb, newKlb)
+		require.NoError(t, err)
 		assert.False(t, ok)
 	})
+}
+
+func TestHasMathchingTraitsEmpty(t *testing.T) {
+	opt1 := Options{
+		"builder": {},
+		"camel": {
+			"runtimeVersion": "1.2.3",
+		},
+		"quarkus": {},
+	}
+	opt2 := Options{
+		"camel": {
+			"runtimeVersion": "1.2.3",
+		},
+	}
+	opt3 := Options{
+		"camel": {
+			"runtimeVersion": "1.2.3",
+		},
+	}
+	opt4 := Options{
+		"camel": {
+			"runtimeVersion": "3.2.1",
+		},
+	}
+	b1, err := HasMatchingTraits(opt1, opt2)
+	assert.Nil(t, err)
+	assert.True(t, b1)
+	b2, err := HasMatchingTraits(opt1, opt4)
+	assert.Nil(t, err)
+	assert.False(t, b2)
+	b3, err := HasMatchingTraits(opt2, opt3)
+	assert.Nil(t, err)
+	assert.True(t, b3)
+}
+
+func TestHasMathchingTraitsMissing(t *testing.T) {
+	opt1 := Options{}
+	opt2 := Options{
+		"camel": {
+			"properties": []string{"a=1"},
+		},
+	}
+	b1, err := HasMatchingTraits(opt1, opt2)
+	assert.Nil(t, err)
+	assert.True(t, b1)
+}
+
+func TestIntegrationAndPipeSameTraits(t *testing.T) {
+	pipe := &v1.Pipe{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				v1.TraitAnnotationPrefix + "camel.runtime-version": "1.2.3",
+			},
+		},
+	}
+
+	integration := &v1.Integration{
+		Spec: v1.IntegrationSpec{
+			Traits: v1.Traits{
+				Camel: &traitv1.CamelTrait{
+					RuntimeVersion: "1.2.3",
+				},
+			},
+		},
+	}
+	c, err := internal.NewFakeClient(pipe, integration)
+	require.NoError(t, err)
+
+	result, err := IntegrationAndPipeSameTraits(c, integration, pipe)
+	require.NoError(t, err)
+	assert.True(t, result)
 }

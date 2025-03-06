@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -28,28 +29,30 @@ import (
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 func TestConfigurePrometheusTraitInRightPhaseDoesSucceed(t *testing.T) {
 	trait, environment := createNominalPrometheusTest()
 
-	configured, err := trait.Configure(environment)
+	configured, condition, err := trait.Configure(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.True(t, configured)
+	assert.Nil(t, condition)
 }
 
 func TestConfigurePrometheusTraitInWrongPhaseDoesNotSucceed(t *testing.T) {
 	trait, environment := createNominalPrometheusTest()
 	environment.Integration.Status.Phase = v1.IntegrationPhaseBuildingKit
 
-	configured, err := trait.Configure(environment)
+	configured, condition, err := trait.Configure(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.False(t, configured)
+	assert.Nil(t, condition)
 }
 
 func TestApplyNominalPrometheusTraitDoesSucceed(t *testing.T) {
@@ -57,7 +60,7 @@ func TestApplyNominalPrometheusTraitDoesSucceed(t *testing.T) {
 
 	err := trait.Apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	container := environment.Resources.GetContainerByName(defaultContainerName)
 	assert.NotNil(t, container)
@@ -86,7 +89,7 @@ func TestApplyPrometheusTraitWithoutContainerDoesNotSucceed(t *testing.T) {
 
 	err := trait.Apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	assert.Len(t, environment.Integration.Status.Conditions, 1)
 	condition := environment.Integration.Status.Conditions[0]
@@ -99,7 +102,7 @@ func TestPrometheusTraitGetPodMonitor(t *testing.T) {
 
 	podMonitor, err := trait.getPodMonitorFor(environment, defaultContainerPortName)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	assert.NotNil(t, podMonitor)
 	assert.Equal(t, "PodMonitor", podMonitor.Kind)

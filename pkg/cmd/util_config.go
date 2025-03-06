@@ -18,13 +18,14 @@ limitations under the License.
 package cmd
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 
-	"github.com/apache/camel-k/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/io"
+
+	"github.com/apache/camel-k/v2/pkg/util"
 	p "github.com/gertd/go-pluralize"
 
 	"github.com/spf13/cobra"
@@ -58,7 +59,7 @@ func LoadConfiguration() (*Config, error) {
 	return loadConfiguration(viper.ConfigFileUsed())
 }
 
-// LoadConfiguration loads a kamel configuration file from a specific location.
+// LoadConfigurationFrom loads a kamel configuration file from a specific location.
 func LoadConfigurationFrom(location string) (*Config, error) {
 	return loadConfiguration(location)
 }
@@ -77,7 +78,7 @@ func loadConfiguration(location string) (*Config, error) {
 		return &config, nil
 	}
 
-	data, err := ioutil.ReadFile(config.location)
+	data, err := os.ReadFile(config.location)
 	if err != nil {
 		return &config, err
 	}
@@ -97,7 +98,7 @@ func (cfg *Config) Update(cmd *cobra.Command, nodeID string, data interface{}, c
 	pl := p.NewClient()
 	val := reflect.ValueOf(data).Elem()
 
-	for i := 0; i < val.NumField(); i++ {
+	for i := range val.NumField() {
 		field := val.Type().Field(i)
 		if !field.Anonymous {
 			if ktag, ok := field.Tag.Lookup(KamelTagName); ok {
@@ -148,7 +149,7 @@ func (cfg *Config) Delete(path string) {
 func (cfg *Config) Save() error {
 	root := filepath.Dir(cfg.location)
 	if _, err := os.Stat(root); os.IsNotExist(err) {
-		if e := os.MkdirAll(root, 0o600); e != nil {
+		if e := os.MkdirAll(root, io.FilePerm600); e != nil {
 			return e
 		}
 	}
@@ -157,7 +158,7 @@ func (cfg *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(cfg.location, data, 0o600)
+	return os.WriteFile(cfg.location, data, io.FilePerm600)
 }
 
 func (cfg *Config) navigate(values map[string]interface{}, prefix string, create bool) map[string]interface{} {

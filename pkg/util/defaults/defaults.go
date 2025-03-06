@@ -23,29 +23,26 @@ package defaults
 
 const (
 	// Version --
-	Version = "1.11.0-SNAPSHOT"
+	Version = "2.7.0-SNAPSHOT"
 
 	// DefaultRuntimeVersion --
-	DefaultRuntimeVersion = "1.14.0"
-
-	// BuildahVersion --
-	BuildahVersion = "1.23.3"
-
-	// KanikoVersion --
-	KanikoVersion = "0.17.1"
+	DefaultRuntimeVersion = "3.15.2"
 
 	// baseImage --
-	baseImage = "docker.io/adoptopenjdk/openjdk11:slim"
+	baseImage = "eclipse-temurin:17-jdk"
 
 	// LocalRepository --
-	LocalRepository = "/tmp/artifacts/m2"
+	LocalRepository = "/etc/maven/m2"
 
 	// ImageName --
 	ImageName = "docker.io/apache/camel-k"
+
+	// OpenShiftRegistryAddress --
+	OpenShiftRegistryAddress = "image-registry.openshift-image-registry.svc:5000"
 
 	// installDefaultKamelets --
 	installDefaultKamelets = true
 )
 
-//GitCommit must be provided during application build
+// GitCommit must be provided during application build
 var GitCommit string

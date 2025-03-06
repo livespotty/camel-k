@@ -18,14 +18,15 @@ limitations under the License.
 package reference
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
 	"unicode"
 
-	camelv1alpha1 "github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
-	"github.com/pkg/errors"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+
 	corev1 "k8s.io/api/core/v1"
 	eventingv1 "knative.dev/eventing/pkg/apis/eventing/v1"
 	messagingv1 "knative.dev/eventing/pkg/apis/messaging/v1"
@@ -44,7 +45,7 @@ var (
 	templates = map[string]corev1.ObjectReference{
 		"kamelet": {
 			Kind:       "Kamelet",
-			APIVersion: camelv1alpha1.SchemeGroupVersion.String(),
+			APIVersion: v1.SchemeGroupVersion.String(),
 		},
 		"channel": {
 			Kind:       "Channel",
@@ -105,11 +106,11 @@ func (c *Converter) PropertiesFromString(str string) (map[string]string, error) 
 			}
 			k, errkey := url.QueryUnescape(kv[0])
 			if errkey != nil {
-				return nil, errors.Wrapf(errkey, "cannot unescape key %q", kv[0])
+				return nil, fmt.Errorf("cannot unescape key %q: %w", kv[0], errkey)
 			}
 			v, errval := url.QueryUnescape(kv[1])
 			if errval != nil {
-				return nil, errors.Wrapf(errval, "cannot unescape value %q", kv[1])
+				return nil, fmt.Errorf("cannot unescape value %q: %w", kv[1], errval)
 			}
 			res[k] = v
 		}

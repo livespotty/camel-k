@@ -21,18 +21,22 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
-	"github.com/pkg/errors"
+	"github.com/apache/camel-k/v2/pkg/util/boolean"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/defaults"
-	"github.com/apache/camel-k/pkg/util/digest"
-	"github.com/apache/camel-k/pkg/util/maven"
+	"github.com/apache/camel-k/v2/pkg/util/io"
+
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
+	"github.com/apache/camel-k/v2/pkg/util/digest"
+	"github.com/apache/camel-k/v2/pkg/util/maven"
 )
+
+const projectModePerm = 0600
 
 func init() {
 	registerSteps(Quarkus)
@@ -49,6 +53,7 @@ type quarkusSteps struct {
 	GenerateQuarkusProject     Step
 	BuildQuarkusRunner         Step
 	ComputeQuarkusDependencies Step
+	PrepareProjectWithSources  Step
 
 	CommonSteps []Step
 }
@@ -56,20 +61,62 @@ type quarkusSteps struct {
 var Quarkus = quarkusSteps{
 	LoadCamelQuarkusCatalog:    NewStep(InitPhase, loadCamelQuarkusCatalog),
 	GenerateQuarkusProject:     NewStep(ProjectGenerationPhase, generateQuarkusProject),
+	PrepareProjectWithSources:  NewStep(ProjectBuildPhase-1, prepareProjectWithSources),
 	BuildQuarkusRunner:         NewStep(ProjectBuildPhase, buildQuarkusRunner),
 	ComputeQuarkusDependencies: NewStep(ProjectBuildPhase+1, computeQuarkusDependencies),
 }
 
+func prepareProjectWithSources(ctx *builderContext) error {
+	sourcesPath := filepath.Join(ctx.Path, "maven", "src", "main", "resources", "routes")
+	if err := os.MkdirAll(sourcesPath, os.ModePerm); err != nil {
+		return fmt.Errorf("failure while creating resource folder: %w", err)
+	}
+
+	sourceList := ""
+	for _, source := range ctx.Build.Sources {
+		if sourceList != "" {
+			sourceList += ","
+		}
+		sourceList += "classpath:routes/" + source.Name
+		if err := os.WriteFile(
+			filepath.Join(sourcesPath, source.Name),
+			[]byte(source.Content),
+			projectModePerm,
+		); err != nil {
+			return fmt.Errorf("failure while writing %s: %w", source.Name, err)
+		}
+	}
+
+	if sourceList != "" {
+		routesIncludedPattern := "camel.main.routes-include-pattern = " + sourceList
+		if err := os.WriteFile(
+			filepath.Join(filepath.Dir(sourcesPath), "application.properties"),
+			[]byte(routesIncludedPattern),
+			projectModePerm,
+		); err != nil {
+			return fmt.Errorf("failure while writing the configuration application.properties: %w", err)
+		}
+	}
+	return nil
+}
+
 func loadCamelQuarkusCatalog(ctx *builderContext) error {
-	catalog, err := camel.LoadCatalog(ctx.C, ctx.Client, ctx.Namespace, ctx.Build.Runtime)
+	runtime := ctx.Build.Runtime.DeepCopy()
+	if runtime.Provider == v1.RuntimeProviderPlainQuarkus {
+		// We need this workaround to load the last existing catalog
+		// TODO: this part will be subject to future refactoring
+		runtime.Version = defaults.DefaultRuntimeVersion
+	}
+
+	catalog, err := camel.LoadCatalog(ctx.C, ctx.Client, ctx.Namespace, *runtime)
 	if err != nil {
 		return err
 	}
 
 	if catalog == nil {
 		return fmt.Errorf("unable to find catalog matching version requirement: runtime=%s, provider=%s",
-			ctx.Build.Runtime.Version,
-			ctx.Build.Runtime.Provider)
+			runtime.Version,
+			runtime.Provider)
 	}
 
 	ctx.Catalog = catalog
@@ -78,62 +125,77 @@ func loadCamelQuarkusCatalog(ctx *builderContext) error {
 }
 
 func generateQuarkusProject(ctx *builderContext) error {
-	p := GenerateQuarkusProjectCommon(
-		ctx.Build.Runtime.Metadata["camel-quarkus.version"],
+	p := generateQuarkusProjectCommon(
+		ctx.Build.Runtime.Provider,
 		ctx.Build.Runtime.Version,
-		ctx.Build.Runtime.Metadata["quarkus.version"])
-
-	// Add all the properties from the build configuration
-	p.Properties.AddAll(ctx.Build.Maven.Properties)
-
+		ctx.Build.Runtime.Metadata["quarkus.version"],
+	)
 	// Add Maven build extensions
 	p.Build.Extensions = ctx.Build.Maven.Extension
-
 	// Add Maven repositories
 	p.Repositories = append(p.Repositories, ctx.Build.Maven.Repositories...)
-
+	p.PluginRepositories = append(p.PluginRepositories, ctx.Build.Maven.Repositories...)
 	ctx.Maven.Project = p
 
 	return nil
 }
 
-func GenerateQuarkusProjectCommon(camelQuarkusVersion string, runtimeVersion string, quarkusVersion string) maven.Project {
+func generateQuarkusProjectCommon(runtimeProvider v1.RuntimeProvider, runtimeVersion string,
+	quarkusPlatformVersion string) maven.Project {
+	if runtimeProvider == v1.RuntimeProviderPlainQuarkus {
+		// We need this workaround to load the last existing catalog
+		// TODO: this part will be subject to future refactoring
+		quarkusPlatformVersion = runtimeVersion
+	}
 	p := maven.NewProjectWithGAV("org.apache.camel.k.integration", "camel-k-integration", defaults.Version)
 	p.DependencyManagement = &maven.DependencyManagement{Dependencies: make([]maven.Dependency, 0)}
 	p.Dependencies = make([]maven.Dependency, 0)
 	p.Build = &maven.Build{Plugins: make([]maven.Plugin, 0)}
 
-	// camel-quarkus does route discovery at startup, but we don't want
-	// this to happen as routes are loaded at runtime and looking for
-	// routes at build time may try to load camel-k-runtime routes builder
-	// proxies which in some case may fail.
-	p.Properties["quarkus.camel.routes-discovery.enabled"] = "false"
-
-	// disable quarkus banner
-	p.Properties["quarkus.banner.enabled"] = "false"
-
 	// set fast-jar packaging by default, since it gives some startup time improvements
-	p.Properties["quarkus.package.type"] = "fast-jar"
-
+	p.Properties.Add("quarkus.package.jar.type", "fast-jar")
+	// Reproducible builds: https://maven.apache.org/guides/mini/guide-reproducible-builds.html
+	p.Properties.Add("project.build.outputTimestamp", time.Now().Format(time.RFC3339))
 	// DependencyManagement
-	p.DependencyManagement.Dependencies = append(p.DependencyManagement.Dependencies,
-		maven.Dependency{
-			GroupID:    "org.apache.camel.k",
-			ArtifactID: "camel-k-runtime-bom",
-			Version:    runtimeVersion,
-			Type:       "pom",
-			Scope:      "import",
-		},
-	)
+	if runtimeProvider == v1.RuntimeProviderPlainQuarkus {
+		p.DependencyManagement.Dependencies = append(p.DependencyManagement.Dependencies,
+			maven.Dependency{
+				GroupID:    "io.quarkus.platform",
+				ArtifactID: "quarkus-camel-bom",
+				Version:    runtimeVersion,
+				Type:       "pom",
+				Scope:      "import",
+			},
+			maven.Dependency{
+				GroupID:    "io.quarkus.platform",
+				ArtifactID: "quarkus-bom",
+				Version:    runtimeVersion,
+				Type:       "pom",
+				Scope:      "import",
+			},
+		)
+	} else {
+		// Camel K Runtime (Quarkus based) default
+		p.DependencyManagement.Dependencies = append(p.DependencyManagement.Dependencies,
+			maven.Dependency{
+				GroupID:    "org.apache.camel.k",
+				ArtifactID: "camel-k-runtime-bom",
+				Version:    runtimeVersion,
+				Type:       "pom",
+				Scope:      "import",
+			},
+		)
+	}
 
 	// Plugins
 	p.Build.Plugins = append(p.Build.Plugins,
 		maven.Plugin{
 			GroupID:    "io.quarkus",
 			ArtifactID: "quarkus-maven-plugin",
-			Version:    quarkusVersion,
+			Version:    quarkusPlatformVersion,
 			Executions: []maven.Execution{
 				{
+					ID: "build-integration",
 					Goals: []string{
 						"build",
 					},
@@ -146,7 +208,7 @@ func GenerateQuarkusProjectCommon(camelQuarkusVersion string, runtimeVersion str
 }
 
 func buildQuarkusRunner(ctx *builderContext) error {
-	mc := maven.NewContext(path.Join(ctx.Path, "maven"))
+	mc := maven.NewContext(filepath.Join(ctx.Path, "maven"))
 	mc.GlobalSettings = ctx.Maven.GlobalSettings
 	mc.UserSettings = ctx.Maven.UserSettings
 	mc.SettingsSecurity = ctx.Maven.SettingsSecurity
@@ -155,12 +217,12 @@ func buildQuarkusRunner(ctx *builderContext) error {
 
 	if ctx.Maven.TrustStoreName != "" {
 		mc.ExtraMavenOpts = append(mc.ExtraMavenOpts,
-			"-Djavax.net.ssl.trustStore="+path.Join(ctx.Path, ctx.Maven.TrustStoreName),
+			"-Djavax.net.ssl.trustStore="+filepath.Join(ctx.Path, ctx.Maven.TrustStoreName),
 			"-Djavax.net.ssl.trustStorePassword="+ctx.Maven.TrustStorePass,
 		)
 	}
 
-	err := BuildQuarkusRunnerCommon(ctx.C, mc, ctx.Maven.Project)
+	err := BuildQuarkusRunnerCommon(ctx.C, mc, ctx.Maven.Project, ctx.Build.Maven.Properties)
 	if err != nil {
 		return err
 	}
@@ -168,33 +230,67 @@ func buildQuarkusRunner(ctx *builderContext) error {
 	return nil
 }
 
-func BuildQuarkusRunnerCommon(ctx context.Context, mc maven.Context, project maven.Project) error {
-	resourcesPath := path.Join(mc.Path, "src", "main", "resources")
+func BuildQuarkusRunnerCommon(ctx context.Context, mc maven.Context, project maven.Project, applicationProperties map[string]string) error {
+	resourcesPath := filepath.Join(mc.Path, "src", "main", "resources")
 	if err := os.MkdirAll(resourcesPath, os.ModePerm); err != nil {
-		return errors.Wrap(err, "failure while creating resource folder")
+		return fmt.Errorf("failure while creating resource folder: %w", err)
 	}
-
-	// Generate an empty application.properties so that there will be something in
-	// target/classes as if such directory does not exist, the quarkus maven plugin
-	// may fail the build.
-	// In the future there should be a way to provide build information from secrets,
-	// configmap, etc.
-	if _, err := os.Create(path.Join(resourcesPath, "application.properties")); err != nil {
-		return errors.Wrap(err, "failure while creating application.properties")
+	if err := computeApplicationProperties(filepath.Join(resourcesPath, "application.properties"), applicationProperties); err != nil {
+		return err
 	}
-
 	mc.AddArgument("package")
-
+	mc.AddArgument("-Dmaven.test.skip=true")
 	// Run the Maven goal
 	if err := project.Command(mc).Do(ctx); err != nil {
-		return errors.Wrap(err, "failure while building project")
+		return fmt.Errorf("failure while building project: %w", err)
 	}
 
 	return nil
 }
 
+func computeApplicationProperties(appPropertiesPath string, applicationProperties map[string]string) error {
+	f, err := os.OpenFile(appPropertiesPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, io.FilePerm644)
+	if err != nil {
+		return fmt.Errorf("failure while opening/creating application.properties: %w", err)
+	}
+	fstat, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if applicationProperties == nil {
+		// Default build time properties
+		applicationProperties = make(map[string]string)
+	}
+	// disable quarkus banner
+	applicationProperties["quarkus.banner.enabled"] = boolean.FalseString
+	// camel-quarkus does route discovery at startup, but we don't want
+	// this to happen as routes are loaded at runtime and looking for
+	// routes at build time may try to load camel-k-runtime routes builder
+	// proxies which in some case may fail.
+	applicationProperties["quarkus.camel.routes-discovery.enabled"] = boolean.FalseString
+	// required for to resolve data type transformers at runtime with service discovery
+	// the different Camel runtimes use different resource paths for the service lookup
+	applicationProperties["quarkus.camel.service.discovery.include-patterns"] = "META-INF/services/org/apache/camel/datatype/converter/*,META-INF/services/org/apache/camel/datatype/transformer/*,META-INF/services/org/apache/camel/transformer/*"
+	// Workaround to prevent JS runtime errors, see https://github.com/apache/camel-quarkus/issues/5678
+	applicationProperties["quarkus.class-loading.parent-first-artifacts"] = "org.graalvm.regex:regex"
+	defer f.Close()
+	// Add a new line if the file is already containing some value
+	if fstat.Size() > 0 {
+		if _, err := f.WriteString("\n"); err != nil {
+			return err
+		}
+	}
+	// Fill with properties coming from user configuration
+	for k, v := range applicationProperties {
+		if _, err := f.WriteString(fmt.Sprintf("%s=%s\n", k, v)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func computeQuarkusDependencies(ctx *builderContext) error {
-	mc := maven.NewContext(path.Join(ctx.Path, "maven"))
+	mc := maven.NewContext(filepath.Join(ctx.Path, "maven"))
 	mc.GlobalSettings = ctx.Maven.GlobalSettings
 	mc.UserSettings = ctx.Maven.UserSettings
 	mc.SettingsSecurity = ctx.Maven.SettingsSecurity
@@ -215,7 +311,7 @@ func ProcessQuarkusTransitiveDependencies(mc maven.Context) ([]v1.Artifact, erro
 	var artifacts []v1.Artifact
 
 	// Quarkus fast-jar format is split into various sub-directories in quarkus-app
-	quarkusAppDir := path.Join(mc.Path, "target", "quarkus-app")
+	quarkusAppDir := filepath.Join(mc.Path, "target", "quarkus-app")
 
 	// Discover application dependencies from the Quarkus fast-jar directory tree
 	err := filepath.Walk(quarkusAppDir, func(filePath string, info os.FileInfo, err error) error {
@@ -234,7 +330,7 @@ func ProcessQuarkusTransitiveDependencies(mc maven.Context) ([]v1.Artifact, erro
 			artifacts = append(artifacts, v1.Artifact{
 				ID:       filepath.Base(fileRelPath),
 				Location: filePath,
-				Target:   path.Join(DependenciesDir, fileRelPath),
+				Target:   filepath.Join(DependenciesDir, fileRelPath),
 				Checksum: "sha1:" + sha1,
 			})
 		}

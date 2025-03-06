@@ -22,8 +22,8 @@ import (
 	"fmt"
 	"regexp"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	platformutil "github.com/apache/camel-k/pkg/platform"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	platformutil "github.com/apache/camel-k/v2/pkg/platform"
 	"github.com/spf13/cobra"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,10 +40,11 @@ func newKameletAddRepoCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kame
 	}
 
 	cmd := cobra.Command{
-		Use:     "add-repo github:owner/repo[/path_to_kamelets_folder][@version] ...",
-		Short:   "Add a Kamelet repository",
-		Long:    `Add a Kamelet repository.`,
-		PreRunE: decode(&options),
+		Use:        "add-repo github:owner/repo[/path_to_kamelets_folder][@version] ...",
+		Short:      "Add a Kamelet repository",
+		Long:       `Add a Kamelet repository.`,
+		Deprecated: "consider using kubectl (or oc) command instead.",
+		PreRunE:    decode(&options, options.Flags),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(args); err != nil {
 				return err
@@ -52,7 +53,7 @@ func newKameletAddRepoCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kame
 		},
 	}
 
-	cmd.Flags().StringP("operator-id", "x", "", "Id of the Operator to update. If not set, the active primary Integration Platform is updated.")
+	cmd.Flags().StringP("operator-id", "x", "", "Id of the Operator to update. If not set, the default active Integration Platform is updated.")
 
 	return &cmd, &options
 }
@@ -80,10 +81,11 @@ func (o *kameletAddRepoCommandOptions) run(cmd *cobra.Command, args []string) er
 	}
 	var platform *v1.IntegrationPlatform
 	if o.OperatorID == "" {
-		platform, err = o.findIntegrationPlatform(cmd, c)
-	} else {
-		platform, err = o.getIntegrationPlatform(cmd, c)
+		o.OperatorID = platformutil.DefaultPlatformName
 	}
+
+	platform, err = o.getIntegrationPlatform(cmd, c)
+
 	if err != nil {
 		return err
 	} else if platform == nil {
@@ -93,7 +95,7 @@ func (o *kameletAddRepoCommandOptions) run(cmd *cobra.Command, args []string) er
 		if err := checkURI(uri, platform.Spec.Kamelet.Repositories); err != nil {
 			return err
 		}
-		platform.Spec.Kamelet.Repositories = append(platform.Spec.Kamelet.Repositories, v1.IntegrationPlatformKameletRepositorySpec{
+		platform.Spec.Kamelet.Repositories = append(platform.Spec.Kamelet.Repositories, v1.KameletRepositorySpec{
 			URI: uri,
 		})
 	}
@@ -118,23 +120,23 @@ func (o *kameletUpdateRepoCommandOptions) getIntegrationPlatform(cmd *cobra.Comm
 	return &platform, nil
 }
 
-// findIntegrationPlatform gives the primary integration platform that could be found in the provided namespace.
+// findIntegrationPlatform gives the integration platform that could be found in the provided namespace.
 func (o *kameletUpdateRepoCommandOptions) findIntegrationPlatform(cmd *cobra.Command, c client.Client) (*v1.IntegrationPlatform, error) {
-	platforms, err := platformutil.ListPrimaryPlatforms(o.Context, c, o.Namespace)
+	platforms, err := platformutil.ListPlatforms(o.Context, c, o.Namespace)
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range platforms.Items {
-		p := p // pin
+	for i := range platforms.Items {
+		p := platforms.Items[i]
 		if platformutil.IsActive(&p) {
 			return &p, nil
 		}
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "Warning: No active primary IntegrationPlatform could be found in namespace %q\n", o.Namespace)
+	fmt.Fprintf(cmd.ErrOrStderr(), "Warning: No active IntegrationPlatform could be found in namespace %q\n", o.Namespace)
 	return nil, nil
 }
 
-func checkURI(uri string, repositories []v1.IntegrationPlatformKameletRepositorySpec) error {
+func checkURI(uri string, repositories []v1.KameletRepositorySpec) error {
 	if !kameletRepositoryURIRegexp.MatchString(uri) {
 		return fmt.Errorf("malformed Kamelet repository uri %s, the expected format is github:owner/repo[/path_to_kamelets_folder][@version]", uri)
 	}

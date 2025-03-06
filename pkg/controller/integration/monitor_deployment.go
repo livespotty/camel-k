@@ -24,8 +24,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 type deploymentController struct {
@@ -37,7 +37,16 @@ var _ controller = &deploymentController{}
 
 func (c *deploymentController) checkReadyCondition(ctx context.Context) (bool, error) {
 	// Check the Deployment progression
-	if progressing := kubernetes.GetDeploymentCondition(*c.obj, appsv1.DeploymentProgressing); progressing != nil && progressing.Status == corev1.ConditionFalse && progressing.Reason == "ProgressDeadlineExceeded" {
+	progressing := kubernetes.GetDeploymentCondition(*c.obj, appsv1.DeploymentProgressing)
+	replicaFailure := kubernetes.GetDeploymentCondition(*c.obj, appsv1.DeploymentReplicaFailure)
+
+	if replicaFailure != nil && replicaFailure.Status == corev1.ConditionTrue {
+		c.integration.Status.Phase = v1.IntegrationPhaseError
+		c.integration.SetReadyConditionError(replicaFailure.Message)
+		return true, nil
+	}
+
+	if progressing != nil && progressing.Status == corev1.ConditionFalse && progressing.Reason == "ProgressDeadlineExceeded" {
 		c.integration.Status.Phase = v1.IntegrationPhaseError
 		c.integration.SetReadyConditionError(progressing.Message)
 		return true, nil
@@ -46,18 +55,14 @@ func (c *deploymentController) checkReadyCondition(ctx context.Context) (bool, e
 	return false, nil
 }
 
-func (c *deploymentController) getPodSpec() corev1.PodSpec {
-	return c.obj.Spec.Template.Spec
-}
-
-func (c *deploymentController) updateReadyCondition(readyPods []corev1.Pod) bool {
+func (c *deploymentController) updateReadyCondition(readyPods int32) bool {
 	replicas := int32(1)
 	if r := c.integration.Spec.Replicas; r != nil {
 		replicas = *r
 	}
 	// The Deployment status reports updated and ready replicas separately,
 	// so that the number of ready replicas also accounts for older versions.
-	readyReplicas := int32(len(readyPods))
+	readyReplicas := readyPods
 	switch {
 	case readyReplicas >= replicas:
 		// The Integration is considered ready when the number of replicas
@@ -81,4 +86,12 @@ func (c *deploymentController) updateReadyCondition(readyPods []corev1.Pod) bool
 	}
 
 	return false
+}
+
+func (c *deploymentController) hasTemplateIntegrationLabel() bool {
+	return c.obj.Spec.Template.Labels[v1.IntegrationLabel] != ""
+}
+
+func (c *deploymentController) getControllerName() string {
+	return fmt.Sprintf("Deployment/%s", c.obj.Name)
 }

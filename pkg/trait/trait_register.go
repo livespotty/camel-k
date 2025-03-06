@@ -29,7 +29,6 @@ func init() {
 	AddToTraits(newDeployerTrait)
 	AddToTraits(newDeploymentTrait)
 	AddToTraits(newEnvironmentTrait)
-	AddToTraits(newErrorHandlerTrait)
 	AddToTraits(newGCTrait)
 	AddToTraits(newHealthTrait)
 	AddToTraits(NewInitTrait)
@@ -41,6 +40,7 @@ func init() {
 	AddToTraits(newKnativeTrait)
 	AddToTraits(newKnativeServiceTrait)
 	AddToTraits(newLoggingTraitTrait)
+	AddToTraits(NewMasterTrait)
 	AddToTraits(newMountTrait)
 	AddToTraits(newOpenAPITrait)
 	AddToTraits(newOwnerTrait)
@@ -50,10 +50,10 @@ func init() {
 	AddToTraits(newPrometheusTrait)
 	AddToTraits(newPullSecretTrait)
 	AddToTraits(newQuarkusTrait)
-	AddToTraits(newRegistryTrait)
 	AddToTraits(newRouteTrait)
+	AddToTraits(newSecurityContextTrait)
 	AddToTraits(newServiceTrait)
-	AddToTraits(newServiceBindingTrait)
+	AddToTraits(NewTelemetryTrait)
 	AddToTraits(newTolerationTrait)
 	// ^^ Declaration order is not important, but let's keep them sorted for debugging.
 }

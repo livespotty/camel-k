@@ -19,20 +19,20 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/term"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 
-	"github.com/apache/camel-k/pkg/client"
-	v1 "github.com/apache/camel-k/pkg/client/camel/clientset/versioned/typed/camel/v1"
-	"github.com/apache/camel-k/pkg/util/defaults"
+	"github.com/apache/camel-k/v2/pkg/client"
+	v1 "github.com/apache/camel-k/v2/pkg/client/camel/clientset/versioned/typed/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
 )
 
 const kamelCommandLongDescription = `Apache Camel K is a lightweight integration platform, born on Kubernetes, with serverless
@@ -40,12 +40,14 @@ superpowers.
 `
 
 // RootCmdOptions --.
-// nolint: containedctx
+//
+//nolint:containedctx
 type RootCmdOptions struct {
 	RootContext   context.Context    `mapstructure:"-"`
 	Context       context.Context    `mapstructure:"-"`
 	ContextCancel context.CancelFunc `mapstructure:"-"`
 	_client       client.Client      `mapstructure:"-"`
+	Flags         *viper.Viper       `mapstructure:"-"`
 	KubeConfig    string             `mapstructure:"kube-config"`
 	Namespace     string             `mapstructure:"namespace"`
 	Verbose       bool               `mapstructure:"verbose" yaml:",omitempty"`
@@ -58,16 +60,17 @@ func NewKamelCommand(ctx context.Context) (*cobra.Command, error) {
 		RootContext:   ctx,
 		Context:       childCtx,
 		ContextCancel: childCancel,
+		Flags:         viper.New(),
 	}
 
 	cmd := kamelPreAddCommandInit(&options)
 	addKamelSubcommands(cmd, &options)
 
-	if err := addHelpSubCommands(cmd, &options); err != nil {
+	if err := addHelpSubCommands(cmd); err != nil {
 		return cmd, err
 	}
 
-	err := kamelPostAddCommandInit(cmd)
+	err := kamelPostAddCommandInit(cmd, options.Flags)
 
 	return cmd, err
 }
@@ -92,8 +95,8 @@ func kamelPreAddCommandInit(options *RootCmdOptions) *cobra.Command {
 	return &cmd
 }
 
-func kamelPostAddCommandInit(cmd *cobra.Command) error {
-	if err := bindPFlagsHierarchy(cmd); err != nil {
+func kamelPostAddCommandInit(cmd *cobra.Command, v *viper.Viper) error {
+	if err := bindPFlagsHierarchy(cmd, v); err != nil {
 		return err
 	}
 
@@ -102,26 +105,26 @@ func kamelPostAddCommandInit(cmd *cobra.Command) error {
 		configName = DefaultConfigName
 	}
 
-	viper.SetConfigName(configName)
+	v.SetConfigName(configName)
 
 	configPath := os.Getenv("KAMEL_CONFIG_PATH")
 	if configPath != "" {
 		// if a specific config path is set, don't add
 		// default locations
-		viper.AddConfigPath(configPath)
+		v.AddConfigPath(configPath)
 	} else {
-		viper.AddConfigPath(".")
-		viper.AddConfigPath(".kamel")
-		viper.AddConfigPath("$HOME/.kamel")
+		v.AddConfigPath(".")
+		v.AddConfigPath(".kamel")
+		v.AddConfigPath("$HOME/.kamel")
 	}
 
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer(
+	v.AutomaticEnv()
+	v.SetEnvKeyReplacer(strings.NewReplacer(
 		".", "_",
 		"-", "_",
 	))
 
-	if err := viper.ReadInConfig(); err != nil {
+	if err := v.ReadInConfig(); err != nil {
 		if !errors.As(err, &viper.ConfigFileNotFoundError{}) {
 			return err
 		}
@@ -143,19 +146,17 @@ func addKamelSubcommands(cmd *cobra.Command, options *RootCmdOptions) {
 	cmd.AddCommand(cmdOnly(newCmdReset(options)))
 	cmd.AddCommand(newCmdDescribe(options))
 	cmd.AddCommand(cmdOnly(newCmdRebuild(options)))
-	cmd.AddCommand(cmdOnly(newCmdOperator()))
+	cmd.AddCommand(cmdOnly(newCmdOperator(options)))
 	cmd.AddCommand(cmdOnly(newCmdBuilder(options)))
-	cmd.AddCommand(cmdOnly(newCmdInit(options)))
 	cmd.AddCommand(cmdOnly(newCmdDebug(options)))
 	cmd.AddCommand(cmdOnly(newCmdDump(options)))
-	cmd.AddCommand(cmdOnly(newCmdLocal(options)))
 	cmd.AddCommand(cmdOnly(newCmdBind(options)))
 	cmd.AddCommand(cmdOnly(newCmdPromote(options)))
 	cmd.AddCommand(newCmdKamelet(options))
 	cmd.AddCommand(cmdOnly(newCmdConfig(options)))
 }
 
-func addHelpSubCommands(cmd *cobra.Command, options *RootCmdOptions) error {
+func addHelpSubCommands(cmd *cobra.Command) error {
 	cmd.InitDefaultHelpCmd()
 
 	var helpCmd *cobra.Command
@@ -171,8 +172,6 @@ func addHelpSubCommands(cmd *cobra.Command, options *RootCmdOptions) error {
 	}
 	helpCmd.Annotations = map[string]string{offlineCommandLabel: "true"}
 
-	helpCmd.AddCommand(cmdOnly(newTraitHelpCmd(options)))
-
 	return nil
 }
 
@@ -180,14 +179,14 @@ func (command *RootCmdOptions) preRun(cmd *cobra.Command, _ []string) error {
 	if !isOfflineCommand(cmd) {
 		c, err := command.GetCmdClient()
 		if err != nil {
-			return errors.Wrap(err, "cannot get command client")
+			return fmt.Errorf("cannot get command client: %w", err)
 		}
 		if command.Namespace == "" {
-			current := viper.GetString("kamel.config.default-namespace")
+			current := command.Flags.GetString("kamel.config.default-namespace")
 			if current == "" {
 				defaultNS, err := c.GetCurrentNamespace(command.KubeConfig)
 				if err != nil {
-					return errors.Wrap(err, "cannot get current namespace")
+					return fmt.Errorf("cannot get current namespace: %w", err)
 				}
 				current = defaultNS
 			}

@@ -19,7 +19,7 @@ package build
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
@@ -32,10 +32,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	"github.com/pkg/errors"
-
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes/log"
 )
 
 const timeoutAnnotation = "camel.apache.org/timeout"
@@ -68,25 +68,35 @@ func (action *monitorPodAction) Handle(ctx context.Context, build *v1.Build) (*v
 		return nil, err
 	}
 
+	//nolint:nestif
 	if pod == nil {
 		switch build.Status.Phase {
 
 		case v1.BuildPhasePending:
-			if pod, err = newBuildPod(ctx, action.reader, build); err != nil {
+			pod = newBuildPod(ctx, action.client, build)
+			// If the Builder Pod is in the Build namespace, we can set the ownership to it. If not (global operator mode)
+			// we set the ownership to the Operator Pod instead
+			var owner metav1.Object
+			owner = build
+			if build.Namespace != pod.Namespace {
+				operatorPod := platform.GetOperatorPod(ctx, action.client, pod.Namespace)
+				if operatorPod != nil {
+					owner = operatorPod
+				}
+			}
+			if err = controllerutil.SetControllerReference(owner, pod, action.client.GetScheme()); err != nil {
 				return nil, err
 			}
-			// Set the Build as the Pod owner and controller
-			if err = controllerutil.SetControllerReference(build, pod, action.client.GetScheme()); err != nil {
-				return nil, err
-			}
+
 			if err = action.client.Create(ctx, pod); err != nil {
-				return nil, errors.Wrap(err, "cannot create build pod")
+				return nil, fmt.Errorf("cannot create build pod: %w", err)
 			}
 
 		case v1.BuildPhaseRunning:
 			// Emulate context cancellation
 			build.Status.Phase = v1.BuildPhaseInterrupted
 			build.Status.Error = "Pod deleted"
+			monitorFinishedBuild(build)
 			return build, nil
 		}
 	}
@@ -105,10 +115,16 @@ func (action *monitorPodAction) Handle(ctx context.Context, build *v1.Build) (*v
 				return nil, err
 			}
 			// Send SIGTERM signal to running containers
-			if err = action.sigterm(pod); err != nil {
+			if err = action.sigterm(ctx, pod); err != nil {
 				// Requeue
 				return nil, err
 			}
+
+			monitorFinishedBuild(build)
+		} else {
+			// Monitor running state of the build - this may have been done already by the schedule action but the build monitor is idempotent
+			// We do this here to potentially restore the running build state in the monitor in case of an operator restart
+			monitorRunningBuild(build)
 		}
 
 	case corev1.PodSucceeded:
@@ -121,42 +137,39 @@ func (action *monitorPodAction) Handle(ctx context.Context, build *v1.Build) (*v
 		finishedAt := action.getTerminatedTime(pod)
 		duration := finishedAt.Sub(build.Status.StartedAt.Time)
 		build.Status.Duration = duration.String()
+		action.setConditionsFromTerminationMessages(ctx, pod, &build.Status)
+		monitorFinishedBuild(build)
 
 		buildCreator := kubernetes.GetCamelCreator(build)
 		// Account for the Build metrics
 		observeBuildResult(build, build.Status.Phase, buildCreator, duration)
 
-		for _, task := range build.Spec.Tasks {
-			if t := task.Buildah; t != nil {
-				build.Status.Image = t.Image
-
-				break
-			} else if t := task.Kaniko; t != nil {
-				build.Status.Image = t.Image
-
-				break
-			}
-		}
-		// Reconcile image digest from build container status if available
-		for _, container := range pod.Status.ContainerStatuses {
-			if container.Name == "buildah" {
-				build.Status.Digest = container.State.Terminated.Message
-
-				break
+		// operator supported publishing tasks should provide the digest in the builder command process execution
+		if !operatorSupportedPublishingStrategy(build.Spec.Tasks) {
+			build.Status.Digest = publishTaskDigest(build.Spec.Tasks, pod.Status.ContainerStatuses)
+			if build.Status.Digest == "" {
+				// Likely to happen for users provided publishing tasks and not providing the digest image among statuses
+				build.Status.Phase = v1.BuildPhaseError
+				build.Status.SetCondition(
+					"ImageDigestAvailable",
+					corev1.ConditionFalse,
+					"ImageDigestAvailable",
+					fmt.Sprintf(
+						"%s publishing task completed but no digest is available in container status. Make sure that the process successfully push the image to the registry and write its digest to /dev/termination-log",
+						publishTaskName(build.Spec.Tasks),
+					),
+				)
 			}
 		}
 
 	case corev1.PodFailed:
 		phase := v1.BuildPhaseFailed
-		message := "Pod failed"
-		if terminationMessage := action.getTerminationMessage(pod); terminationMessage != "" {
-			message = terminationMessage
-		}
+		message := fmt.Sprintf("Builder Pod %s failed (see conditions for more details)", pod.Name)
 		if pod.DeletionTimestamp != nil {
 			phase = v1.BuildPhaseInterrupted
-			message = "Pod deleted"
+			message = fmt.Sprintf("Builder Pod %s deleted", pod.Name)
 		} else if _, ok := pod.GetAnnotations()[timeoutAnnotation]; ok {
-			message = "Build timeout"
+			message = fmt.Sprintf("Builder Pod %s timeout", pod.Name)
 		}
 		// Do not override errored build
 		if build.Status.Phase == v1.BuildPhaseError {
@@ -167,6 +180,8 @@ func (action *monitorPodAction) Handle(ctx context.Context, build *v1.Build) (*v
 		finishedAt := action.getTerminatedTime(pod)
 		duration := finishedAt.Sub(build.Status.StartedAt.Time)
 		build.Status.Duration = duration.String()
+		action.setConditionsFromTerminationMessages(ctx, pod, &build.Status)
+		monitorFinishedBuild(build)
 
 		buildCreator := kubernetes.GetCamelCreator(build)
 		// Account for the Build metrics
@@ -185,7 +200,7 @@ func (action *monitorPodAction) isPodScheduled(pod *corev1.Pod) bool {
 	return false
 }
 
-func (action *monitorPodAction) sigterm(pod *corev1.Pod) error {
+func (action *monitorPodAction) sigterm(ctx context.Context, pod *corev1.Pod) error {
 	var containers []corev1.ContainerStatus
 	containers = append(containers, pod.Status.InitContainerStatuses...)
 	containers = append(containers, pod.Status.ContainerStatuses...)
@@ -199,12 +214,13 @@ func (action *monitorPodAction) sigterm(pod *corev1.Pod) error {
 			Resource("pods").
 			Namespace(pod.Namespace).
 			Name(pod.Name).
+			Timeout(1*time.Minute).
 			SubResource("exec").
 			Param("container", container.Name)
 
 		r.VersionedParams(&corev1.PodExecOptions{
 			Container: container.Name,
-			Command:   []string{"kill", "-SIGTERM", "1"},
+			Command:   []string{"/bin/bash", "-c", "kill -SIGTERM 1"},
 			Stdout:    true,
 			Stderr:    true,
 			TTY:       false,
@@ -215,7 +231,7 @@ func (action *monitorPodAction) sigterm(pod *corev1.Pod) error {
 			return err
 		}
 
-		err = exec.Stream(remotecommand.StreamOptions{
+		err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 			Stdout: os.Stdout,
 			Stderr: os.Stderr,
 			Tty:    false,
@@ -282,37 +298,89 @@ func (action *monitorPodAction) getTerminatedTime(pod *corev1.Pod) metav1.Time {
 	return finishedAt
 }
 
-func (action *monitorPodAction) getTerminationMessage(pod *corev1.Pod) string {
-	var terminationMessages []terminationMessage
-
+// setConditionsFromTerminationMessages sets a condition for all those containers which have been terminated (successfully or not).
+func (action *monitorPodAction) setConditionsFromTerminationMessages(ctx context.Context, pod *corev1.Pod, buildStatus *v1.BuildStatus) {
 	var containers []corev1.ContainerStatus
 	containers = append(containers, pod.Status.InitContainerStatuses...)
 	containers = append(containers, pod.Status.ContainerStatuses...)
 
 	for _, container := range containers {
-		if t := container.State.Terminated; t != nil && t.ExitCode != 0 && t.Message != "" {
-			terminationMessages = append(terminationMessages, terminationMessage{
-				Container: container.Name,
-				Message:   t.Message,
-			})
+		if t := container.State.Terminated; t != nil {
+			var err error
+			terminationMessage := t.Message
+			// Dynamic condition type (it depends on each container name)
+			containerConditionType := v1.BuildConditionType(fmt.Sprintf("Container%sSucceeded", container.Name))
+			containerSucceeded := corev1.ConditionTrue
+			if t.ExitCode != 0 {
+				containerSucceeded = corev1.ConditionFalse
+			}
+			if terminationMessage == "" {
+				// TODO we can make it a user variable !?
+				var maxLines int64 = 10
+				logOptions := corev1.PodLogOptions{
+					Container: container.Name,
+					TailLines: &maxLines,
+				}
+				terminationMessage, err = log.DumpLog(ctx, action.client, pod, logOptions)
+				if err != nil {
+					action.L.Errorf(err, "Dumping log for %s container in %s Pod failed", container.Name, pod.Name)
+					terminationMessage = fmt.Sprintf(
+						"Operator was not able to retrieve the error message, please, check the container %s log directly from %s Pod",
+						container.Name,
+						pod.Name,
+					)
+				}
+			}
+
+			terminationReason := fmt.Sprintf("%s (%d)", t.Reason, t.ExitCode)
+			buildStatus.SetCondition(containerConditionType, containerSucceeded, terminationReason, terminationMessage)
 		}
 	}
 
-	switch len(terminationMessages) {
-	case 0:
-		return ""
-	case 1:
-		return terminationMessages[0].Message
-	default:
-		message, err := json.Marshal(terminationMessages)
-		if err != nil {
-			return ""
-		}
-		return string(message)
-	}
 }
 
-type terminationMessage struct {
-	Container string `json:"container,omitempty"`
-	Message   string `json:"message,omitempty"`
+// we expect that the last task is any of the supported publishing task
+// or a custom user task.
+func publishTask(tasks []v1.Task) *v1.Task {
+	if len(tasks) > 0 {
+		return &tasks[len(tasks)-1]
+
+	}
+
+	return nil
+}
+
+func publishTaskName(tasks []v1.Task) string {
+	t := publishTask(tasks)
+	if t == nil {
+		return ""
+	}
+	switch {
+	case t.Custom != nil:
+		return t.Custom.Name
+	case t.Spectrum != nil:
+		return t.Spectrum.Name
+	case t.Jib != nil:
+		return t.Jib.Name
+	case t.S2i != nil:
+		return t.S2i.Name
+	}
+
+	return ""
+}
+
+func publishTaskDigest(tasks []v1.Task, cntStates []corev1.ContainerStatus) string {
+	taskName := publishTaskName(tasks)
+	// Reconcile image digest from build container status if available
+	for _, container := range cntStates {
+		if container.Name == taskName {
+			return container.State.Terminated.Message
+		}
+	}
+	return ""
+}
+
+func operatorSupportedPublishingStrategy(tasks []v1.Task) bool {
+	taskName := publishTaskName(tasks)
+	return taskName == "jib" || taskName == "spectrum" || taskName == "s2i"
 }

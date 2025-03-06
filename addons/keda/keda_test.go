@@ -20,28 +20,28 @@ package keda
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
-	"github.com/apache/camel-k/addons/keda/duck/v1alpha1"
-	camelv1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	camelv1alpha1 "github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
-	"github.com/apache/camel-k/pkg/controller/kameletbinding"
-	"github.com/apache/camel-k/pkg/trait"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/test"
-	"github.com/pkg/errors"
+	"github.com/apache/camel-k/v2/addons/keda/duck/v1alpha1"
+	camelv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/controller/pipe"
+	"github.com/apache/camel-k/v2/pkg/trait"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestManualConfig(t *testing.T) {
 	keda, _ := NewKedaTrait().(*kedaTrait)
-	keda.Enabled = pointer.Bool(true)
-	keda.Auto = pointer.Bool(false)
+	keda.Enabled = ptr.To(true)
+	keda.Auto = ptr.To(false)
 	meta := map[string]string{
 		"prop":      "val",
 		"camelCase": "VAL",
@@ -52,10 +52,11 @@ func TestManualConfig(t *testing.T) {
 	})
 	env := createBasicTestEnvironment()
 
-	res, err := keda.Configure(env)
-	assert.NoError(t, err)
+	res, condition, err := keda.Configure(env)
+	require.NoError(t, err)
 	assert.True(t, res)
-	assert.NoError(t, keda.Apply(env))
+	assert.Nil(t, condition)
+	require.NoError(t, keda.Apply(env))
 	so := getScaledObject(env)
 	assert.NotNil(t, so)
 	assert.Len(t, so.Spec.Triggers, 1)
@@ -68,8 +69,8 @@ func TestManualConfig(t *testing.T) {
 
 func TestConfigFromSecret(t *testing.T) {
 	keda, _ := NewKedaTrait().(*kedaTrait)
-	keda.Enabled = pointer.Bool(true)
-	keda.Auto = pointer.Bool(false)
+	keda.Enabled = ptr.To(true)
+	keda.Auto = ptr.To(false)
 	meta := map[string]string{
 		"prop":      "val",
 		"camelCase": "VAL",
@@ -90,10 +91,11 @@ func TestConfigFromSecret(t *testing.T) {
 		},
 	})
 
-	res, err := keda.Configure(env)
-	assert.NoError(t, err)
+	res, condition, err := keda.Configure(env)
+	require.NoError(t, err)
 	assert.True(t, res)
-	assert.NoError(t, keda.Apply(env))
+	assert.Nil(t, condition)
+	require.NoError(t, keda.Apply(env))
 	so := getScaledObject(env)
 	assert.NotNil(t, so)
 	assert.Len(t, so.Spec.Triggers, 1)
@@ -115,9 +117,9 @@ func TestConfigFromSecret(t *testing.T) {
 
 func TestKameletAutoDetection(t *testing.T) {
 	keda, _ := NewKedaTrait().(*kedaTrait)
-	keda.Enabled = pointer.Bool(true)
+	keda.Enabled = ptr.To(true)
 	env := createBasicTestEnvironment(
-		&camelv1alpha1.Kamelet{
+		&camelv1.Kamelet{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: "test",
 				Name:      "my-kamelet",
@@ -125,22 +127,24 @@ func TestKameletAutoDetection(t *testing.T) {
 					"camel.apache.org/keda.type": "my-scaler",
 				},
 			},
-			Spec: camelv1alpha1.KameletSpec{
-				Definition: &camelv1alpha1.JSONSchemaProps{
-					Properties: map[string]camelv1alpha1.JSONSchemaProp{
-						"a": {
-							XDescriptors: []string{
-								"urn:keda:metadata:a",
+			Spec: camelv1.KameletSpec{
+				KameletSpecBase: camelv1.KameletSpecBase{
+					Definition: &camelv1.JSONSchemaProps{
+						Properties: map[string]camelv1.JSONSchemaProp{
+							"a": {
+								XDescriptors: []string{
+									"urn:keda:metadata:a",
+								},
 							},
-						},
-						"b": {
-							XDescriptors: []string{
-								"urn:keda:metadata:bb",
+							"b": {
+								XDescriptors: []string{
+									"urn:keda:metadata:bb",
+								},
 							},
-						},
-						"c": {
-							XDescriptors: []string{
-								"urn:keda:authentication:cc",
+							"c": {
+								XDescriptors: []string{
+									"urn:keda:authentication:cc",
+								},
 							},
 						},
 					},
@@ -177,10 +181,11 @@ func TestKameletAutoDetection(t *testing.T) {
 			},
 		})
 
-	res, err := keda.Configure(env)
-	assert.NoError(t, err)
+	res, condition, err := keda.Configure(env)
+	require.NoError(t, err)
 	assert.True(t, res)
-	assert.NoError(t, keda.Apply(env))
+	assert.Nil(t, condition)
+	require.NoError(t, keda.Apply(env))
 	so := getScaledObject(env)
 	assert.NotNil(t, so)
 	assert.Len(t, so.Spec.Triggers, 1)
@@ -203,20 +208,20 @@ func TestKameletAutoDetection(t *testing.T) {
 	assert.Contains(t, secret.StringData, "cc")
 }
 
-func TestKameletBindingAutoDetection(t *testing.T) {
+func TestPipeAutoDetection(t *testing.T) {
 	keda, _ := NewKedaTrait().(*kedaTrait)
-	keda.Enabled = pointer.Bool(true)
+	keda.Enabled = ptr.To(true)
 	logEndpoint := "log:info"
-	klb := camelv1alpha1.KameletBinding{
+	klb := camelv1.Pipe{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test",
 			Name:      "my-binding",
 		},
-		Spec: camelv1alpha1.KameletBindingSpec{
-			Source: camelv1alpha1.Endpoint{
+		Spec: camelv1.PipeSpec{
+			Source: camelv1.Endpoint{
 				Ref: &corev1.ObjectReference{
 					Kind:       "Kamelet",
-					APIVersion: camelv1alpha1.SchemeGroupVersion.String(),
+					APIVersion: camelv1.SchemeGroupVersion.String(),
 					Name:       "my-kamelet",
 				},
 				Properties: asEndpointProperties(map[string]string{
@@ -225,14 +230,14 @@ func TestKameletBindingAutoDetection(t *testing.T) {
 					"c": "v3",
 				}),
 			},
-			Sink: camelv1alpha1.Endpoint{
+			Sink: camelv1.Endpoint{
 				URI: &logEndpoint,
 			},
 		},
 	}
 
 	env := createBasicTestEnvironment(
-		&camelv1alpha1.Kamelet{
+		&camelv1.Kamelet{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: "test",
 				Name:      "my-kamelet",
@@ -240,22 +245,24 @@ func TestKameletBindingAutoDetection(t *testing.T) {
 					"camel.apache.org/keda.type": "my-scaler",
 				},
 			},
-			Spec: camelv1alpha1.KameletSpec{
-				Definition: &camelv1alpha1.JSONSchemaProps{
-					Properties: map[string]camelv1alpha1.JSONSchemaProp{
-						"a": {
-							XDescriptors: []string{
-								"urn:keda:metadata:a",
+			Spec: camelv1.KameletSpec{
+				KameletSpecBase: camelv1.KameletSpecBase{
+					Definition: &camelv1.JSONSchemaProps{
+						Properties: map[string]camelv1.JSONSchemaProp{
+							"a": {
+								XDescriptors: []string{
+									"urn:keda:metadata:a",
+								},
 							},
-						},
-						"b": {
-							XDescriptors: []string{
-								"urn:keda:metadata:bb",
+							"b": {
+								XDescriptors: []string{
+									"urn:keda:metadata:bb",
+								},
 							},
-						},
-						"c": {
-							XDescriptors: []string{
-								"urn:keda:authentication:cc",
+							"c": {
+								XDescriptors: []string{
+									"urn:keda:authentication:cc",
+								},
 							},
 						},
 					},
@@ -277,23 +284,25 @@ func TestKameletBindingAutoDetection(t *testing.T) {
 			},
 		})
 
-	it, err := kameletbinding.CreateIntegrationFor(env.Ctx, env.Client, &klb)
-	assert.NoError(t, err)
+	it, err := pipe.CreateIntegrationFor(env.Ctx, env.Client, &klb)
+	require.NoError(t, err)
 	assert.NotNil(t, it)
 	env.Integration = it
 
 	it.Status.Phase = camelv1.IntegrationPhaseInitialization
 	init := trait.NewInitTrait()
-	ok, err := init.Configure(env)
-	assert.NoError(t, err)
+	ok, condition, err := init.Configure(env)
+	require.NoError(t, err)
 	assert.True(t, ok)
-	assert.NoError(t, init.Apply(env))
+	assert.Nil(t, condition)
+	require.NoError(t, init.Apply(env))
 
 	it.Status.Phase = camelv1.IntegrationPhaseDeploying
-	res, err := keda.Configure(env)
-	assert.NoError(t, err)
+	res, condition, err := keda.Configure(env)
+	require.NoError(t, err)
 	assert.True(t, res)
-	assert.NoError(t, keda.Apply(env))
+	assert.Nil(t, condition)
+	require.NoError(t, keda.Apply(env))
 	so := getScaledObject(env)
 	assert.NotNil(t, so)
 	assert.Len(t, so.Spec.Triggers, 1)
@@ -318,15 +327,15 @@ func TestKameletBindingAutoDetection(t *testing.T) {
 
 func TestHackReplicas(t *testing.T) {
 	keda, _ := NewKedaTrait().(*kedaTrait)
-	keda.Enabled = pointer.Bool(true)
-	keda.Auto = pointer.Bool(false)
+	keda.Enabled = ptr.To(true)
+	keda.Auto = ptr.To(false)
 	keda.Triggers = append(keda.Triggers, kedaTrigger{
 		Type: "custom",
 		Metadata: map[string]string{
 			"a": "b",
 		},
 	})
-	keda.HackControllerReplicas = pointer.Bool(true)
+	keda.HackControllerReplicas = ptr.To(true)
 	env := createBasicTestEnvironment(
 		&camelv1.Integration{
 			ObjectMeta: metav1.ObjectMeta{
@@ -339,30 +348,31 @@ func TestHackReplicas(t *testing.T) {
 		},
 	)
 
-	res, err := keda.Configure(env)
-	assert.NoError(t, err)
+	res, condition, err := keda.Configure(env)
+	require.NoError(t, err)
 	assert.True(t, res)
-	assert.NoError(t, keda.Apply(env))
+	assert.Nil(t, condition)
+	require.NoError(t, keda.Apply(env))
 	scalesClient, err := env.Client.ScalesClient()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	sc, err := scalesClient.Scales("test").Get(env.Ctx, camelv1.SchemeGroupVersion.WithResource("integrations").GroupResource(), "my-it", metav1.GetOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int32(1), sc.Spec.Replicas)
 }
 
 func TestHackKLBReplicas(t *testing.T) {
 	keda, _ := NewKedaTrait().(*kedaTrait)
-	keda.Enabled = pointer.Bool(true)
-	keda.Auto = pointer.Bool(false)
+	keda.Enabled = ptr.To(true)
+	keda.Auto = ptr.To(false)
 	keda.Triggers = append(keda.Triggers, kedaTrigger{
 		Type: "custom",
 		Metadata: map[string]string{
 			"a": "b",
 		},
 	})
-	keda.HackControllerReplicas = pointer.Bool(true)
+	keda.HackControllerReplicas = ptr.To(true)
 	env := createBasicTestEnvironment(
-		&camelv1alpha1.KameletBinding{
+		&camelv1.Pipe{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: "test",
 				Name:      "my-klb",
@@ -374,8 +384,8 @@ func TestHackKLBReplicas(t *testing.T) {
 				Name:      "my-it",
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion: camelv1alpha1.SchemeGroupVersion.String(),
-						Kind:       "KameletBinding",
+						APIVersion: camelv1.SchemeGroupVersion.String(),
+						Kind:       "Pipe",
 						Name:       "my-klb",
 					},
 				},
@@ -386,14 +396,15 @@ func TestHackKLBReplicas(t *testing.T) {
 		},
 	)
 
-	res, err := keda.Configure(env)
-	assert.NoError(t, err)
+	res, condition, err := keda.Configure(env)
+	require.NoError(t, err)
 	assert.True(t, res)
-	assert.NoError(t, keda.Apply(env))
+	assert.Nil(t, condition)
+	require.NoError(t, keda.Apply(env))
 	scalesClient, err := env.Client.ScalesClient()
-	assert.NoError(t, err)
-	sc, err := scalesClient.Scales("test").Get(env.Ctx, camelv1alpha1.SchemeGroupVersion.WithResource("kameletbindings").GroupResource(), "my-klb", metav1.GetOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	sc, err := scalesClient.Scales("test").Get(env.Ctx, camelv1.SchemeGroupVersion.WithResource("pipes").GroupResource(), "my-klb", metav1.GetOptions{})
+	require.NoError(t, err)
 	assert.Equal(t, int32(1), sc.Spec.Replicas)
 }
 
@@ -437,9 +448,9 @@ func getSecret(e *trait.Environment) *corev1.Secret {
 }
 
 func createBasicTestEnvironment(resources ...runtime.Object) *trait.Environment {
-	fakeClient, err := test.NewFakeClient(resources...)
+	fakeClient, err := newFakeClient(resources...)
 	if err != nil {
-		panic(errors.Wrap(err, "could not create fake client"))
+		panic(fmt.Errorf("could not create fake client: %w", err))
 	}
 
 	var it *camelv1.Integration
@@ -493,12 +504,12 @@ func createBasicTestEnvironment(resources ...runtime.Object) *trait.Environment 
 	}
 }
 
-func asEndpointProperties(props map[string]string) *camelv1alpha1.EndpointProperties {
+func asEndpointProperties(props map[string]string) *camelv1.EndpointProperties {
 	serialized, err := json.Marshal(props)
 	if err != nil {
 		panic(err)
 	}
-	return &camelv1alpha1.EndpointProperties{
+	return &camelv1.EndpointProperties{
 		RawMessage: serialized,
 	}
 }

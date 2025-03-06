@@ -23,16 +23,16 @@ import (
 	"os"
 	"testing"
 
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/util/test"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/internal"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-func kamelTestPostAddCommandInit(t *testing.T, rootCmd *cobra.Command) {
+func kamelTestPostAddCommandInit(t *testing.T, rootCmd *cobra.Command, options *RootCmdOptions) {
 	t.Helper()
 
-	err := kamelPostAddCommandInit(rootCmd)
+	err := kamelPostAddCommandInit(rootCmd, options.Flags)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -41,28 +41,29 @@ func kamelTestPostAddCommandInit(t *testing.T, rootCmd *cobra.Command) {
 func kamelTestPreAddCommandInitWithClient(client client.Client) (*RootCmdOptions, *cobra.Command) {
 	options := RootCmdOptions{
 		Context: context.Background(),
+		Flags:   viper.New(),
 		_client: client,
 	}
 	rootCmd := kamelPreAddCommandInit(&options)
-	rootCmd.Run = test.EmptyRun
+	rootCmd.Run = EmptyRun
 	return &options, rootCmd
 }
 
 func kamelTestPreAddCommandInit() (*RootCmdOptions, *cobra.Command) {
-	fakeClient, _ := test.NewFakeClient()
+	fakeClient, _ := internal.NewFakeClient()
 	return kamelTestPreAddCommandInitWithClient(fakeClient)
 }
 
 func TestLoadFromEnvVar(t *testing.T) {
-	defer teardown(t)
 	// shows how to include a "," character inside an env value see VAR1 value
 	if err := os.Setenv("KAMEL_RUN_ENVS", "\"VAR1=value,\"\"othervalue\"\"\",VAR2=value2"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
+	defer teardown(t, runCmdOptions.Flags)
 
-	_, err := test.ExecuteCommand(rootCmd, "run", "route.java")
+	_, err := ExecuteCommand(rootCmd, "run", "route.java")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -75,14 +76,14 @@ func TestLoadFromEnvVar(t *testing.T) {
 }
 
 func TestLoadFromFile(t *testing.T) {
-	// shows how to include a "," character inside a property value see VAR1 value
-	propertiesFile := []byte(`kamel.run.envs: "VAR1=value,""othervalue""",VAR2=value2`)
-	viper.SetConfigType("properties")
-	readViperConfigFromBytes(t, propertiesFile)
-
 	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
 
-	_, err := test.ExecuteCommand(rootCmd, "run", "route.java")
+	// shows how to include a "," character inside a property value see VAR1 value
+	propertiesFile := []byte(`kamel.run.envs: "VAR1=value,""othervalue""",VAR2=value2`)
+	runCmdOptions.Flags.SetConfigType("properties")
+	readViperConfigFromBytes(t, runCmdOptions.Flags, propertiesFile)
+
+	_, err := ExecuteCommand(rootCmd, "run", "route.java")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -95,18 +96,18 @@ func TestLoadFromFile(t *testing.T) {
 }
 
 func TestPrecedenceEnvVarOverFile(t *testing.T) {
-	defer teardown(t)
 	if err := os.Setenv("KAMEL_RUN_ENVS", "VAR1=envVar"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
+	defer teardown(t, runCmdOptions.Flags)
+
 	propertiesFile := []byte(`kamel.run.envs: VAR2=file`)
 	viper.SetConfigType("properties")
-	readViperConfigFromBytes(t, propertiesFile)
+	readViperConfigFromBytes(t, runCmdOptions.Flags, propertiesFile)
 
-	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
-
-	_, err := test.ExecuteCommand(rootCmd, "run", "route.java")
+	_, err := ExecuteCommand(rootCmd, "run", "route.java")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -119,18 +120,18 @@ func TestPrecedenceEnvVarOverFile(t *testing.T) {
 }
 
 func TestPrecedenceCommandLineOverEverythingElse(t *testing.T) {
-	defer teardown(t)
 	if err := os.Setenv("KAMEL_RUN_ENVS", "VAR1=envVar"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
+	defer teardown(t, runCmdOptions.Flags)
+
 	propertiesFile := []byte(`kamel.run.envs: VAR2=file`)
 	viper.SetConfigType("properties")
-	readViperConfigFromBytes(t, propertiesFile)
+	readViperConfigFromBytes(t, runCmdOptions.Flags, propertiesFile)
 
-	runCmdOptions, rootCmd, _ := initializeRunCmdOptions(t)
-
-	_, err := test.ExecuteCommand(rootCmd, "run", "route.java", "--env", "VAR3=commandLine")
+	_, err := ExecuteCommand(rootCmd, "run", "route.java", "--env", "VAR3=commandLine")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -142,20 +143,20 @@ func TestPrecedenceCommandLineOverEverythingElse(t *testing.T) {
 	}
 }
 
-func readViperConfigFromBytes(t *testing.T, propertiesFile []byte) {
+func readViperConfigFromBytes(t *testing.T, v *viper.Viper, propertiesFile []byte) {
 	t.Helper()
 
-	unexpectedErr := viper.ReadConfig(bytes.NewReader(propertiesFile))
+	unexpectedErr := v.ReadConfig(bytes.NewReader(propertiesFile))
 	if unexpectedErr != nil {
 		t.Fatalf("Unexpected error: %v", unexpectedErr)
 	}
 }
 
 // We must ALWAYS clean the environment variables and viper library properties to avoid mess up with the rest of the tests.
-func teardown(t *testing.T) {
+func teardown(t *testing.T, v *viper.Viper) {
 	t.Helper()
 	if err := os.Setenv("KAMEL_RUN_ENVS", ""); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	readViperConfigFromBytes(t, make([]byte, 0))
+	readViperConfigFromBytes(t, v, make([]byte, 0))
 }

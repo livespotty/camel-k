@@ -26,8 +26,8 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/indentedwriter"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/indentedwriter"
 )
 
 func newDescribeKitCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *describeKitCommandOptions) {
@@ -36,11 +36,12 @@ func newDescribeKitCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *describ
 	}
 
 	cmd := cobra.Command{
-		Use:     "kit",
-		Aliases: []string{"ik"},
-		Short:   "Describe an Integration Kit",
-		Long:    `Describe an Integration Kit.`,
-		PreRunE: decode(&options),
+		Use:        "kit",
+		Aliases:    []string{"ik"},
+		Short:      "Describe an Integration Kit",
+		Long:       `Describe an Integration Kit.`,
+		Deprecated: "consider using kubectl (or oc) custom resource describe command instead.",
+		PreRunE:    decode(&options, options.Flags),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(cmd, args); err != nil {
 				return err

@@ -21,10 +21,9 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/test"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
 const cmdKameletAddRepo = "add-repo"
@@ -35,7 +34,7 @@ func initializeKameletAddRepoCmdOptions(t *testing.T) (*kameletAddRepoCommandOpt
 
 	options, rootCmd := kamelTestPreAddCommandInit()
 	kameletAddRepoCommandOptions := addTestKameletAddRepoCmd(*options, rootCmd)
-	kamelTestPostAddCommandInit(t, rootCmd)
+	kamelTestPostAddCommandInit(t, rootCmd, options)
 
 	return kameletAddRepoCommandOptions, rootCmd, *options
 }
@@ -49,42 +48,42 @@ func addTestKameletAddRepoCmd(options RootCmdOptions, rootCmd *cobra.Command) *k
 	kameletAddRepoCmd.PostRunE = func(c *cobra.Command, args []string) error {
 		return nil
 	}
-	kameletAddRepoCmd.Args = test.ArbitraryArgs
+	kameletAddRepoCmd.Args = ArbitraryArgs
 	rootCmd.AddCommand(kameletAddRepoCmd)
 	return kameletAddRepoOptions
 }
 
 func TestKameletAddRepoNoFlag(t *testing.T) {
 	_, rootCmd, _ := initializeKameletAddRepoCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdKameletAddRepo, "foo")
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdKameletAddRepo, "foo")
+	require.NoError(t, err)
 }
 
 func TestKameletAddRepoNonExistingFlag(t *testing.T) {
 	_, rootCmd, _ := initializeKameletAddRepoCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdKameletAddRepo, "--nonExistingFlag", "foo")
-	assert.NotNil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdKameletAddRepo, "--nonExistingFlag", "foo")
+	require.Error(t, err)
 }
 
 func TestKameletAddRepoInvalidRepositoryURI(t *testing.T) {
-	repositories := []v1.IntegrationPlatformKameletRepositorySpec{}
-	assert.NotNil(t, checkURI("foo", repositories))
-	assert.NotNil(t, checkURI("github", repositories))
-	assert.NotNil(t, checkURI("github:", repositories))
-	assert.NotNil(t, checkURI("github:foo", repositories))
-	assert.NotNil(t, checkURI("github:foo/", repositories))
+	repositories := []v1.KameletRepositorySpec{}
+	require.Error(t, checkURI("foo", repositories))
+	require.Error(t, checkURI("github", repositories))
+	require.Error(t, checkURI("github:", repositories))
+	require.Error(t, checkURI("github:foo", repositories))
+	require.Error(t, checkURI("github:foo/", repositories))
 }
 
 func TestKameletAddRepoValidRepositoryURI(t *testing.T) {
-	repositories := []v1.IntegrationPlatformKameletRepositorySpec{}
-	assert.Nil(t, checkURI("github:foo/bar", repositories))
-	assert.Nil(t, checkURI("github:foo/bar/some/path", repositories))
-	assert.Nil(t, checkURI("github:foo/bar@1.0", repositories))
-	assert.Nil(t, checkURI("github:foo/bar/some/path@1.0", repositories))
+	repositories := []v1.KameletRepositorySpec{}
+	require.NoError(t, checkURI("github:foo/bar", repositories))
+	require.NoError(t, checkURI("github:foo/bar/some/path", repositories))
+	require.NoError(t, checkURI("github:foo/bar@1.0", repositories))
+	require.NoError(t, checkURI("github:foo/bar/some/path@1.0", repositories))
 }
 
 func TestKameletAddRepoDuplicateRepositoryURI(t *testing.T) {
-	repositories := []v1.IntegrationPlatformKameletRepositorySpec{{URI: "github:foo/bar"}}
-	assert.NotNil(t, checkURI("github:foo/bar", repositories))
-	assert.Nil(t, checkURI("github:foo/bar2", repositories))
+	repositories := []v1.KameletRepositorySpec{{URI: "github:foo/bar"}}
+	require.Error(t, checkURI("github:foo/bar", repositories))
+	require.NoError(t, checkURI("github:foo/bar2", repositories))
 }

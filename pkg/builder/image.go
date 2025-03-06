@@ -18,23 +18,31 @@ limitations under the License.
 package builder
 
 import (
-	"io/ioutil"
 	"os"
 	"path"
+	"path/filepath"
+	"strings"
+
+	"github.com/apache/camel-k/v2/pkg/util/io"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/log"
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/defaults"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
 )
 
 const (
-	ContextDir      = "context"
-	DeploymentDir   = "/deployments"
+	// ContextDir is the directory used to package the container.
+	ContextDir = "context"
+	// DeploymentDir is the directory used in the runtime application to deploy the artifacts.
+	DeploymentDir = "/deployments"
+	// DependenciesDir is the directory used to store required dependencies.
 	DependenciesDir = "dependencies"
 )
 
@@ -50,6 +58,7 @@ type imageSteps struct {
 	JvmDockerfile           Step
 }
 
+// Image used to export the steps available on an Image building process.
 var Image = imageSteps{
 	IncrementalImageContext: NewStep(ApplicationPackagePhase, incrementalImageContext),
 	NativeImageContext:      NewStep(ApplicationPackagePhase, nativeImageContext),
@@ -63,17 +72,14 @@ type artifactsSelector func(ctx *builderContext) error
 func nativeImageContext(ctx *builderContext) error {
 	return imageContext(ctx, func(ctx *builderContext) error {
 		runner := "camel-k-integration-" + defaults.Version + "-runner"
-
-		ctx.BaseImage = "quay.io/quarkus/quarkus-distroless-image:1.0"
 		ctx.Artifacts = []v1.Artifact{
 			{
 				ID:       runner,
-				Location: path.Join(ctx.Path, "maven", "target", runner),
+				Location: QuarkusRuntimeSupport(ctx.Catalog.GetCamelQuarkusVersion()).TargetDirectory(ctx.Path, runner),
 				Target:   runner,
 			},
 		}
 		ctx.SelectedArtifacts = ctx.Artifacts
-
 		return nil
 	})
 }
@@ -87,7 +93,7 @@ func executableDockerfile(ctx *builderContext) error {
 		USER nonroot
 	`)
 
-	err := ioutil.WriteFile(path.Join(ctx.Path, ContextDir, "Dockerfile"), dockerfile, 0o400)
+	err := os.WriteFile(filepath.Join(ctx.Path, ContextDir, "Dockerfile"), dockerfile, io.FilePerm400)
 	if err != nil {
 		return err
 	}
@@ -111,7 +117,7 @@ func jvmDockerfile(ctx *builderContext) error {
 		USER 1000
 	`)
 
-	err := ioutil.WriteFile(path.Join(ctx.Path, ContextDir, "Dockerfile"), dockerfile, 0o400)
+	err := os.WriteFile(filepath.Join(ctx.Path, ContextDir, "Dockerfile"), dockerfile, io.FilePerm400)
 	if err != nil {
 		return err
 	}
@@ -130,6 +136,8 @@ func incrementalImageContext(ctx *builderContext) error {
 
 		bestImage, commonLibs := findBestImage(images, ctx.Artifacts)
 		if bestImage.Image != "" {
+
+			log.Infof("Selected %s as base image for %s", bestImage.Image, ctx.Build.Name)
 			ctx.BaseImage = bestImage.Image
 			ctx.SelectedArtifacts = make([]v1.Artifact, 0)
 
@@ -138,9 +146,6 @@ func incrementalImageContext(ctx *builderContext) error {
 					ctx.SelectedArtifacts = append(ctx.SelectedArtifacts, entry)
 				}
 			}
-		} else if ctx.BaseImage == "" {
-			// TODO: transient workaround to be removed in 1.8.x
-			ctx.BaseImage = defaults.BaseImage()
 		}
 
 		return nil
@@ -153,15 +158,15 @@ func imageContext(ctx *builderContext, selector artifactsSelector) error {
 		return err
 	}
 
-	contextDir := path.Join(ctx.Path, ContextDir)
+	contextDir := filepath.Join(ctx.Path, ContextDir)
 
-	err = os.MkdirAll(contextDir, 0o700)
+	err = os.MkdirAll(contextDir, io.FilePerm755)
 	if err != nil {
 		return err
 	}
 
 	for _, entry := range ctx.SelectedArtifacts {
-		_, err := util.CopyFile(entry.Location, path.Join(contextDir, entry.Target))
+		_, err := util.CopyFile(entry.Location, filepath.Join(contextDir, entry.Target))
 		if err != nil {
 			return err
 		}
@@ -169,7 +174,7 @@ func imageContext(ctx *builderContext, selector artifactsSelector) error {
 
 	for _, entry := range ctx.Resources {
 		filePath, fileName := path.Split(entry.Target)
-		fullPath := path.Join(contextDir, filePath, fileName)
+		fullPath := filepath.Join(contextDir, filePath, fileName)
 		if err := util.WriteFileWithContent(fullPath, entry.Content); err != nil {
 			return err
 		}
@@ -180,7 +185,7 @@ func imageContext(ctx *builderContext, selector artifactsSelector) error {
 
 func listPublishedImages(context *builderContext) ([]v1.IntegrationKitStatus, error) {
 	excludeNativeImages, err := labels.NewRequirement(v1.IntegrationKitLayoutLabel, selection.NotEquals, []string{
-		v1.IntegrationKitLayoutNative,
+		v1.IntegrationKitLayoutNativeSources,
 	})
 	if err != nil {
 		return nil, err
@@ -189,9 +194,9 @@ func listPublishedImages(context *builderContext) ([]v1.IntegrationKitStatus, er
 	options := []ctrl.ListOption{
 		ctrl.InNamespace(context.Namespace),
 		ctrl.MatchingLabels{
-			v1.IntegrationKitTypeLabel:          v1.IntegrationKitTypePlatform,
-			"camel.apache.org/runtime.version":  context.Catalog.Runtime.Version,
-			"camel.apache.org/runtime.provider": string(context.Catalog.Runtime.Provider),
+			v1.IntegrationKitTypeLabel:           v1.IntegrationKitTypePlatform,
+			kubernetes.CamelLabelRuntimeVersion:  context.Catalog.Runtime.Version,
+			kubernetes.CamelLabelRuntimeProvider: string(context.Catalog.Runtime.Provider),
 		},
 		ctrl.MatchingLabelsSelector{
 			Selector: labels.NewSelector().Add(*excludeNativeImages),
@@ -205,13 +210,16 @@ func listPublishedImages(context *builderContext) ([]v1.IntegrationKitStatus, er
 	}
 
 	images := make([]v1.IntegrationKitStatus, 0)
-	for _, item := range list.Items {
-		kit := item
-
+	for _, kit := range list.Items {
+		// Discard non ready kits
 		if kit.Status.Phase != v1.IntegrationKitPhaseReady {
 			continue
 		}
-
+		// Discard kits with a different root hierarchy
+		// context.BaseImage should still contain the root base image at this stage
+		if kit.Status.RootImage != context.BaseImage {
+			continue
+		}
 		images = append(images, kit.Status)
 	}
 	return images, nil
@@ -230,11 +238,19 @@ func findBestImage(images []v1.IntegrationKitStatus, artifacts []v1.Artifact) (v
 	}
 
 	bestImageCommonLibs := make(map[string]bool)
-	bestImageSurplusLibs := 0
 
 	for _, image := range images {
+		nonLibArtifacts := 0
 		common := make(map[string]bool)
+
 		for _, artifact := range image.Artifacts {
+			// the application artifacts should not be considered as dependencies for image reuse
+			// otherwise, checksums would never match and we would always use the root image
+			if !strings.HasPrefix(artifact.Target, "dependencies/lib") {
+				nonLibArtifacts++
+				continue
+			}
+
 			// If the Artifact's checksum is not defined we can't reliably determine if for some
 			// reason the artifact has been changed but not the ID (as example for snapshots or
 			// other generated jar) thus we do not take this artifact into account.
@@ -247,18 +263,16 @@ func findBestImage(images []v1.IntegrationKitStatus, artifacts []v1.Artifact) (v
 		}
 
 		numCommonLibs := len(common)
-		surplus := len(image.Artifacts) - numCommonLibs
+		surplus := len(image.Artifacts) - numCommonLibs - nonLibArtifacts
 
-		if numCommonLibs != len(image.Artifacts) && surplus >= numCommonLibs/3 {
-			// Heuristic approach: if there are too many unrelated libraries then this image is
-			// not suitable to be used as base image
+		if surplus > 0 {
+			// the base image cannot have extra libs that we don't need
 			continue
 		}
 
-		if numCommonLibs > len(bestImageCommonLibs) || (numCommonLibs == len(bestImageCommonLibs) && surplus < bestImageSurplusLibs) {
+		if numCommonLibs >= len(bestImageCommonLibs) {
 			bestImage = image
 			bestImageCommonLibs = common
-			bestImageSurplusLibs = surplus
 		}
 	}
 

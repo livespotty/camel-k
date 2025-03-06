@@ -20,18 +20,18 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"strings"
+
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/Masterminds/semver"
-	"github.com/fatih/camelcase"
 	"github.com/spf13/cobra"
 
-	"github.com/apache/camel-k/pkg/client"
-	platformutil "github.com/apache/camel-k/pkg/platform"
-	"github.com/apache/camel-k/pkg/util/defaults"
-	"github.com/apache/camel-k/pkg/util/log"
+	"github.com/apache/camel-k/v2/pkg/client"
+	platformutil "github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
 )
 
 // VersionVariant may be overridden at build time.
@@ -50,7 +50,7 @@ func newCmdVersion(rootCmdOptions *RootCmdOptions) (*cobra.Command, *versionCmdO
 		Use:               "version",
 		Short:             "Display client version",
 		Long:              `Display Camel K client version.`,
-		PersistentPreRunE: decode(&options),
+		PersistentPreRunE: decode(&options, options.Flags),
 		PreRunE:           options.preRunE,
 		RunE:              options.run,
 		Annotations:       make(map[string]string),
@@ -116,7 +116,6 @@ func (o *versionCmdOptions) displayOperatorVersion(cmd *cobra.Command, c client.
 			fmt.Fprintf(cmd.OutOrStdout(), "Unable to retrieve operator version: The IntegrationPlatform resource hasn't been reconciled yet!")
 		} else {
 			fmt.Fprintf(cmd.OutOrStdout(), "Camel K Operator %s\n", operatorInfo[infoVersion])
-
 			if o.Verbose {
 				for k, v := range operatorInfo {
 					if k != infoVersion {
@@ -130,7 +129,6 @@ func (o *versionCmdOptions) displayOperatorVersion(cmd *cobra.Command, c client.
 
 func operatorInfo(ctx context.Context, c client.Client, namespace string) (map[string]string, error) {
 	infos := make(map[string]string)
-
 	platform, err := platformutil.GetOrFindLocal(ctx, c, namespace)
 	if err != nil && k8serrors.IsNotFound(err) {
 		// find default operator platform in any namespace
@@ -143,32 +141,24 @@ func operatorInfo(ctx context.Context, c client.Client, namespace string) (map[s
 		return nil, err
 	}
 
-	// Useful information
-	infos["name"] = platform.Name
-	infos["version"] = platform.Status.Version
-	infos["publishStrategy"] = string(platform.Status.Build.PublishStrategy)
-	infos["runtimeVersion"] = platform.Status.Build.RuntimeVersion
-	infos["registryAddress"] = platform.Status.Build.Registry.Address
+	infos["Name"] = platform.Name
+	infos["Version"] = platform.Status.Version
+	infos["Publish strategy"] = string(platform.Status.Build.PublishStrategy)
+	infos["Runtime version"] = platform.Status.Build.RuntimeVersion
+	infos["Registry address"] = platform.Status.Build.Registry.Address
+	infos["Git commit"] = platform.Status.Info["gitCommit"]
 
-	if platform.Status.Info != nil {
-		for k, v := range platform.Status.Info {
-			infos[k] = v
-		}
+	catalog, err := camel.LoadCatalog(ctx, c, platform.Namespace, v1.RuntimeSpec{Version: platform.Status.Build.RuntimeVersion, Provider: platform.Status.Build.RuntimeProvider})
+	if err != nil {
+		return nil, err
+	}
+	if catalog != nil {
+		infos["Camel Quarkus version"] = catalog.CamelCatalogSpec.GetCamelQuarkusVersion()
+		infos["Camel version"] = catalog.CamelCatalogSpec.GetCamelVersion()
+		infos["Quarkus version"] = catalog.CamelCatalogSpec.GetQuarkusVersion()
 	}
 
-	ccInfo := fromCamelCase(infos)
-	log.Debugf("Operator Info for namespace %s: %v", namespace, ccInfo)
-	return ccInfo, nil
-}
-
-func fromCamelCase(infos map[string]string) map[string]string {
-	textKeys := make(map[string]string)
-	for k, v := range infos {
-		key := strings.Title(strings.Join(camelcase.Split(k), " "))
-		textKeys[key] = v
-	}
-
-	return textKeys
+	return infos, nil
 }
 
 func operatorVersion(ctx context.Context, c client.Client, namespace string) (string, error) {
@@ -180,6 +170,9 @@ func operatorVersion(ctx context.Context, c client.Client, namespace string) (st
 }
 
 func compatibleVersions(aVersion, bVersion string, cmd *cobra.Command) bool {
+	if aVersion == bVersion {
+		return true
+	}
 	a, err := semver.NewVersion(aVersion)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "Could not parse '"+aVersion+"' (error:", err.Error()+")")

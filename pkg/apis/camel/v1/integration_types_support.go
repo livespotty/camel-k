@@ -18,14 +18,34 @@ limitations under the License.
 package v1
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"regexp"
 	"strings"
 
+	yaml2 "gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/yaml"
 )
 
-const IntegrationLabel = "camel.apache.org/integration"
+const (
+	// IntegrationLabel is used to tag k8s object created by a given Integration.
+	IntegrationLabel = "camel.apache.org/integration"
+	// IntegrationGenerationLabel is used to check on outdated integration resources that can be removed by garbage collection.
+	IntegrationGenerationLabel = "camel.apache.org/generation"
+	// IntegrationSyntheticLabel is used to tag k8s synthetic Integrations.
+	IntegrationSyntheticLabel = "camel.apache.org/is-synthetic"
+	// IntegrationImportedKindLabel specifies from what kind of resource an Integration was imported.
+	IntegrationImportedKindLabel = "camel.apache.org/imported-from-kind"
+	// IntegrationImportedNameLabel specifies from what resource an Integration was imported.
+	IntegrationImportedNameLabel = "camel.apache.org/imported-from-name"
+
+	// IntegrationFlowEmbeddedSourceName --.
+	IntegrationFlowEmbeddedSourceName = "camel-k-embedded-flow.yaml"
+)
 
 func NewIntegration(namespace string, name string) Integration {
 	return Integration{
@@ -60,22 +80,74 @@ func (in *Integration) Initialize() {
 	}
 }
 
-// Sources return a new slice containing all the sources associated to the integration
-func (in *Integration) Sources() []SourceSpec {
-	sources := make([]SourceSpec, 0, len(in.Spec.Sources)+len(in.Status.GeneratedSources))
-	sources = append(sources, in.Spec.Sources...)
+// AllSources returns a new slice containing all the sources associated to the Integration.
+// It merges any generated source, giving priority to this if the same
+// source exist both in spec and status.
+func (in *Integration) AllSources() []SourceSpec {
+	var sources []SourceSpec
 	sources = append(sources, in.Status.GeneratedSources...)
+	for _, src := range in.Spec.Sources {
+		if len(in.Status.GeneratedSources) == 0 {
+			sources = append(sources, src)
+		} else {
+			for _, genSrc := range in.Status.GeneratedSources {
+				if src.Name != genSrc.Name {
+					sources = append(sources, src)
+				}
+			}
+		}
+	}
 
 	return sources
 }
 
-// Resources return a new slice containing all the resources associated to the integration
-func (in *Integration) Resources() []ResourceSpec {
-	resources := make([]ResourceSpec, 0, len(in.Spec.Resources)+len(in.Status.GeneratedResources))
-	resources = append(resources, in.Spec.Resources...)
-	resources = append(resources, in.Status.GeneratedResources...)
+// OriginalSources return a new slice containing only the original sources provided within the Integration.
+// It checks if the spec source was transformed and available in the status, and return the latter in such a case.
+func (in *Integration) OriginalSources() []SourceSpec {
+	var sources []SourceSpec
+	for _, src := range in.Spec.Sources {
+		found := false
+	loop:
+		for _, genSrc := range in.Status.GeneratedSources {
+			if src.Name == genSrc.Name {
+				sources = append(sources, genSrc)
+				found = true
+				break loop
+			}
+		}
+		if !found {
+			sources = append(sources, src)
+		}
+	}
 
-	return resources
+	return sources
+}
+
+// OriginalSourcesOnly return a new slice containing only the original sources provided within the Integration spec
+// including the embedded yaml flow if it exists.
+func (in *Integration) OriginalSourcesOnly() []SourceSpec {
+	var sources []SourceSpec
+	sources = append(sources, in.Spec.Sources...)
+	if len(in.Spec.Flows) > 0 {
+		content, _ := ToYamlDSL(in.Spec.Flows)
+		sources = append(sources, SourceSpec{
+			DataSpec: DataSpec{
+				Name:    IntegrationFlowEmbeddedSourceName,
+				Content: string(content),
+			},
+		})
+	}
+
+	return sources
+}
+
+// IsManagedBuild returns true when the Integration requires to be built by the operator.
+func (in *Integration) IsManagedBuild() bool {
+	if in.Spec.Traits.Container == nil || in.Spec.Traits.Container.Image == "" {
+		return true
+	}
+	isManagedBuild, err := regexp.MatchString("(.*)/(.*)/camel-k-kit-(.*)@sha256:(.*)", in.Spec.Traits.Container.Image)
+	return err == nil && isManagedBuild
 }
 
 func (in *IntegrationSpec) AddSource(name string, content string, language Language) {
@@ -84,10 +156,6 @@ func (in *IntegrationSpec) AddSource(name string, content string, language Langu
 
 func (in *IntegrationSpec) AddSources(sources ...SourceSpec) {
 	in.Sources = append(in.Sources, sources...)
-}
-
-func (in *IntegrationSpec) AddResources(resources ...ResourceSpec) {
-	in.Resources = append(in.Resources, resources...)
 }
 
 func (in *IntegrationSpec) AddFlows(flows ...Flow) {
@@ -113,7 +181,12 @@ func (in *IntegrationSpec) AddDependency(dependency string) {
 	in.Dependencies = append(in.Dependencies, dependency)
 }
 
-// GetConfigurationProperty returns a configuration property
+// AddConfigurationProperty adds a new configuration property.
+func (in *IntegrationSpec) AddConfigurationProperty(confValue string) {
+	in.AddConfiguration("property", confValue)
+}
+
+// GetConfigurationProperty returns a configuration property.
 func (in *IntegrationSpec) GetConfigurationProperty(property string) string {
 	for _, confSpec := range in.Configuration {
 		if confSpec.Type == "property" && strings.HasPrefix(confSpec.Value, property) {
@@ -133,25 +206,6 @@ func trimFirstLeadingSpace(val string) string {
 	return val
 }
 
-func (in *IntegrationStatus) AddOrReplaceGeneratedResources(resources ...ResourceSpec) {
-	newResources := make([]ResourceSpec, 0)
-	for _, resource := range resources {
-		replaced := false
-		for i, r := range in.GeneratedResources {
-			if r.Name == resource.Name {
-				in.GeneratedResources[i] = resource
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			newResources = append(newResources, resource)
-		}
-	}
-
-	in.GeneratedResources = append(in.GeneratedResources, newResources...)
-}
-
 func (in *IntegrationStatus) AddOrReplaceGeneratedSources(sources ...SourceSpec) {
 	newSources := make([]SourceSpec, 0)
 	for _, source := range sources {
@@ -169,21 +223,6 @@ func (in *IntegrationStatus) AddOrReplaceGeneratedSources(sources ...SourceSpec)
 	}
 
 	in.GeneratedSources = append(in.GeneratedSources, newSources...)
-}
-
-func (in *IntegrationStatus) AddConfigurationsIfMissing(configurations ...ConfigurationSpec) {
-	for _, config := range configurations {
-		alreadyPresent := false
-		for _, r := range in.Configuration {
-			if r.Type == config.Type && r.Value == config.Value {
-				alreadyPresent = true
-				break
-			}
-		}
-		if !alreadyPresent {
-			in.Configuration = append(in.Configuration, config)
-		}
-	}
 }
 
 func (in *IntegrationSpec) Configurations() []ConfigurationSpec {
@@ -224,30 +263,7 @@ func NewSourceSpec(name string, content string, language Language) SourceSpec {
 	}
 }
 
-func NewResourceSpec(name string, content string, destination string, resourceType ResourceType) ResourceSpec {
-	return ResourceSpec{
-		DataSpec: DataSpec{
-			Name:    name,
-			Content: content,
-		},
-		Type: resourceType,
-	}
-}
-
-// InferLanguage returns the language of the source or discovers it from file extension if not set
-func (in *SourceSpec) InferLanguage() Language {
-	if in.Language != "" {
-		return in.Language
-	}
-	for _, l := range Languages {
-		if strings.HasSuffix(in.Name, "."+string(l)) {
-			return l
-		}
-	}
-	return ""
-}
-
-// SetOperatorID sets the given operator id as an annotation
+// SetOperatorID sets the given operator id as an annotation.
 func (in *Integration) SetOperatorID(operatorID string) {
 	SetAnnotation(&in.ObjectMeta, OperatorIDAnnotation, operatorID)
 }
@@ -274,9 +290,13 @@ func (in *Integration) SetIntegrationKit(kit *IntegrationKit) {
 	if kit.Status.Phase != IntegrationKitPhaseReady {
 		cs = corev1.ConditionFalse
 		if kit.Status.Phase == IntegrationKitPhaseNone {
-			message = fmt.Sprintf("creating a new integration kit")
+			message = "creating a new integration kit"
 		} else {
 			message = fmt.Sprintf("integration kit %s/%s is in state %q", kit.Namespace, kit.Name, kit.Status.Phase)
+			if kit.Status.Phase == IntegrationKitPhaseError && kit.Status.Failure != nil {
+				// Append specific reason for the failure
+				message = message + ". Failure: " + kit.Status.Failure.Reason
+			}
 		}
 	}
 
@@ -326,6 +346,11 @@ func (in *Integration) SetReadyCondition(status corev1.ConditionStatus, reason, 
 // SetReadyConditionError sets Ready condition to False with the given error message.
 func (in *Integration) SetReadyConditionError(err string) {
 	in.SetReadyCondition(corev1.ConditionFalse, IntegrationConditionErrorReason, err)
+}
+
+// IsSynthetic returns true for synthetic Integrations (non managed, likely imported from external deployments).
+func (in *Integration) IsSynthetic() bool {
+	return in.Annotations[IntegrationSyntheticLabel] == "true"
 }
 
 // GetCondition returns the condition with the provided type.
@@ -412,36 +437,81 @@ func (in *IntegrationStatus) RemoveCondition(condType IntegrationConditionType) 
 	in.Conditions = newConditions
 }
 
-var _ ResourceCondition = IntegrationCondition{}
+var _ ResourceCondition = &IntegrationCondition{}
 
 func (in *IntegrationStatus) GetConditions() []ResourceCondition {
 	res := make([]ResourceCondition, 0, len(in.Conditions))
 	for _, c := range in.Conditions {
-		res = append(res, c)
+		res = append(res, &c)
 	}
 	return res
 }
 
-func (c IntegrationCondition) GetType() string {
+func (c *IntegrationCondition) GetType() string {
 	return string(c.Type)
 }
 
-func (c IntegrationCondition) GetStatus() corev1.ConditionStatus {
+func (c *IntegrationCondition) GetStatus() corev1.ConditionStatus {
 	return c.Status
 }
 
-func (c IntegrationCondition) GetLastUpdateTime() metav1.Time {
+func (c *IntegrationCondition) GetLastUpdateTime() metav1.Time {
 	return c.LastUpdateTime
 }
 
-func (c IntegrationCondition) GetLastTransitionTime() metav1.Time {
+func (c *IntegrationCondition) GetLastTransitionTime() metav1.Time {
 	return c.LastTransitionTime
 }
 
-func (c IntegrationCondition) GetReason() string {
+func (c *IntegrationCondition) GetReason() string {
 	return c.Reason
 }
 
-func (c IntegrationCondition) GetMessage() string {
+func (c *IntegrationCondition) GetMessage() string {
 	return c.Message
+}
+
+// FromYamlDSLString creates a slice of flows from a Camel YAML DSL string.
+func FromYamlDSLString(flowsString string) ([]Flow, error) {
+	return FromYamlDSL(bytes.NewReader([]byte(flowsString)))
+}
+
+// FromYamlDSL creates a slice of flows from a Camel YAML DSL stream.
+func FromYamlDSL(reader io.Reader) ([]Flow, error) {
+	buffered, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	var flows []Flow
+	// Using the Kubernetes decoder to turn them into JSON before unmarshal.
+	// This avoids having map[interface{}]interface{} objects which are not JSON compatible.
+	jsonData, err := yaml.ToJSON(buffered)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = json.Unmarshal(jsonData, &flows); err != nil {
+		return nil, err
+	}
+	return flows, err
+}
+
+// ToYamlDSL converts a flow into its Camel YAML DSL equivalent.
+func ToYamlDSL(flows []Flow) ([]byte, error) {
+	data, err := json.Marshal(&flows)
+	if err != nil {
+		return nil, err
+	}
+	var jsondata interface{}
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.UseNumber()
+	if err := d.Decode(&jsondata); err != nil {
+		return nil, fmt.Errorf("error unmarshalling json: %w", err)
+	}
+	yamldata, err := yaml2.Marshal(&jsondata)
+	if err != nil {
+		return nil, fmt.Errorf("error marshalling to yaml: %w", err)
+	}
+
+	return yamldata, nil
 }

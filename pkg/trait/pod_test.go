@@ -21,30 +21,33 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/utils/ptr"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/digest"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/digest"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 func TestConfigurePodTraitDoesSucceed(t *testing.T) {
 	trait, environment, _ := createPodTest("")
-	configured, err := trait.Configure(environment)
+	configured, condition, err := trait.Configure(environment)
 
 	assert.True(t, configured)
-	assert.Nil(t, err)
+	assert.Nil(t, condition)
+	require.NoError(t, err)
 
-	configured, err = trait.Configure(environment)
+	configured, condition, err = trait.Configure(environment)
 
 	assert.True(t, configured)
-	assert.Nil(t, err)
+	assert.Nil(t, condition)
+	require.NoError(t, err)
 }
 
 func TestSimpleChange(t *testing.T) {
@@ -101,10 +104,18 @@ func TestSupplementalGroup(t *testing.T) {
 	assert.Contains(t, templateSpec.Spec.SecurityContext.SupplementalGroups, int64(666))
 }
 
+func TestAutomountServiceAccountToken(t *testing.T) {
+	templateString := `automountServiceAccountToken: false`
+	templateSpec := testPodTemplateSpec(t, templateString)
+
+	assert.NotNil(t, templateSpec.Spec.AutomountServiceAccountToken)
+	assert.False(t, *templateSpec.Spec.AutomountServiceAccountToken)
+}
+
 // nolint: unparam
 func createPodTest(podSpecTemplate string) (*podTrait, *Environment, *appsv1.Deployment) {
 	trait, _ := newPodTrait().(*podTrait)
-	trait.Enabled = pointer.Bool(true)
+	trait.Enabled = ptr.To(true)
 
 	var podSpec v1.PodSpec
 	if podSpecTemplate != "" {
@@ -203,11 +214,12 @@ func testPodTemplateSpec(t *testing.T, template string) corev1.PodTemplateSpec {
 
 	trait, environment, _ := createPodTest(template)
 
-	_, err := trait.Configure(environment)
-	assert.Nil(t, err)
+	_, condition, err := trait.Configure(environment)
+	require.NoError(t, err)
+	assert.Nil(t, condition)
 
 	err = trait.Apply(environment)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	deployment := environment.Resources.GetDeployment(func(deployment *appsv1.Deployment) bool {
 		return deployment.Name == "pod-template-test-integration"

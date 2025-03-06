@@ -18,7 +18,7 @@ limitations under the License.
 package cmd
 
 import (
-	"github.com/apache/camel-k/pkg/cmd/builder"
+	"github.com/apache/camel-k/v2/pkg/cmd/builder"
 	"github.com/spf13/cobra"
 )
 
@@ -33,7 +33,7 @@ func newCmdBuilder(rootCmdOptions *RootCmdOptions) (*cobra.Command, *builderCmdO
 		Short:   "Run the Camel K builder",
 		Long:    `Run the Camel K builder`,
 		Hidden:  true,
-		PreRunE: decode(&options),
+		PreRunE: decode(&options, options.Flags),
 		Run:     options.run,
 	}
 

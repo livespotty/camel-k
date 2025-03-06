@@ -23,8 +23,7 @@ import (
 	"fmt"
 	"net/http"
 
-	camelv1 "github.com/apache/camel-k/pkg/client/camel/clientset/versioned/typed/camel/v1"
-	camelv1alpha1 "github.com/apache/camel-k/pkg/client/camel/clientset/versioned/typed/camel/v1alpha1"
+	camelv1 "github.com/apache/camel-k/v2/pkg/client/camel/clientset/versioned/typed/camel/v1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"
@@ -33,25 +32,17 @@ import (
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
 	CamelV1() camelv1.CamelV1Interface
-	CamelV1alpha1() camelv1alpha1.CamelV1alpha1Interface
 }
 
-// Clientset contains the clients for groups. Each group has exactly one
-// version included in a Clientset.
+// Clientset contains the clients for groups.
 type Clientset struct {
 	*discovery.DiscoveryClient
-	camelV1       *camelv1.CamelV1Client
-	camelV1alpha1 *camelv1alpha1.CamelV1alpha1Client
+	camelV1 *camelv1.CamelV1Client
 }
 
 // CamelV1 retrieves the CamelV1Client
 func (c *Clientset) CamelV1() camelv1.CamelV1Interface {
 	return c.camelV1
-}
-
-// CamelV1alpha1 retrieves the CamelV1alpha1Client
-func (c *Clientset) CamelV1alpha1() camelv1alpha1.CamelV1alpha1Interface {
-	return c.camelV1alpha1
 }
 
 // Discovery retrieves the DiscoveryClient
@@ -69,6 +60,10 @@ func (c *Clientset) Discovery() discovery.DiscoveryInterface {
 // where httpClient was generated with rest.HTTPClientFor(c).
 func NewForConfig(c *rest.Config) (*Clientset, error) {
 	configShallowCopy := *c
+
+	if configShallowCopy.UserAgent == "" {
+		configShallowCopy.UserAgent = rest.DefaultKubernetesUserAgent()
+	}
 
 	// share the transport between all clients
 	httpClient, err := rest.HTTPClientFor(&configShallowCopy)
@@ -98,10 +93,6 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 	if err != nil {
 		return nil, err
 	}
-	cs.camelV1alpha1, err = camelv1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
-	if err != nil {
-		return nil, err
-	}
 
 	cs.DiscoveryClient, err = discovery.NewDiscoveryClientForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
@@ -124,7 +115,6 @@ func NewForConfigOrDie(c *rest.Config) *Clientset {
 func New(c rest.Interface) *Clientset {
 	var cs Clientset
 	cs.camelV1 = camelv1.New(c)
-	cs.camelV1alpha1 = camelv1alpha1.New(c)
 
 	cs.DiscoveryClient = discovery.NewDiscoveryClient(c)
 	return &cs

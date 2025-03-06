@@ -18,19 +18,14 @@ limitations under the License.
 package defaults
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 
-	"github.com/apache/camel-k/pkg/util/log"
+	"github.com/apache/camel-k/v2/pkg/util/log"
 )
 
 func BaseImage() string {
 	return envOrDefault(baseImage, "KAMEL_BASE_IMAGE", "RELATED_IMAGE_BASE")
-}
-
-func OperatorImage() string {
-	return envOrDefault(fmt.Sprintf("%s:%s", ImageName, Version), "KAMEL_OPERATOR_IMAGE", "KAMEL_K_TEST_OPERATOR_CURRENT_IMAGE")
 }
 
 func InstallDefaultKamelets() bool {

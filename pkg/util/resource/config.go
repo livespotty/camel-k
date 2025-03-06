@@ -18,18 +18,9 @@ limitations under the License.
 package resource
 
 import (
-	"context"
-	"crypto/sha1" // nolint: gosec
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
-
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	corev1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // Config represents a config option.
@@ -87,10 +78,10 @@ const (
 	StorageTypeConfigmap StorageType = "configmap"
 	// StorageTypeSecret --.
 	StorageTypeSecret StorageType = "secret"
-	// StorageTypeFile --.
-	StorageTypeFile StorageType = "file"
 	// StorageTypePVC --.
 	StorageTypePVC StorageType = "pvc"
+	// StorageTypeEmptyDir --.
+	StorageTypeEmptyDir StorageType = "emptyDir"
 )
 
 // ContentType represent what kind of a content is, either data or purely text configuration.
@@ -105,12 +96,11 @@ const (
 
 var (
 	validConfigSecretRegexp = regexp.MustCompile(`^(configmap|secret)\:([\w\.\-\_\:\/@]+)$`)
-	validFileRegexp         = regexp.MustCompile(`^file\:([\w\.\-\_\:\/@" ]+)$`)
 	validResourceRegexp     = regexp.MustCompile(`^([\w\.\-\_\:]+)(\/([\w\.\-\_\:]+))?(\@([\w\.\-\_\:\/]+))?$`)
 )
 
 func newConfig(storageType StorageType, contentType ContentType, value string) *Config {
-	rn, mk, mp := parseResourceValue(storageType, value)
+	rn, mk, mp := parseCMOrSecretValue(value)
 	return &Config{
 		storageType:     storageType,
 		contentType:     contentType,
@@ -118,15 +108,6 @@ func newConfig(storageType StorageType, contentType ContentType, value string) *
 		resourceKey:     mk,
 		destinationPath: mp,
 	}
-}
-
-func parseResourceValue(storageType StorageType, value string) (string, string, string) {
-	if storageType == StorageTypeFile {
-		resource, maybeDestinationPath := ParseFileValue(value)
-		return resource, "", maybeDestinationPath
-	}
-
-	return parseCMOrSecretValue(value)
 }
 
 // ParseFileValue will parse a file resource/config option to return the local path and the
@@ -155,21 +136,6 @@ func ParseResource(item string) (*Config, error) {
 	return parse(item, ContentTypeData)
 }
 
-// ParseVolume will parse a volume and return a Config.
-func ParseVolume(item string) (*Config, error) {
-	configParts := strings.Split(item, ":")
-
-	if len(configParts) != 2 {
-		return nil, fmt.Errorf("could not match pvc as %s", item)
-	}
-
-	return &Config{
-		storageType:     StorageTypePVC,
-		resourceName:    configParts[0],
-		destinationPath: configParts[1],
-	}, nil
-}
-
 // ParseConfig will parse a config and return a Config.
 func ParseConfig(item string) (*Config, error) {
 	return parse(item, ContentTypeText)
@@ -189,58 +155,9 @@ func parse(item string, contentType ContentType) (*Config, error) {
 			cot = StorageTypeSecret
 		}
 		value = groups[2]
-	case validFileRegexp.MatchString(item):
-		// parse as file
-		groups := validFileRegexp.FindStringSubmatch(item)
-		cot = StorageTypeFile
-		value = groups[1]
 	default:
-		return nil, fmt.Errorf("could not match config, secret or file configuration as %s", item)
+		return nil, fmt.Errorf("could not match config or secret configuration as %s", item)
 	}
 
 	return newConfig(cot, contentType, value), nil
-}
-
-// ConvertFileToConfigmap convert a local file resource type in a configmap type
-// taking care to create the Configmap on the cluster. The method will change the value of config parameter
-// to reflect the conversion applied transparently.
-func ConvertFileToConfigmap(ctx context.Context, c client.Client, config *Config, namespace string, integrationName string,
-	content string, rawContent []byte) (*corev1.ConfigMap, error) {
-	filename := filepath.Base(config.Name())
-	if config.DestinationPath() == "" {
-		config.resourceKey = filename
-		// As we are changing the resource to a configmap type
-		// we must declare the destination path
-		if config.ContentType() == ContentTypeData {
-			config.destinationPath = camel.ResourcesDefaultMountPath + "/" + filename
-		} else {
-			config.destinationPath = camel.ConfigResourcesMountPath + "/" + filename
-		}
-	} else {
-		config.resourceKey = filepath.Base(config.DestinationPath())
-	}
-	genCmName := fmt.Sprintf("cm-%s", hashFrom([]byte(filename), []byte(integrationName), []byte(content), rawContent))
-	cm := kubernetes.NewConfigMap(namespace, genCmName, filename, config.Key(), content, rawContent)
-	err := c.Create(ctx, cm)
-	if err != nil {
-		if k8serrors.IsAlreadyExists(err) {
-			// We'll reuse it, as is
-		} else {
-			return cm, err
-		}
-	}
-	config.storageType = StorageTypeConfigmap
-	config.resourceName = cm.Name
-
-	return cm, nil
-}
-
-func hashFrom(contents ...[]byte) string {
-	// SHA1 because we need to limit the length to less than 64 chars
-	hash := sha1.New() // nolint: gosec
-	for _, c := range contents {
-		hash.Write(c)
-	}
-
-	return fmt.Sprintf("%x", hash.Sum(nil))
 }

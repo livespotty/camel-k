@@ -21,9 +21,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"math"
 	"math/rand"
 	"os"
 	"path"
@@ -34,70 +35,19 @@ import (
 	"strings"
 	"time"
 
+	io2 "github.com/apache/camel-k/v2/pkg/util/io"
+
+	"github.com/apache/camel-k/v2/pkg/util/sets"
 	"go.uber.org/multierr"
 
 	yaml2 "gopkg.in/yaml.v2"
-
-	"github.com/pkg/errors"
-	"github.com/scylladb/go-set/strset"
 )
-
-// Directories and file names:
-
-// DefaultDependenciesDirectoryName --.
-const DefaultDependenciesDirectoryName = "dependencies"
-
-// DefaultPropertiesDirectoryName --.
-const DefaultPropertiesDirectoryName = "properties"
-
-// DefaultRoutesDirectoryName --.
-const DefaultRoutesDirectoryName = "routes"
-
-// DefaultWorkingDirectoryName --.
-const DefaultWorkingDirectoryName = "workspace"
-
-// CustomQuarkusDirectoryName --.
-const CustomQuarkusDirectoryName = "quarkus"
-
-// CustomAppDirectoryName --.
-const CustomAppDirectoryName = "app"
-
-// CustomLibDirectoryName --.
-const CustomLibDirectoryName = "lib/main"
-
-// ContainerDependenciesDirectory --.
-var ContainerDependenciesDirectory = "/deployments/dependencies"
-
-// ContainerPropertiesDirectory --.
-var ContainerPropertiesDirectory = "/etc/camel/conf.d"
-
-// ContainerRoutesDirectory --.
-var ContainerRoutesDirectory = "/etc/camel/sources"
-
-// ContainerResourcesDirectory --.
-var ContainerResourcesDirectory = "/etc/camel/resources"
-
-// ContainerQuarkusDirectoryName --.
-const ContainerQuarkusDirectoryName = "/quarkus"
-
-// ContainerAppDirectoryName --.
-const ContainerAppDirectoryName = "/app"
-
-// ContainerLibDirectoryName --.
-const ContainerLibDirectoryName = "/lib/main"
-
-// QuarkusDependenciesBaseDirectory --.
-var QuarkusDependenciesBaseDirectory = "/quarkus-app"
 
 // ListOfLazyEvaluatedEnvVars -- List of unevaluated environment variables.
 // These are sensitive values or values that may have different values depending on
 // where the integration is run (locally vs. the cloud). These environment variables
 // are evaluated at the time of the integration invocation.
-var ListOfLazyEvaluatedEnvVars = []string{}
-
-// CLIEnvVars -- List of CLI provided environment variables. They take precedence over
-// any environment variables with the same name.
-var CLIEnvVars = make([]string, 0)
+var ListOfLazyEvaluatedEnvVars []string
 
 func StringSliceJoin(slices ...[]string) []string {
 	size := 0
@@ -116,7 +66,7 @@ func StringSliceJoin(slices ...[]string) []string {
 }
 
 func StringSliceContains(slice []string, items []string) bool {
-	for i := 0; i < len(items); i++ {
+	for i := range items {
 		if !StringSliceExists(slice, items[i]) {
 			return false
 		}
@@ -126,7 +76,7 @@ func StringSliceContains(slice []string, items []string) bool {
 }
 
 func StringSliceExists(slice []string, item string) bool {
-	for i := 0; i < len(slice); i++ {
+	for i := range slice {
 		if slice[i] == item {
 			return true
 		}
@@ -135,19 +85,9 @@ func StringSliceExists(slice []string, item string) bool {
 	return false
 }
 
-func StringContainsPrefix(slice []string, prefix string) bool {
-	for i := 0; i < len(slice); i++ {
-		if strings.HasPrefix(slice[i], prefix) {
-			return true
-		}
-	}
-
-	return false
-}
-
 func StringSliceContainsAnyOf(slice []string, items ...string) bool {
-	for i := 0; i < len(slice); i++ {
-		for j := 0; j < len(items); j++ {
+	for i := range slice {
+		for j := range items {
 			if strings.Contains(slice[i], items[j]) {
 				return true
 			}
@@ -184,15 +124,6 @@ func StringSliceUniqueConcat(slice *[]string, items []string) bool {
 	}
 
 	return changed
-}
-
-func SubstringFrom(s string, substr string) string {
-	index := strings.Index(s, substr)
-	if index != -1 {
-		return s[index:]
-	}
-
-	return ""
 }
 
 func SubstringBefore(s string, substr string) string {
@@ -232,9 +163,18 @@ func RandomString(n int) string {
 	return sb.String()
 }
 
+func EncodeXMLWithoutHeader(content interface{}) ([]byte, error) {
+	return encodeXML(content, "")
+}
+
 func EncodeXML(content interface{}) ([]byte, error) {
+
+	return encodeXML(content, xml.Header)
+}
+
+func encodeXML(content interface{}, xmlHeader string) ([]byte, error) {
 	w := &bytes.Buffer{}
-	w.WriteString(xml.Header)
+	w.WriteString(xmlHeader)
 
 	e := xml.NewEncoder(w)
 	e.Indent("", "  ")
@@ -253,8 +193,7 @@ func CopyFile(src, dst string) (int64, error) {
 	}
 
 	if !stat.Mode().IsRegular() {
-		err = fmt.Errorf("%s is not a regular file", src)
-		return 0, err
+		return 0, fmt.Errorf("%s is not a regular file", src)
 	}
 
 	source, err := Open(src)
@@ -270,7 +209,7 @@ func CopyFile(src, dst string) (int64, error) {
 	// in the container may not be the same as the one owning the files
 	//
 	// #nosec G301
-	if err = os.MkdirAll(path.Dir(dst), 0o755); err != nil {
+	if err = os.MkdirAll(path.Dir(dst), io2.FilePerm755); err != nil {
 		return 0, err
 	}
 
@@ -294,11 +233,11 @@ func WriteFileWithBytesMarshallerContent(basePath string, filePath string, conte
 		return err
 	}
 
-	return WriteFileWithContent(path.Join(basePath, filePath), data)
+	return WriteFileWithContent(filepath.Join(basePath, filePath), data)
 }
 
 func FindAllDistinctStringSubmatch(data string, regexps ...*regexp.Regexp) []string {
-	submatchs := strset.New()
+	submatchs := sets.NewSet()
 
 	for _, reg := range regexps {
 		hits := reg.FindAllStringSubmatch(data, -1)
@@ -362,27 +301,6 @@ func DirectoryEmpty(directory string) (bool, error) {
 	}
 
 	return ok, err
-}
-
-// CreateDirectory creates a directory if it does not exist.
-func CreateDirectory(directory string) error {
-	if directory == "" {
-		return errors.New("directory name must not be empty")
-	}
-
-	directoryExists, err := DirectoryExists(directory)
-	if err != nil {
-		return err
-	}
-
-	if !directoryExists {
-		// #nosec G301
-		if err := os.MkdirAll(directory, 0o755); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 type BytesMarshaller interface {
@@ -451,65 +369,17 @@ func MapToYAML(src map[string]interface{}) ([]byte, error) {
 	return yamldata, nil
 }
 
-func WriteToFile(filePath string, fileContents string) error {
-	err := ioutil.WriteFile(filePath, []byte(fileContents), 0o400)
-	if err != nil {
-		return errors.Errorf("error writing file: %v", filePath)
-	}
-
-	return nil
-}
-
 func GetEnvironmentVariable(variable string) (string, error) {
 	value, isPresent := os.LookupEnv(variable)
 	if !isPresent {
-		return "", errors.Errorf("environment variable %v does not exist", variable)
+		return "", fmt.Errorf("environment variable %v does not exist", variable)
 	}
 
 	if value == "" {
-		return "", errors.Errorf("environment variable %v is not set", variable)
+		return "", fmt.Errorf("environment variable %v is not set", variable)
 	}
 
 	return value, nil
-}
-
-// EvaluateCLIAndLazyEnvVars creates a list of environment
-// variables with entries VAR=value that can be passed when running the integration.
-func EvaluateCLIAndLazyEnvVars() ([]string, error) {
-	evaluatedEnvVars := []string{}
-
-	// Add CLI environment variables
-	setEnvVars := []string{}
-	for _, cliEnvVar := range CLIEnvVars {
-		// Mark variable name as set.
-		varAndValue := strings.Split(cliEnvVar, "=")
-		setEnvVars = append(setEnvVars, varAndValue[0])
-
-		evaluatedEnvVars = append(evaluatedEnvVars, cliEnvVar)
-	}
-
-	// Add lazily evaluated environment variables if they have not
-	// already been set via the CLI --env option.
-	for _, lazyEnvVar := range ListOfLazyEvaluatedEnvVars {
-		alreadySet := false
-		for _, setEnvVar := range setEnvVars {
-			if setEnvVar == lazyEnvVar {
-				alreadySet = true
-
-				break
-			}
-		}
-
-		if !alreadySet {
-			value, err := GetEnvironmentVariable(lazyEnvVar)
-			if err != nil {
-				return nil, err
-			}
-			evaluatedEnvVars = append(evaluatedEnvVars, lazyEnvVar+"="+value)
-		}
-	}
-
-	return evaluatedEnvVars, nil
 }
 
 // Open a safe wrapper of os.Open.
@@ -562,7 +432,7 @@ func WithFileReader(name string, consumer func(reader io.Reader) error) error {
 
 // WithFileContent a safe wrapper to process a file content.
 func WithFileContent(name string, consumer func(file *os.File, data []byte) error) error {
-	return WithFile(name, os.O_RDWR|os.O_CREATE, 0o644, func(file *os.File) error {
+	return WithFile(name, os.O_RDWR|os.O_CREATE, io2.FilePerm644, func(file *os.File) error {
 		content, err := ReadFile(name)
 		if err != nil {
 			return err
@@ -577,20 +447,20 @@ func WriteFileWithContent(filePath string, content []byte) error {
 	fileDir := path.Dir(filePath)
 
 	// Create dir if not present
-	err := os.MkdirAll(fileDir, 0o700)
+	err := os.MkdirAll(fileDir, io2.FilePerm755)
 	if err != nil {
-		return errors.Wrap(err, "could not create dir for file "+filePath)
+		return fmt.Errorf("could not create dir for file "+filePath+": %w", err)
 	}
 
 	// Create file
 	file, err := os.Create(filePath)
 	if err != nil {
-		return errors.Wrap(err, "could not create file "+filePath)
+		return fmt.Errorf("could not create file "+filePath+": %w", err)
 	}
 
 	_, err = file.Write(content)
 	if err != nil {
-		err = errors.Wrap(err, "could not write to file "+filePath)
+		err = fmt.Errorf("could not write to file "+filePath+": %w", err)
 	}
 
 	return Close(err, file)
@@ -598,7 +468,7 @@ func WriteFileWithContent(filePath string, content []byte) error {
 
 // WithTempDir a safe wrapper to deal with temporary directories.
 func WithTempDir(pattern string, consumer func(string) error) error {
-	tmpDir, err := ioutil.TempDir("", pattern)
+	tmpDir, err := os.MkdirTemp("", pattern)
 	if err != nil {
 		return err
 	}
@@ -609,12 +479,14 @@ func WithTempDir(pattern string, consumer func(string) error) error {
 	return multierr.Append(consumerErr, removeErr)
 }
 
-// Parses a property spec and returns its parts.
+var propertyRegex = regexp.MustCompile("'.+'|\".+\"|[^.]+")
+
+// ConfigTreePropertySplit Parses a property spec and returns its parts.
 func ConfigTreePropertySplit(property string) []string {
 	var res = make([]string, 0)
-	initialParts := strings.Split(property, ".")
+	initialParts := propertyRegex.FindAllString(property, -1)
 	for _, p := range initialParts {
-		cur := p
+		cur := trimQuotes(p)
 		var tmp []string
 		for strings.Contains(cur[1:], "[") && strings.HasSuffix(cur, "]") {
 			pos := strings.LastIndex(cur, "[")
@@ -629,6 +501,15 @@ func ConfigTreePropertySplit(property string) []string {
 		}
 	}
 	return res
+}
+
+func trimQuotes(s string) string {
+	if len(s) >= 2 {
+		if c := s[len(s)-1]; s[0] == c && (c == '"' || c == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }
 
 // NavigateConfigTree switch to the element in the tree represented by the "nodes" spec and creates intermediary
@@ -666,7 +547,7 @@ func NavigateConfigTree(current interface{}, nodes []string) (interface{}, error
 		}
 		pos, err := strconv.Atoi(nodes[0][1 : len(nodes[0])-1])
 		if err != nil {
-			return nil, errors.Wrapf(err, "value %q inside brackets is not numeric", nodes[0])
+			return nil, fmt.Errorf("value %q inside brackets is not numeric: %w", nodes[0], err)
 		}
 		var next interface{}
 		if len(*c) > pos && (*c)[pos] != nil {
@@ -682,4 +563,24 @@ func NavigateConfigTree(current interface{}, nodes []string) (interface{}, error
 	default:
 		return nil, errors.New("invalid node type in configuration")
 	}
+}
+
+// IToInt32 attempts to convert safely an int to an int32.
+func IToInt32(x int) (*int32, error) {
+	if x < math.MinInt32 || x > math.MaxInt32 {
+		return nil, fmt.Errorf("integer overflow casting to int32 type")
+	}
+	casted := int32(x)
+
+	return &casted, nil
+}
+
+// IToInt8 attempts to convert safely an int to an int8.
+func IToInt8(x int) (*int8, error) {
+	if x < math.MinInt8 || x > math.MaxInt8 {
+		return nil, fmt.Errorf("integer overflow casting to int8 type")
+	}
+	casted := int8(x)
+
+	return &casted, nil
 }

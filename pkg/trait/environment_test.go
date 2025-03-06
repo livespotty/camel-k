@@ -18,31 +18,35 @@ limitations under the License.
 package trait
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/internal"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 func TestDefaultEnvironment(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	env := mockEnvironment(catalog)
 	env.Platform.ResyncStatusFullConfig()
 
-	err = NewEnvironmentTestCatalog().apply(&env)
-
-	assert.Nil(t, err)
+	conditions, traits, err := NewEnvironmentTestCatalog().apply(&env)
+	require.NoError(t, err)
+	assert.Empty(t, traits)
+	assert.NotEmpty(t, conditions)
 
 	ns := false
 	name := false
@@ -79,19 +83,20 @@ func TestDefaultEnvironment(t *testing.T) {
 
 func TestEnabledContainerMetaDataEnvVars(t *testing.T) {
 	c, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	env := mockEnvironment(c)
 	env.Integration.Spec.Traits = v1.Traits{
 		Environment: &traitv1.EnvironmentTrait{
-			ContainerMeta: pointer.Bool(true),
+			ContainerMeta: ptr.To(true),
 		},
 	}
 	env.Platform.ResyncStatusFullConfig()
 
-	err = NewEnvironmentTestCatalog().apply(&env)
-
-	assert.Nil(t, err)
+	conditions, traits, err := NewEnvironmentTestCatalog().apply(&env)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 
 	ns := false
 	name := false
@@ -118,20 +123,21 @@ func TestEnabledContainerMetaDataEnvVars(t *testing.T) {
 
 func TestDisabledContainerMetaDataEnvVars(t *testing.T) {
 	c, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	env := mockEnvironment(c)
 	env.Integration.Spec.Traits = v1.Traits{
 		Environment: &traitv1.EnvironmentTrait{
-			ContainerMeta: pointer.Bool(false),
+			ContainerMeta: ptr.To(false),
 		},
 	}
 
 	env.Platform.ResyncStatusFullConfig()
 
-	err = NewEnvironmentTestCatalog().apply(&env)
-
-	assert.Nil(t, err)
+	conditions, traits, err := NewEnvironmentTestCatalog().apply(&env)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 
 	ns := false
 	name := false
@@ -158,7 +164,7 @@ func TestDisabledContainerMetaDataEnvVars(t *testing.T) {
 
 func TestCustomEnvVars(t *testing.T) {
 	c, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	env := mockEnvironment(c)
 	env.Integration.Spec.Traits = v1.Traits{
@@ -168,9 +174,10 @@ func TestCustomEnvVars(t *testing.T) {
 	}
 	env.Platform.ResyncStatusFullConfig()
 
-	err = NewEnvironmentTestCatalog().apply(&env)
-
-	assert.Nil(t, err)
+	conditions, traits, err := NewEnvironmentTestCatalog().apply(&env)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 
 	userK1 := false
 	userK2 := false
@@ -190,14 +197,56 @@ func TestCustomEnvVars(t *testing.T) {
 	assert.True(t, userK2)
 }
 
+func TestValueSourceEnvVars(t *testing.T) {
+	c, err := camel.DefaultCatalog()
+	require.NoError(t, err)
+
+	env := mockEnvironment(c)
+	env.Integration.Spec.Traits = v1.Traits{
+		Environment: &traitv1.EnvironmentTrait{
+			Vars: []string{"MY_VAR_1=secret:my-sec/my-sec-value", "MY_VAR_2=configmap:my-cm/my-cm-value"},
+		},
+	}
+	env.Platform.ResyncStatusFullConfig()
+
+	conditions, traits, err := NewEnvironmentTestCatalog().apply(&env)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
+
+	userK1 := false
+	userK2 := false
+
+	env.Resources.VisitDeployment(func(deployment *appsv1.Deployment) {
+		fmt.Println(deployment.Spec.Template.Spec.Containers[0].Env)
+		for _, e := range deployment.Spec.Template.Spec.Containers[0].Env {
+			if e.Name == "MY_VAR_1" {
+				userK1 = e.Value == "" &&
+					e.ValueFrom.SecretKeyRef.Name == "my-sec" &&
+					e.ValueFrom.SecretKeyRef.Key == "my-sec-value"
+			}
+			if e.Name == "MY_VAR_2" {
+				userK2 = e.Value == "" &&
+					e.ValueFrom.ConfigMapKeyRef.Name == "my-cm" &&
+					e.ValueFrom.ConfigMapKeyRef.Key == "my-cm-value"
+			}
+		}
+	})
+
+	assert.True(t, userK1)
+	assert.True(t, userK2)
+}
+
 func NewEnvironmentTestCatalog() *Catalog {
 	return NewCatalog(nil)
 }
 
 func mockEnvironment(catalog *camel.RuntimeCatalog) Environment {
+	fakeClient, _ := internal.NewFakeClient()
 	return Environment{
 		CamelCatalog: catalog,
 		Catalog:      NewCatalog(nil),
+		Client:       fakeClient,
 		Integration: &v1.Integration{
 			Status: v1.IntegrationStatus{
 				Phase: v1.IntegrationPhaseDeploying,

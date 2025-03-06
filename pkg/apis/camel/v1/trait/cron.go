@@ -24,12 +24,17 @@ package trait
 // For such tasks, the cron trait can materialize the integration as a Kubernetes CronJob instead of a standard deployment,
 // in order to save resources when the integration does not need to be executed.
 //
-// Integrations that start from the following components are evaluated by the cron trait: `timer`, `cron`, `quartz`.
+// Integrations that start from the following components are evaluated by the cron trait: `timer`, `cron`, `quartz`. The trait does support multiple evaluated components only if they have the same schedule, else it will fallback to Camel implementation instead of instantiating a Kubernetes CronJob.
+//
+// WARNING: In case of native build-mode defined in xref:traits:quarkus.adoc[quarkus] trait, the component can't be customized.
 //
 // The rules for using a Kubernetes CronJob are the following:
-// - `timer`: when periods can be written as cron expressions. E.g. `timer:tick?period=60000`.
-// - `cron`, `quartz`: when the cron expression does not contain seconds (or the "seconds" part is set to 0). E.g.
-//   `cron:tab?schedule=0/2${plus}*{plus}*{plus}*{plus}?` or `quartz:trigger?cron=0{plus}0/2{plus}*{plus}*{plus}*{plus}?`.
+//
+//   - `timer`: when period is set in milliseconds with no remaining seconds, for example 120000. If there is any second left as in 121000 (120s and 1s) or the presence of any of these parameters (delay, repeatCount, time) then a CronJob  won't be created, but a standard deployment.
+//
+//   - `cron`, `quartz`: when the cron expression does not contain seconds (or the "seconds" part is set to 0). E.g.
+//
+//     `cron:tab?schedule=0/2 * * * ?` or `quartz:trigger?cron=0 0/2 * * * ?`.
 //
 // +camel-k:trait=cron.
 type CronTrait struct {
@@ -37,10 +42,9 @@ type CronTrait struct {
 	// The CronJob schedule for the whole integration. If multiple routes are declared, they must have the same schedule for this
 	// mechanism to work correctly.
 	Schedule string `property:"schedule" json:"schedule,omitempty"`
+	// The timezone that the CronJob will run on
+	TimeZone *string `property:"timeZone" json:"timeZone,omitempty"`
 	// A comma separated list of the Camel components that need to be customized in order for them to work when the schedule is triggered externally by Kubernetes.
-	// A specific customizer is activated for each specified component. E.g. for the `timer` component, the `cron-timer` customizer is
-	// activated (it's present in the `org.apache.camel.k:camel-k-cron` library).
-	//
 	// Supported components are currently: `cron`, `timer` and `quartz`.
 	Components string `property:"components" json:"components,omitempty"`
 	// Use the default Camel implementation of the `cron` endpoint (`quartz`) instead of trying to materialize the integration

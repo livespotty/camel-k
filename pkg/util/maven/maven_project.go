@@ -22,7 +22,7 @@ import (
 	"encoding/xml"
 	"strings"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
 func NewProject() Project {
@@ -40,20 +40,21 @@ func NewProjectWithGAV(group string, artifact string, version string) Project {
 	p.GroupID = group
 	p.ArtifactID = artifact
 	p.Version = version
-	p.Properties = make(map[string]string)
-	p.Properties["project.build.sourceEncoding"] = "UTF-8"
+	p.Properties = v1.Properties{
+		"project.build.sourceEncoding": "UTF-8",
+	}
 
 	return p
 }
 
-func (p Project) Command(context Context) *Command {
+func (p *Project) Command(context Context) *Command {
 	return &Command{
 		context: context,
-		project: p,
+		project: *p,
 	}
 }
 
-func (p Project) MarshalBytes() ([]byte, error) {
+func (p *Project) MarshalBytes() ([]byte, error) {
 	w := &bytes.Buffer{}
 	w.WriteString(xml.Header)
 
@@ -151,6 +152,10 @@ func (p *Project) AddEncodedDependencyExclusion(gav string, exclusion Exclusion)
 	}
 }
 
+func (p *Project) AddProfiles(profiles string) {
+	p.Profiles = ProfilesContent{InnerXML: profiles}
+}
+
 // NewDependency creates an new dependency from the given GAV.
 func NewDependency(groupID string, artifactID string, version string) Dependency {
 	return Dependency{
@@ -167,7 +172,7 @@ func NewDependency(groupID string, artifactID string, version string) Dependency
 // The repository can be customized by appending @param to the repository
 // URL, e.g.:
 //
-//     http://my-nexus:8081/repository/publicc@id=my-repo@snapshots
+//	http://my-nexus:8081/repository/publicc@id=my-repo@snapshots
 //
 // That enables snapshots and sets the repository id to `my-repo`.
 func NewRepository(repo string) v1.Repository {

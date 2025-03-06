@@ -19,9 +19,8 @@ package integrationplatform
 
 import (
 	"context"
-	"time"
 
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
@@ -34,16 +33,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
-	camelevent "github.com/apache/camel-k/pkg/event"
-	"github.com/apache/camel-k/pkg/platform"
-	"github.com/apache/camel-k/pkg/util/monitoring"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	camelevent "github.com/apache/camel-k/v2/pkg/event"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/util/monitoring"
 )
 
 // Add creates a new IntegrationPlatform Controller and adds it to the Manager. The Manager will set fields
 // on the Controller and Start it when the Manager is Started.
-func Add(mgr manager.Manager, c client.Client) error {
+func Add(ctx context.Context, mgr manager.Manager, c client.Client) error {
 	return add(mgr, newReconciler(mgr, c))
 }
 
@@ -70,29 +69,25 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	}
 
 	// Watch for changes to primary resource IntegrationPlatform
-	err = c.Watch(&source.Kind{Type: &v1.IntegrationPlatform{}},
-		&handler.EnqueueRequestForObject{},
-		platform.FilteringFuncs{
-			UpdateFunc: func(e event.UpdateEvent) bool {
-				oldIntegrationPlatform, ok := e.ObjectOld.(*v1.IntegrationPlatform)
-				if !ok {
-					return false
-				}
-				newIntegrationPlatform, ok := e.ObjectNew.(*v1.IntegrationPlatform)
-				if !ok {
-					return false
-				}
-				// Ignore updates to the integration platform status in which case metadata.Generation
-				// does not change, or except when the integration platform phase changes as it's used
-				// to transition from one phase to another
-				return oldIntegrationPlatform.Generation != newIntegrationPlatform.Generation ||
-					oldIntegrationPlatform.Status.Phase != newIntegrationPlatform.Status.Phase
+	err = c.Watch(
+		source.Kind(
+			mgr.GetCache(),
+			&v1.IntegrationPlatform{},
+			&handler.TypedEnqueueRequestForObject[*v1.IntegrationPlatform]{},
+			platform.FilteringFuncs[*v1.IntegrationPlatform]{
+				UpdateFunc: func(e event.TypedUpdateEvent[*v1.IntegrationPlatform]) bool {
+					// Ignore updates to the integration platform status in which case metadata.Generation
+					// does not change, or except when the integration platform phase changes as it's used
+					// to transition from one phase to another
+					return e.ObjectOld.Generation != e.ObjectNew.Generation ||
+						e.ObjectOld.Status.Phase != e.ObjectNew.Status.Phase
+				},
+				DeleteFunc: func(e event.TypedDeleteEvent[*v1.IntegrationPlatform]) bool {
+					// Evaluates to false if the object has been confirmed deleted
+					return !e.DeleteStateUnknown
+				},
 			},
-			DeleteFunc: func(e event.DeleteEvent) bool {
-				// Evaluates to false if the object has been confirmed deleted
-				return !e.DeleteStateUnknown
-			},
-		},
+		),
 	)
 	if err != nil {
 		return err
@@ -121,7 +116,7 @@ type reconcileIntegrationPlatform struct {
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
 func (r *reconcileIntegrationPlatform) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	rlog := Log.WithValues("request-namespace", request.Namespace, "request-name", request.Name)
-	rlog.Info("Reconciling IntegrationPlatform")
+	rlog.Debug("Reconciling IntegrationPlatform")
 
 	// Make sure the operator is allowed to act on namespace
 	if ok, err := platform.IsOperatorAllowedOnNamespace(ctx, r.client, request.Namespace); err != nil {
@@ -135,7 +130,7 @@ func (r *reconcileIntegrationPlatform) Reconcile(ctx context.Context, request re
 	var instance v1.IntegrationPlatform
 
 	if err := r.client.Get(ctx, request.NamespacedName, &instance); err != nil {
-		if errors.IsNotFound(err) {
+		if k8serrors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup
 			// logic use finalizers.
@@ -155,7 +150,6 @@ func (r *reconcileIntegrationPlatform) Reconcile(ctx context.Context, request re
 
 	actions := []Action{
 		NewInitializeAction(),
-		NewWarmAction(r.reader),
 		NewCreateAction(),
 		NewMonitorAction(),
 	}
@@ -170,49 +164,45 @@ func (r *reconcileIntegrationPlatform) Reconcile(ctx context.Context, request re
 		a.InjectClient(r.client)
 		a.InjectLogger(targetLog)
 
-		if a.CanHandle(target) {
-			targetLog.Infof("Invoking action %s", a.Name())
+		if !a.CanHandle(target) {
+			continue
+		}
 
-			phaseFrom := target.Status.Phase
+		targetLog.Infof("Invoking action %s", a.Name())
 
-			target, err = a.Handle(ctx, target)
-			if err != nil {
+		phaseFrom := target.Status.Phase
+
+		target, err = a.Handle(ctx, target)
+		if err != nil {
+			camelevent.NotifyIntegrationPlatformError(ctx, r.client, r.recorder, &instance, target, err)
+			return reconcile.Result{}, err
+		}
+
+		if target != nil {
+			target.Status.ObservedGeneration = instance.Generation
+
+			if err := r.client.Status().Patch(ctx, target, ctrl.MergeFrom(&instance)); err != nil {
 				camelevent.NotifyIntegrationPlatformError(ctx, r.client, r.recorder, &instance, target, err)
 				return reconcile.Result{}, err
 			}
 
-			if target != nil {
-				target.Status.ObservedGeneration = instance.Generation
+			targetPhase = target.Status.Phase
 
-				if err := r.client.Status().Patch(ctx, target, ctrl.MergeFrom(&instance)); err != nil {
-					camelevent.NotifyIntegrationPlatformError(ctx, r.client, r.recorder, &instance, target, err)
-					return reconcile.Result{}, err
-				}
-
-				targetPhase = target.Status.Phase
-
-				if targetPhase != phaseFrom {
-					targetLog.Info(
-						"state transition",
-						"phase-from", phaseFrom,
-						"phase-to", target.Status.Phase,
-					)
-				}
+			if targetPhase != phaseFrom {
+				targetLog.Info(
+					"State transition",
+					"phase-from", phaseFrom,
+					"phase-to", target.Status.Phase,
+				)
 			}
-
-			// handle one action at time so the resource
-			// is always at its latest state
-			camelevent.NotifyIntegrationPlatformUpdated(ctx, r.client, r.recorder, &instance, target)
-			break
 		}
+
+		// handle one action at time so the resource
+		// is always at its latest state
+		camelevent.NotifyIntegrationPlatformUpdated(ctx, r.client, r.recorder, &instance, target)
+
+		break
 	}
 
-	if targetPhase == v1.IntegrationPlatformPhaseReady {
-		return reconcile.Result{}, nil
-	}
-
-	// Requeue
-	return reconcile.Result{
-		RequeueAfter: 5 * time.Second,
-	}, nil
+	return reconcile.Result{}, nil
 }

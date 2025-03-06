@@ -25,8 +25,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
 )
 
 func TestOwner(t *testing.T) {
@@ -85,6 +85,7 @@ func ValidateOwnerResources(t *testing.T, env *Environment, withOwnerRef bool) {
 	})
 
 	assert.Len(t, deployments, 1)
+	// nolint: gosec // deployments len asserted before
 	ValidateLabelsAndAnnotations(t, &deployments[0].Spec.Template)
 }
 

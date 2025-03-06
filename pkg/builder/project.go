@@ -20,18 +20,19 @@ package builder
 import (
 	"bytes"
 	"encoding/xml"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
+	"github.com/apache/camel-k/v2/pkg/util/io"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/jvm"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/log"
-	"github.com/apache/camel-k/pkg/util/maven"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/jvm"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/log"
+	"github.com/apache/camel-k/v2/pkg/util/maven"
 )
 
 func init() {
@@ -43,6 +44,7 @@ func init() {
 		Project.GenerateProjectSettings,
 		Project.InjectDependencies,
 		Project.SanitizeDependencies,
+		Project.InjectProfiles,
 	}
 }
 
@@ -52,16 +54,19 @@ type projectSteps struct {
 	GenerateProjectSettings Step
 	InjectDependencies      Step
 	SanitizeDependencies    Step
+	InjectProfiles          Step
 
 	CommonSteps []Step
 }
 
+//nolint:mnd
 var Project = projectSteps{
 	CleanUpBuildDir:         NewStep(ProjectGenerationPhase-1, cleanUpBuildDir),
 	GenerateJavaKeystore:    NewStep(ProjectGenerationPhase, generateJavaKeystore),
 	GenerateProjectSettings: NewStep(ProjectGenerationPhase+1, generateProjectSettings),
 	InjectDependencies:      NewStep(ProjectGenerationPhase+2, injectDependencies),
 	SanitizeDependencies:    NewStep(ProjectGenerationPhase+3, sanitizeDependencies),
+	InjectProfiles:          NewStep(ProjectGenerationPhase+4, injectProfiles),
 }
 
 func cleanUpBuildDir(ctx *builderContext) error {
@@ -74,12 +79,11 @@ func cleanUpBuildDir(ctx *builderContext) error {
 		return err
 	}
 
-	return os.MkdirAll(ctx.Build.BuildDir, 0o700)
+	return os.MkdirAll(ctx.Build.BuildDir, io.FilePerm700)
 }
 
 func generateJavaKeystore(ctx *builderContext) error {
-	// nolint: staticcheck
-	secrets := mergeSecrets(ctx.Build.Maven.CASecrets, ctx.Build.Maven.CASecret)
+	secrets := ctx.Build.Maven.CASecrets
 	if secrets == nil {
 		return nil
 	}
@@ -92,16 +96,6 @@ func generateJavaKeystore(ctx *builderContext) error {
 	ctx.Maven.TrustStorePass = jvm.NewKeystorePassword()
 
 	return jvm.GenerateKeystore(ctx.C, ctx.Path, ctx.Maven.TrustStoreName, ctx.Maven.TrustStorePass, certsData)
-}
-
-func mergeSecrets(secrets []corev1.SecretKeySelector, secret *corev1.SecretKeySelector) []corev1.SecretKeySelector {
-	if secrets == nil && secret == nil {
-		return nil
-	}
-	if secret == nil {
-		return secrets
-	}
-	return append(secrets, *secret)
 }
 
 func generateProjectSettings(ctx *builderContext) error {
@@ -136,7 +130,7 @@ func generateProjectSettings(ctx *builderContext) error {
 }
 
 func injectServersIntoMavenSettings(settings string, servers []v1.Server) string {
-	if servers == nil || len(servers) < 1 {
+	if len(servers) < 1 {
 		return settings
 	}
 	newSettings, i := getServerTagIndex(settings)
@@ -203,4 +197,21 @@ func injectDependencies(ctx *builderContext) error {
 
 func sanitizeDependencies(ctx *builderContext) error {
 	return camel.SanitizeIntegrationDependencies(ctx.Maven.Project.Dependencies)
+}
+
+func injectProfiles(ctx *builderContext) error {
+	if ctx.Build.Maven.Profiles != nil {
+		profiles := ""
+		for i := range ctx.Build.Maven.Profiles {
+			val, err := kubernetes.ResolveValueSource(ctx.C, ctx.Client, ctx.Namespace, &ctx.Build.Maven.Profiles[i])
+			if err != nil {
+				return fmt.Errorf("could not load profile : %s: %w. ", ctx.Build.Maven.Profiles[i].String(), err)
+			}
+			if val != "" {
+				profiles += val
+			}
+		}
+		ctx.Maven.Project.AddProfiles(profiles)
+	}
+	return nil
 }

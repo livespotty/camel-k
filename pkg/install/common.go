@@ -15,6 +15,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+//nolint:goconst
 package install
 
 import (
@@ -23,16 +24,15 @@ import (
 
 	networking "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	k8s "k8s.io/client-go/kubernetes"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/resources"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/openshift"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/resources"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/openshift"
 )
 
 const serviceAccountName = "camel-k-operator"
@@ -59,11 +59,6 @@ var RemoveIngressRoleCustomizer = func(object ctrl.Object) ctrl.Object {
 		}
 	}
 	return object
-}
-
-// Resources installs named resources from the project resource directory.
-func Resources(ctx context.Context, c client.Client, namespace string, force bool, customizer ResourceCustomizer, names ...string) error {
-	return ResourcesOrCollect(ctx, c, namespace, nil, force, customizer, names...)
 }
 
 func ResourcesOrCollect(ctx context.Context, c client.Client, namespace string, collection *kubernetes.Collection,
@@ -105,12 +100,6 @@ func ObjectOrCollect(ctx context.Context, c client.Client, namespace string, col
 	}
 
 	obj.SetNamespace(namespace)
-
-	if obj.GetObjectKind().GroupVersionKind().Kind == "PersistentVolumeClaim" {
-		if err := c.Create(ctx, obj); err != nil && !errors.IsAlreadyExists(err) {
-			return err
-		}
-	}
 
 	if force {
 		if _, err := kubernetes.ReplaceResource(ctx, c, obj); err != nil {

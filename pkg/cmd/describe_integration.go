@@ -27,8 +27,8 @@ import (
 
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/indentedwriter"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/indentedwriter"
 )
 
 func newDescribeIntegrationCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *describeIntegrationCommandOptions) {
@@ -37,11 +37,12 @@ func newDescribeIntegrationCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, 
 	}
 
 	cmd := cobra.Command{
-		Use:     "integration",
-		Aliases: []string{"it"},
-		Short:   "Describe an Integration",
-		Long:    `Describe an Integration.`,
-		PreRunE: decode(&options),
+		Use:        "integration",
+		Aliases:    []string{"it"},
+		Short:      "Describe an Integration",
+		Long:       `Describe an Integration.`,
+		Deprecated: "consider using kubectl (or oc) custom resource describe command instead.",
+		PreRunE:    decode(&options, options.Flags),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(cmd, args); err != nil {
 				return err
@@ -135,20 +136,10 @@ func (command *describeIntegrationCommandOptions) describeIntegration(cmd *cobra
 			}
 		}
 
-		if len(i.Spec.Resources) > 0 {
-			w.Writef(0, "Resources:\n")
-			for _, resource := range i.Spec.Resources {
-				w.Writef(1, "Content:\n")
-				w.Writef(2, "%s\n", strings.TrimSpace(resource.Content))
-				w.Writef(1, "Name:\t%s\n", resource.Name)
-				w.Writef(1, "Type:\t%s\n", resource.Type)
-			}
-		}
-
-		if len(i.Sources()) > 0 {
+		if len(i.AllSources()) > 0 {
 			w.Writef(0, "Sources:\n")
 			if command.showSourceContent {
-				for _, s := range i.Sources() {
+				for _, s := range i.AllSources() {
 					w.Writef(1, "Name:\t%s\n", s.Name)
 					w.Writef(1, "Language:\t%s\n", s.InferLanguage())
 					w.Writef(1, "Compression:\t%t\n", s.Compression)
@@ -162,8 +153,9 @@ func (command *describeIntegrationCommandOptions) describeIntegration(cmd *cobra
 					}
 				}
 			} else {
+				//nolint:dupword
 				w.Writef(1, "Name\tLanguage\tCompression\tRef\tRef Key\n")
-				for _, s := range i.Sources() {
+				for _, s := range i.AllSources() {
 					w.Writef(1, "%s\t%s\t%t\t%s\t%s\n",
 						s.Name,
 						s.InferLanguage(),

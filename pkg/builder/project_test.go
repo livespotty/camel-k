@@ -21,16 +21,19 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/apache/camel-k/v2/pkg/util/boolean"
+
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/maven"
-	"github.com/apache/camel-k/pkg/util/test"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/internal"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/maven"
 )
 
 const customSettings = `<?xml version="1.0" encoding="UTF-8"?>
@@ -118,7 +121,7 @@ const expectedCustomSettingsWithExtraServers = `<?xml version="1.0" encoding="UT
 	  <configuration>
 	    <allowInsecureRegistries>false</allowInsecureRegistries>
 	  </configuration>
-    </server>	 
+    </server>
   </servers>
 
   <profiles>
@@ -192,9 +195,9 @@ const expectedCustomSettingsWithExtraServers = `<?xml version="1.0" encoding="UT
 
 func TestMavenSettingsFromConfigMap(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
-	c, err := test.NewFakeClient(
+	c, err := internal.NewFakeClient(
 		&corev1.ConfigMap{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "v1",
@@ -210,7 +213,7 @@ func TestMavenSettingsFromConfigMap(t *testing.T) {
 		},
 	)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	ctx := builderContext{
 		Catalog:   catalog,
@@ -234,16 +237,16 @@ func TestMavenSettingsFromConfigMap(t *testing.T) {
 	}
 
 	err = Project.GenerateProjectSettings.execute(&ctx)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, []byte("setting-data"), ctx.Maven.UserSettings)
 }
 
 func TestMavenSettingsWithSettingsSecurityFromConfigMap(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
-	c, err := test.NewFakeClient(
+	c, err := internal.NewFakeClient(
 		&corev1.ConfigMap{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "v1",
@@ -272,7 +275,7 @@ func TestMavenSettingsWithSettingsSecurityFromConfigMap(t *testing.T) {
 		},
 	)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	ctx := builderContext{
 		Catalog:   catalog,
@@ -304,7 +307,7 @@ func TestMavenSettingsWithSettingsSecurityFromConfigMap(t *testing.T) {
 	}
 
 	err = Project.GenerateProjectSettings.execute(&ctx)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, []byte("setting-data"), ctx.Maven.UserSettings)
 	assert.Equal(t, []byte("setting-security-data"), ctx.Maven.SettingsSecurity)
@@ -312,9 +315,9 @@ func TestMavenSettingsWithSettingsSecurityFromConfigMap(t *testing.T) {
 
 func TestMavenSettingsFromSecret(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
-	c, err := test.NewFakeClient(
+	c, err := internal.NewFakeClient(
 		&corev1.Secret{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "v1",
@@ -330,7 +333,7 @@ func TestMavenSettingsFromSecret(t *testing.T) {
 		},
 	)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	ctx := builderContext{
 		Catalog:   catalog,
@@ -354,16 +357,16 @@ func TestMavenSettingsFromSecret(t *testing.T) {
 	}
 
 	err = Project.GenerateProjectSettings.execute(&ctx)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, []byte("setting-data"), ctx.Maven.UserSettings)
 }
 
 func TestMavenSettingsWithSettingsSecurityFromSecret(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
-	c, err := test.NewFakeClient(
+	c, err := internal.NewFakeClient(
 		&corev1.Secret{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "v1",
@@ -392,7 +395,7 @@ func TestMavenSettingsWithSettingsSecurityFromSecret(t *testing.T) {
 		},
 	)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	ctx := builderContext{
 		Catalog:   catalog,
@@ -424,7 +427,7 @@ func TestMavenSettingsWithSettingsSecurityFromSecret(t *testing.T) {
 	}
 
 	err = Project.GenerateProjectSettings.execute(&ctx)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, []byte("setting-data"), ctx.Maven.UserSettings)
 	assert.Equal(t, []byte("setting-security-data"), ctx.Maven.SettingsSecurity)
@@ -432,10 +435,10 @@ func TestMavenSettingsWithSettingsSecurityFromSecret(t *testing.T) {
 
 func TestInjectEmptyServersIntoDefaultMavenSettings(t *testing.T) {
 	settings, err := maven.NewSettings(maven.DefaultRepositories)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	content, err := util.EncodeXML(settings)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	contentStr := string(content)
 	newSettings := injectServersIntoMavenSettings(contentStr, nil)
@@ -445,28 +448,28 @@ func TestInjectEmptyServersIntoDefaultMavenSettings(t *testing.T) {
 
 func TestInjectServersIntoDefaultMavenSettings(t *testing.T) {
 	settings, err := maven.NewSettings(maven.DefaultRepositories)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	servers := []v1.Server{
 		{
 			ID:       "image-repository",
 			Username: "jpoth",
 			Password: "changeit",
-			Configuration: map[string]string{
-				"allowInsecureRegistries": "false",
+			Configuration: v1.Properties{
+				"allowInsecureRegistries": boolean.FalseString,
 			},
 		},
 	}
 
 	content, err := util.EncodeXML(settings)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	contentStr := string(content)
 	newSettings := injectServersIntoMavenSettings(contentStr, servers)
 
 	settings.Servers = servers
 	expectedNewSettings, err := util.EncodeXML(settings)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	expectedNewSettingsStr := string(expectedNewSettings)
 	assert.Equal(t, expectedNewSettingsStr, newSettings)
@@ -478,8 +481,8 @@ func TestInjectServersIntoCustomMavenSettings(t *testing.T) {
 			ID:       "image-repository",
 			Username: "jpoth",
 			Password: "changeit",
-			Configuration: map[string]string{
-				"allowInsecureRegistries": "false",
+			Configuration: v1.Properties{
+				"allowInsecureRegistries": boolean.FalseString,
 			},
 		},
 	}

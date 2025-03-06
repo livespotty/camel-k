@@ -25,52 +25,78 @@ import (
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 // Important: Run "make generate-deepcopy" to regenerate code after modifying this file
 
-// BuildSpec defines the Build operation to be executed
+// BuildSpec defines the list of tasks to be execute for a Build. From Camel K version 2, it would be more appropriate
+// to think it as pipeline.
 type BuildSpec struct {
-	// The sequence of Build tasks to be performed as part of the Build execution.
+	// The sequence of tasks (pipeline) to be performed.
 	Tasks []Task `json:"tasks,omitempty"`
-	// The strategy that should be used to perform the Build.
-	Strategy BuildStrategy `json:"strategy,omitempty"`
+	// The configuration that should be used to perform the Build.
+	// Deprecated: no longer in use in Camel K 2 - maintained for backward compatibility
+	Configuration BuildConfiguration `json:"configuration,omitempty"`
+	// The container image to be used to run the build.
+	// Deprecated: no longer in use in Camel K 2 - maintained for backward compatibility
+	ToolImage string `json:"toolImage,omitempty"`
+	// The namespace where to run the builder Pod (must be the same of the operator in charge of this Build reconciliation).
+	// Deprecated: no longer in use in Camel K 2 - maintained for backward compatibility
+	BuilderPodNamespace string `json:"operatorNamespace,omitempty"`
 	// Timeout defines the Build maximum execution duration.
 	// The Build deadline is set to the Build start time plus the Timeout duration.
 	// If the Build deadline is exceeded, the Build context is canceled,
 	// and its phase set to BuildPhaseFailed.
 	// +kubebuilder:validation:Format=duration
 	Timeout metav1.Duration `json:"timeout,omitempty"`
+	// the maximum amount of parallel running builds started by this operator instance
+	// Deprecated: no longer in use in Camel K 2 - maintained for backward compatibility
+	MaxRunningBuilds int32 `json:"maxRunningBuilds,omitempty"`
 }
 
 // Task represents the abstract task. Only one of the task should be configured to represent the specific task chosen.
 type Task struct {
-	// a BuilderTask (base task)
+	// Application building
+
+	// a BuilderTask, used to generate and build the project
 	Builder *BuilderTask `json:"builder,omitempty"`
+
+	// User customizable task execution. These are executed after the build and before the package task.
+	Custom *UserTask `json:"custom,omitempty"`
+
+	// Application pre publishing
+	// a PackageTask, used to package the project
+	Package *BuilderTask `json:"package,omitempty"`
+
+	// Application Publishing
+
 	// a BuildahTask, for Buildah strategy
+	// Deprecated: use jib or a custom publishing strategy instead
 	Buildah *BuildahTask `json:"buildah,omitempty"`
 	// a KanikoTask, for Kaniko strategy
+	// Deprecated: use jib or a custom publishing strategy instead
 	Kaniko *KanikoTask `json:"kaniko,omitempty"`
 	// a SpectrumTask, for Spectrum strategy
+	// Deprecated: use jib or a custom publishing strategy instead
 	Spectrum *SpectrumTask `json:"spectrum,omitempty"`
 	// a S2iTask, for S2I strategy
+	// Deprecated: use jib or a custom publishing strategy instead
 	S2i *S2iTask `json:"s2i,omitempty"`
+	// a JibTask, for Jib strategy
+	Jib *JibTask `json:"jib,omitempty"`
 }
 
-// BaseTask is a base for the struct hierarchy
+// BaseTask is a base for the struct hierarchy.
 type BaseTask struct {
 	// name of the task
 	Name string `json:"name,omitempty"`
+	// The configuration that should be used to perform the Build.
+	Configuration BuildConfiguration `json:"configuration,omitempty"`
 }
 
-// BuilderTask is the generic task in charge of building the application image
+// BuilderTask is the generic task in charge of building the application image.
 type BuilderTask struct {
 	BaseTask `json:",inline"`
 	// the base image layer
 	BaseImage string `json:"baseImage,omitempty"`
 	// the configuration required for the runtime application
 	Runtime RuntimeSpec `json:"runtime,omitempty"`
-	// Deprecated: no longer in use
-	// the source code for the Route(s)
-	Sources []SourceSpec `json:"sources,omitempty"`
-	// Deprecated: no longer in use
-	Resources []ResourceSpec `json:"resources,omitempty"`
 	// the list of dependencies to use for this build
 	Dependencies []string `json:"dependencies,omitempty"`
 	// the list of steps to execute (see pkg/builder/)
@@ -79,9 +105,11 @@ type BuilderTask struct {
 	Maven MavenBuildSpec `json:"maven,omitempty"`
 	// workspace directory to use
 	BuildDir string `json:"buildDir,omitempty"`
+	// the sources to add at build time
+	Sources []SourceSpec `json:"sources,omitempty"`
 }
 
-// MavenBuildSpec defines the Maven configuration plus additional repositories to use
+// MavenBuildSpec defines the Maven configuration plus additional repositories to use.
 type MavenBuildSpec struct {
 	// base Maven specification
 	MavenSpec `json:",inline"`
@@ -91,7 +119,7 @@ type MavenBuildSpec struct {
 	Servers []Server `json:"servers,omitempty"`
 }
 
-// PublishTask image publish configuration
+// PublishTask image publish configuration.
 type PublishTask struct {
 	// can be useful to share info with other tasks
 	ContextDir string `json:"contextDir,omitempty"`
@@ -103,7 +131,8 @@ type PublishTask struct {
 	Registry RegistrySpec `json:"registry,omitempty"`
 }
 
-// BuildahTask is used to configure Buildah
+// BuildahTask is used to configure Buildah.
+// Deprecated: no longer in use.
 type BuildahTask struct {
 	BaseTask    `json:",inline"`
 	PublishTask `json:",inline"`
@@ -115,7 +144,8 @@ type BuildahTask struct {
 	ExecutorImage string `json:"executorImage,omitempty"`
 }
 
-// KanikoTask is used to configure Kaniko
+// KanikoTask is used to configure Kaniko.
+// Deprecated: no longer in use.
 type KanikoTask struct {
 	BaseTask    `json:",inline"`
 	PublishTask `json:",inline"`
@@ -127,7 +157,8 @@ type KanikoTask struct {
 	ExecutorImage string `json:"executorImage,omitempty"`
 }
 
-// KanikoTaskCache is used to configure Kaniko cache
+// KanikoTaskCache is used to configure Kaniko cache.
+// Deprecated: no longer in use.
 type KanikoTaskCache struct {
 	// true if a cache is enabled
 	Enabled *bool `json:"enabled,omitempty"`
@@ -135,22 +166,43 @@ type KanikoTaskCache struct {
 	PersistentVolumeClaim string `json:"persistentVolumeClaim,omitempty"`
 }
 
-// SpectrumTask is used to configure Spectrum
+// JibTask is used to configure Jib.
+type JibTask struct {
+	BaseTask    `json:",inline"`
+	PublishTask `json:",inline"`
+}
+
+// SpectrumTask is used to configure Spectrum.
 type SpectrumTask struct {
 	BaseTask    `json:",inline"`
 	PublishTask `json:",inline"`
 }
 
-// S2iTask is used to configure S2I
+// S2iTask is used to configure S2I.
 type S2iTask struct {
-	BaseTask `json:",inline"`
-	// can be useful to share info with other tasks
-	ContextDir string `json:"contextDir,omitempty"`
+	BaseTask    `json:",inline"`
+	PublishTask `json:",inline"`
 	// used by the ImageStream
 	Tag string `json:"tag,omitempty"`
 }
 
-// BuildStatus defines the observed state of Build
+// UserTask is used to execute any generic custom operation.
+type UserTask struct {
+	BaseTask `json:",inline"`
+	// the container image to use
+	ContainerImage string `json:"image,omitempty"`
+	// the user id used to run the container
+	ContainerUserID *int64 `json:"userId,omitempty"`
+	// the command to execute
+	// Deprecated: use ContainerCommands
+	ContainerCommand string `json:"command,omitempty"`
+	// the command to execute
+	ContainerCommands []string `json:"commands,omitempty"`
+	// the desired image build name
+	PublishingImage string `json:"publishingImage,omitempty"`
+}
+
+// BuildStatus defines the observed state of Build.
 type BuildStatus struct {
 	// ObservedGeneration is the most recent generation observed for this Build.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -160,6 +212,8 @@ type BuildStatus struct {
 	Image string `json:"image,omitempty"`
 	// the digest from image
 	Digest string `json:"digest,omitempty"`
+	// root image (the first image from which the incremental image has started)
+	RootImage string `json:"rootImage,omitempty"`
 	// the base image used for this build
 	BaseImage string `json:"baseImage,omitempty"`
 	// a list of artifacts contained in the build
@@ -178,34 +232,42 @@ type BuildStatus struct {
 	Duration string `json:"duration,omitempty"`
 }
 
-// BuildPhase --
+// BuildPhase -- .
 type BuildPhase string
 
-// BuildConditionType --
+// BuildConditionType -- .
 type BuildConditionType string
 
 const (
-	// BuildKind --
+	// BuildKind -- .
 	BuildKind string = "Build"
 
-	// BuildPhaseNone --
+	// BuildPhaseNone -- .
 	BuildPhaseNone BuildPhase = ""
-	// BuildPhaseInitialization --
+	// BuildPhaseInitialization -- .
 	BuildPhaseInitialization BuildPhase = "Initialization"
-	// BuildPhaseScheduling --
+	// BuildPhaseScheduling -- .
 	BuildPhaseScheduling BuildPhase = "Scheduling"
-	// BuildPhasePending --
+	// BuildPhasePending -- .
 	BuildPhasePending BuildPhase = "Pending"
-	// BuildPhaseRunning --
+	// BuildPhaseRunning -- .
 	BuildPhaseRunning BuildPhase = "Running"
-	// BuildPhaseSucceeded --
+	// BuildPhaseSucceeded -- .
 	BuildPhaseSucceeded BuildPhase = "Succeeded"
-	// BuildPhaseFailed --
+	// BuildPhaseFailed -- .
 	BuildPhaseFailed BuildPhase = "Failed"
-	// BuildPhaseInterrupted --
+	// BuildPhaseInterrupted -- .
 	BuildPhaseInterrupted = "Interrupted"
-	// BuildPhaseError --
+	// BuildPhaseError -- .
 	BuildPhaseError BuildPhase = "Error"
+
+	// BuildConditionScheduled --.
+	BuildConditionScheduled BuildConditionType = "Scheduled"
+
+	// BuildConditionReadyReason --.
+	BuildConditionReadyReason string = "Ready"
+	// BuildConditionWaitingReason --.
+	BuildConditionWaitingReason string = "Waiting"
 )
 
 // +genclient
@@ -220,7 +282,7 @@ const (
 // +kubebuilder:printcolumn:name="Duration",type=string,JSONPath=`.status.duration`,description="The build last execution duration"
 // +kubebuilder:printcolumn:name="Attempts",type=integer,JSONPath=`.status.failure.recovery.attempt`,description="The number of execution attempts"
 
-// Build is the Schema for the builds API
+// Build is the Schema for the builds API.
 type Build struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -231,7 +293,7 @@ type Build struct {
 
 // +kubebuilder:object:root=true
 
-// BuildList contains a list of Build
+// BuildList contains a list of Build.
 type BuildList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`

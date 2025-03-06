@@ -19,10 +19,10 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -37,15 +37,14 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/resources"
-	"github.com/apache/camel-k/pkg/util/envvar"
-	"github.com/apache/camel-k/pkg/util/knative"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/minikube"
-	"github.com/apache/camel-k/pkg/util/patch"
-	image "github.com/apache/camel-k/pkg/util/registry"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/resources"
+	"github.com/apache/camel-k/v2/pkg/util/envvar"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/minikube"
+	"github.com/apache/camel-k/v2/pkg/util/openshift"
+	"github.com/apache/camel-k/v2/pkg/util/patch"
 )
 
 type OperatorConfiguration struct {
@@ -56,6 +55,7 @@ type OperatorConfiguration struct {
 	ClusterType           string
 	Health                OperatorHealthConfiguration
 	Monitoring            OperatorMonitoringConfiguration
+	Debugging             OperatorDebuggingConfiguration
 	Tolerations           []string
 	NodeSelectors         []string
 	ResourcesRequirements []string
@@ -66,13 +66,28 @@ type OperatorHealthConfiguration struct {
 	Port int32
 }
 
+type OperatorDebuggingConfiguration struct {
+	Enabled bool
+	Port    int32
+	Path    string
+}
+
 type OperatorMonitoringConfiguration struct {
 	Enabled bool
 	Port    int32
 }
 
+// OperatorStorageConfiguration represents the configuration required for Camel K operator storage.
+type OperatorStorageConfiguration struct {
+	Enabled    bool
+	ClassName  string
+	Capacity   string
+	AccessMode string
+}
+
 // OperatorOrCollect installs the operator resources or adds them to the collector if present.
-// nolint: maintidx // TODO: refactor the code
+//
+//nolint:maintidx,goconst
 func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client, cfg OperatorConfiguration, collection *kubernetes.Collection, force bool) error {
 	isOpenShift, err := isOpenShift(c, cfg.ClusterType)
 	if err != nil {
@@ -115,7 +130,7 @@ func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client,
 					if err != nil {
 						fmt.Fprintln(cmd.ErrOrStderr(), "Warning: could not parse the configured resources requests!")
 					}
-					for i := 0; i < len(d.Spec.Template.Spec.Containers); i++ {
+					for i := range len(d.Spec.Template.Spec.Containers) {
 						d.Spec.Template.Spec.Containers[i].Resources = resourceReq
 					}
 				}
@@ -129,8 +144,10 @@ func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client,
 					if err != nil {
 						fmt.Fprintln(cmd.ErrOrStderr(), "Warning: could not parse environment variables!")
 					}
-					for i := 0; i < len(d.Spec.Template.Spec.Containers); i++ {
-						d.Spec.Template.Spec.Containers[i].Env = append(d.Spec.Template.Spec.Containers[i].Env, envVars...)
+					for i := range len(d.Spec.Template.Spec.Containers) {
+						for _, envVar := range envVars {
+							envvar.SetVar(&d.Spec.Template.Spec.Containers[i].Env, envVar)
+						}
 					}
 				}
 			}
@@ -160,6 +177,22 @@ func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client,
 				d.Spec.Template.Spec.Containers[0].LivenessProbe.HTTPGet.Port = intstr.FromInt(int(cfg.Health.Port))
 			}
 		}
+		if cfg.Debugging.Enabled {
+			if d, ok := o.(*appsv1.Deployment); ok {
+				if d.Labels["camel.apache.org/component"] == "operator" {
+					d.Spec.Template.Spec.Containers[0].Command = []string{"dlv",
+						fmt.Sprintf("--listen=:%d", cfg.Debugging.Port), "--headless=true", "--api-version=2",
+						"exec", cfg.Debugging.Path, "--", "operator", "--leader-election=false"}
+					d.Spec.Template.Spec.Containers[0].Ports = append(d.Spec.Template.Spec.Containers[0].Ports, corev1.ContainerPort{
+						Name:          "delve",
+						ContainerPort: cfg.Debugging.Port,
+					})
+					// In debug mode, the Liveness probe must be removed otherwise K8s will consider the pod as dead
+					// while debugging
+					d.Spec.Template.Spec.Containers[0].LivenessProbe = nil
+				}
+			}
+		}
 
 		if cfg.Global {
 			if d, ok := o.(*appsv1.Deployment); ok {
@@ -168,41 +201,30 @@ func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client,
 					envvar.SetVal(&d.Spec.Template.Spec.Containers[0].Env, "WATCH_NAMESPACE", "")
 				}
 			}
-
-			// Turn Role & RoleBinding into their equivalent cluster types
-			if r, ok := o.(*rbacv1.Role); ok {
-				if strings.HasPrefix(r.Name, "camel-k-operator") {
-					o = &rbacv1.ClusterRole{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: cfg.Namespace,
-							Name:      r.Name,
-							Labels: map[string]string{
-								"app": "camel-k",
-							},
-						},
-						Rules: r.Rules,
+			// Configure subject on ClusterRoleBindings
+			if crb, ok := o.(*rbacv1.ClusterRoleBinding); ok {
+				if strings.HasPrefix(crb.Name, "camel-k-operator") {
+					crb.ObjectMeta.Name = fmt.Sprintf("%s-%s", crb.ObjectMeta.Name, cfg.Namespace)
+					bound := false
+					for i, subject := range crb.Subjects {
+						if subject.Name == "camel-k-operator" {
+							if subject.Namespace == cfg.Namespace {
+								bound = true
+								break
+							} else if subject.Namespace == "" || subject.Namespace == "placeholder" {
+								crb.Subjects[i].Namespace = cfg.Namespace
+								bound = true
+								break
+							}
+						}
 					}
-				}
-			}
 
-			if rb, ok := o.(*rbacv1.RoleBinding); ok {
-				if strings.HasPrefix(rb.Name, "camel-k-operator") {
-					rb.Subjects[0].Namespace = cfg.Namespace
-
-					o = &rbacv1.ClusterRoleBinding{
-						ObjectMeta: metav1.ObjectMeta{
+					if !bound {
+						crb.Subjects = append(crb.Subjects, rbacv1.Subject{
+							Kind:      "ServiceAccount",
 							Namespace: cfg.Namespace,
-							Name:      fmt.Sprintf("%s-%s", rb.Name, cfg.Namespace),
-							Labels: map[string]string{
-								"app": "camel-k",
-							},
-						},
-						Subjects: rb.Subjects,
-						RoleRef: rbacv1.RoleRef{
-							APIGroup: rb.RoleRef.APIGroup,
-							Kind:     "ClusterRole",
-							Name:     rb.RoleRef.Name,
-						},
+							Name:      "camel-k-operator",
+						})
 					}
 				}
 			}
@@ -212,22 +234,32 @@ func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client,
 			// Remove Ingress permissions as it's not needed on OpenShift
 			// This should ideally be removed from the common RBAC manifest.
 			RemoveIngressRoleCustomizer(o)
+
+			if d, ok := o.(*appsv1.Deployment); ok {
+				securityContext, _ := openshift.GetOpenshiftSecurityContextRestricted(ctx, c, cfg.Namespace)
+				if securityContext != nil {
+					d.Spec.Template.Spec.Containers[0].SecurityContext = securityContext
+
+				} else {
+					d.Spec.Template.Spec.Containers[0].SecurityContext = kubernetes.DefaultOperatorSecurityContext()
+				}
+			}
 		}
 
 		return o
 	}
 
 	// Install Kubernetes RBAC resources (roles and bindings)
-	if err := installKubernetesRoles(ctx, c, cfg.Namespace, customizer, collection, force); err != nil {
+	if err := installKubernetesRoles(ctx, c, cfg.Namespace, customizer, collection, force, cfg.Global); err != nil {
 		return err
 	}
 
 	// Install OpenShift RBAC resources if needed (roles and bindings)
 	if isOpenShift {
-		if err := installOpenShiftRoles(ctx, c, cfg.Namespace, customizer, collection, force); err != nil {
+		if err := installOpenShiftRoles(ctx, c, cfg.Namespace, customizer, collection, force, cfg.Global); err != nil {
 			return err
 		}
-		if err := installClusterRoleBinding(ctx, c, collection, cfg.Namespace, "camel-k-operator-console-openshift", "/rbac/openshift/operator-cluster-role-console-binding-openshift.yaml"); err != nil {
+		if err := installClusterRoleBinding(ctx, c, collection, cfg.Namespace, "camel-k-operator-console-openshift", "/config/rbac/openshift/operator-cluster-role-console-binding-openshift.yaml"); err != nil {
 			if k8serrors.IsForbidden(err) {
 				fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to manage ConsoleCLIDownload resources. Try installing the operator as cluster-admin.")
 			} else {
@@ -241,65 +273,56 @@ func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client,
 		return err
 	}
 
-	// Additionally, install Knative resources (roles and bindings)
-	isKnative, err := knative.IsInstalled(c)
-	if err != nil {
-		return err
-	}
-	if isKnative {
-		if err := installKnative(ctx, c, cfg.Namespace, customizer, collection, force); err != nil {
-			return err
-		}
-		if err := installClusterRoleBinding(ctx, c, collection, cfg.Namespace, "camel-k-operator-bind-addressable-resolver", "/rbac/operator-cluster-role-binding-addressable-resolver.yaml"); err != nil {
-			if k8serrors.IsForbidden(err) {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to bind Knative addressable-resolver ClusterRole. Try installing the operator as cluster-admin.")
-			} else {
-				return err
-			}
-		}
-	}
-
-	if err = installEvents(ctx, c, cfg.Namespace, customizer, collection, force); err != nil {
+	if err = installEvents(ctx, c, cfg.Namespace, customizer, collection, force, cfg.Global); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			return err
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to publish Kubernetes events. Try installing as cluster-admin to allow it to generate events.")
 	}
 
-	if err = installKedaBindings(ctx, c, cfg.Namespace, customizer, collection, force); err != nil {
+	if err = installKnativeBindings(ctx, c, cfg.Namespace, customizer, collection, force, cfg.Global); err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			return err
+		}
+		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to create Knative resources. Try installing as cluster-admin.")
+	}
+
+	if err = installKedaBindings(ctx, c, cfg.Namespace, customizer, collection, force, cfg.Global); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			return err
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to create KEDA resources. Try installing as cluster-admin.")
 	}
 
-	if err = installPodMonitors(ctx, c, cfg.Namespace, customizer, collection, force); err != nil {
+	if err = installPodMonitors(ctx, c, cfg.Namespace, customizer, collection, force, cfg.Global); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			return err
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to create PodMonitor resources. Try installing as cluster-admin.")
 	}
 
-	if err := installStrimziBindings(ctx, c, cfg.Namespace, customizer, collection, force); err != nil {
+	if err := installStrimziBindings(ctx, c, cfg.Namespace, customizer, collection, force, cfg.Global); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			return err
 		}
-		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to lookup strimzi kafka resources. Try installing as cluster-admin to allow the lookup of strimzi kafka resources.")
+		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to lookup Strimzi Kafka resources. Try installing as cluster-admin to allow the lookup of strimzi kafka resources.")
 	}
 
-	if err = installLeaseBindings(ctx, c, cfg.Namespace, customizer, collection, force); err != nil {
+	if err = installLeaseBindings(ctx, c, cfg.Namespace, customizer, collection, force, cfg.Global); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			return err
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to create Leases. Try installing as cluster-admin to allow management of Lease resources.")
 	}
 
-	if err = installClusterRoleBinding(ctx, c, collection, cfg.Namespace, "camel-k-operator-custom-resource-definitions", "/rbac/operator-cluster-role-binding-custom-resource-definitions.yaml"); err != nil {
+	if err = installClusterRoleBinding(ctx, c, collection, cfg.Namespace, "camel-k-operator-custom-resource-definitions", "/config/rbac/operator-cluster-role-binding-custom-resource-definitions.yaml"); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator will not be able to get CustomResourceDefinitions resources and the service-binding trait will fail if used. Try installing the operator as cluster-admin.")
 	}
 
-	if err = installNamespacedRoleBinding(ctx, c, collection, cfg.Namespace, "/rbac/operator-role-binding-local-registry.yaml"); err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the operator won't be able to detect a local image registry via KEP-1755")
+	if err = installNamespacedRoleBinding(ctx, c, collection, cfg.Namespace, "/config/rbac/operator-role-binding-local-registry.yaml"); err != nil {
+		if !k8serrors.IsAlreadyExists(err) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: the operator may not be able to detect a local image registry (%s)\n", err.Error())
+		}
 	}
 
 	if cfg.Monitoring.Enabled {
@@ -307,7 +330,8 @@ func OperatorOrCollect(ctx context.Context, cmd *cobra.Command, c client.Client,
 			switch {
 			case k8serrors.IsForbidden(err):
 				fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the creation of monitoring resources is not allowed. Try installing as cluster-admin to allow the creation of monitoring resources.")
-			case meta.IsNoMatchError(errors.Cause(err)):
+				// TU to check ?
+			case meta.IsNoMatchError(errors.Unwrap(err)):
 				fmt.Fprintln(cmd.ErrOrStderr(), "Warning: the creation of the monitoring resources failed: ", err)
 			default:
 				return err
@@ -324,13 +348,13 @@ func installNamespacedRoleBinding(ctx context.Context, c client.Client, collecti
 		return err
 	}
 	if yaml == "" {
-		return errors.Errorf("resource file %v not found", path)
+		return fmt.Errorf("resource file %v not found", path)
 	}
 	obj, err := kubernetes.LoadResourceFromYaml(c.GetScheme(), yaml)
 	if err != nil {
 		return err
 	}
-	// nolint: forcetypeassert
+	//nolint:forcetypeassert
 	target := obj.(*rbacv1.RoleBinding)
 
 	bound := false
@@ -375,7 +399,7 @@ func installClusterRoleBinding(ctx context.Context, c client.Client, collection 
 
 		existing = nil
 		if content == "" {
-			return errors.Errorf("resource file %v not found", path)
+			return fmt.Errorf("resource file %v not found", path)
 		}
 
 		obj, err := kubernetes.LoadResourceFromYaml(c.GetScheme(), content)
@@ -399,7 +423,7 @@ func installClusterRoleBinding(ctx context.Context, c client.Client, collection 
 				bound = true
 
 				break
-			} else if subject.Namespace == "" {
+			} else if subject.Namespace == "" || subject.Namespace == "placeholder" {
 				target.Subjects[i].Namespace = namespace
 				bound = true
 
@@ -439,85 +463,144 @@ func installClusterRoleBinding(ctx context.Context, c client.Client, collection 
 	return c.Patch(ctx, existing, ctrl.RawPatch(types.MergePatchType, p))
 }
 
-func installOpenShiftRoles(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
-	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/rbac/openshift/operator-role-openshift.yaml",
-		"/rbac/openshift/operator-role-binding-openshift.yaml",
-	)
+func installOpenShiftRoles(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool, global bool) error {
+	if global {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/descoped/operator-cluster-role-openshift.yaml",
+			"/config/rbac/descoped/operator-cluster-role-binding-openshift.yaml",
+		)
+	} else {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/namespaced/operator-role-openshift.yaml",
+			"/config/rbac/namespaced/operator-role-binding-openshift.yaml",
+		)
+	}
 }
 
-func installKubernetesRoles(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
-	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/manager/operator-service-account.yaml",
-		"/rbac/operator-role.yaml",
-		"/rbac/operator-role-binding.yaml",
-	)
+func installKubernetesRoles(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool, global bool) error {
+	if global {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/manager/operator-service-account.yaml",
+			"/config/rbac/descoped/operator-cluster-role.yaml",
+			"/config/rbac/descoped/operator-cluster-role-binding.yaml",
+		)
+	} else {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/manager/operator-service-account.yaml",
+			"/config/rbac/namespaced/operator-role.yaml",
+			"/config/rbac/namespaced/operator-role-binding.yaml",
+		)
+	}
 }
 
 func installOperator(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
 	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/manager/operator-deployment.yaml",
+		"/config/manager/operator-deployment.yaml",
 	)
 }
 
-func installKedaBindings(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
-	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/rbac/operator-role-keda.yaml",
-		"/rbac/operator-role-binding-keda.yaml",
-	)
+func installKnativeBindings(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool, global bool) error {
+	if global {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/descoped/operator-cluster-role-knative.yaml",
+			"/config/rbac/descoped/operator-cluster-role-binding-knative.yaml",
+		)
+	} else {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/namespaced/operator-role-knative.yaml",
+			"/config/rbac/namespaced/operator-role-binding-knative.yaml",
+		)
+	}
 }
 
-func installKnative(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
-	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/rbac/operator-role-knative.yaml",
-		"/rbac/operator-role-binding-knative.yaml",
-	)
+func installKedaBindings(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool, global bool) error {
+	if global {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/descoped/operator-cluster-role-keda.yaml",
+			"/config/rbac/descoped/operator-cluster-role-binding-keda.yaml",
+		)
+	} else {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/namespaced/operator-role-keda.yaml",
+			"/config/rbac/namespaced/operator-role-binding-keda.yaml",
+		)
+	}
 }
 
-func installEvents(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
-	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/rbac/operator-role-events.yaml",
-		"/rbac/operator-role-binding-events.yaml",
-	)
+func installEvents(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool, global bool) error {
+	if global {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/descoped/operator-cluster-role-events.yaml",
+			"/config/rbac/descoped/operator-cluster-role-binding-events.yaml",
+		)
+	} else {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/namespaced/operator-role-events.yaml",
+			"/config/rbac/namespaced/operator-role-binding-events.yaml",
+		)
+	}
 }
 
-func installPodMonitors(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
-	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/rbac/operator-role-podmonitors.yaml",
-		"/rbac/operator-role-binding-podmonitors.yaml",
-	)
+func installPodMonitors(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool, global bool) error {
+	if global {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/descoped/operator-cluster-role-podmonitors.yaml",
+			"/config/rbac/descoped/operator-cluster-role-binding-podmonitors.yaml",
+		)
+	} else {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/namespaced/operator-role-podmonitors.yaml",
+			"/config/rbac/namespaced/operator-role-binding-podmonitors.yaml",
+		)
+	}
 }
 
-func installStrimziBindings(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
-	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/rbac/operator-role-strimzi.yaml",
-		"/rbac/operator-role-binding-strimzi.yaml",
-	)
+func installStrimziBindings(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool, global bool) error {
+	if global {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/descoped/operator-cluster-role-strimzi.yaml",
+			"/config/rbac/descoped/operator-cluster-role-binding-strimzi.yaml",
+		)
+	} else {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/namespaced/operator-role-strimzi.yaml",
+			"/config/rbac/namespaced/operator-role-binding-strimzi.yaml",
+		)
+	}
 }
 
 func installMonitoringResources(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
 	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/prometheus/operator-pod-monitor.yaml",
-		"/prometheus/operator-prometheus-rule.yaml",
+		"/config/prometheus/operator-pod-monitor.yaml",
+		"/config/prometheus/operator-prometheus-rule.yaml",
 	)
 }
 
-func installLeaseBindings(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool) error {
-	return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
-		"/rbac/operator-role-leases.yaml",
-		"/rbac/operator-role-binding-leases.yaml",
-	)
+func installLeaseBindings(ctx context.Context, c client.Client, namespace string, customizer ResourceCustomizer, collection *kubernetes.Collection, force bool, global bool) error {
+	if global {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/descoped/operator-cluster-role-leases.yaml",
+			"/config/rbac/descoped/operator-cluster-role-binding-leases.yaml",
+		)
+	} else {
+		return ResourcesOrCollect(ctx, c, namespace, collection, force, customizer,
+			"/config/rbac/namespaced/operator-role-leases.yaml",
+			"/config/rbac/namespaced/operator-role-binding-leases.yaml",
+		)
+	}
 }
 
-// NewPlatform --
-// nolint: lll
-func NewPlatform(ctx context.Context, c client.Client, clusterType string, skipRegistrySetup bool, registry v1.RegistrySpec, operatorID string) (*v1.IntegrationPlatform, error) {
+// NewPlatform creates a new IntegrationPlatform instance.
+func NewPlatform(
+	ctx context.Context, c client.Client,
+	clusterType string, skipRegistrySetup bool, registry v1.RegistrySpec, operatorID string,
+) (*v1.IntegrationPlatform, error) {
 	isOpenShift, err := isOpenShift(c, clusterType)
 	if err != nil {
 		return nil, err
 	}
 
-	content, err := resources.ResourceAsString("/samples/bases/camel_v1_integrationplatform.yaml")
+	content, err := resources.ResourceAsString("/config/samples/bases/camel_v1_integrationplatform.yaml")
 	if err != nil {
 		return nil, err
 	}
@@ -550,13 +633,6 @@ func NewPlatform(ctx context.Context, c client.Client, clusterType string, skipR
 			if err != nil {
 				return nil, err
 			}
-			if address == nil {
-				// try KEP-1755
-				address, err = image.GetRegistryAddress(ctx, c)
-				if err != nil {
-					return nil, err
-				}
-			}
 
 			if address == nil || *address == "" {
 				return nil, errors.New("cannot find a registry where to push images")
@@ -565,8 +641,7 @@ func NewPlatform(ctx context.Context, c client.Client, clusterType string, skipR
 			pl.Spec.Build.Registry.Address = *address
 			pl.Spec.Build.Registry.Insecure = true
 			if pl.Spec.Build.PublishStrategy == "" {
-				// Use spectrum in insecure dev clusters by default
-				pl.Spec.Build.PublishStrategy = v1.IntegrationPlatformBuildPublishStrategySpectrum
+				pl.Spec.Build.PublishStrategy = v1.IntegrationPlatformBuildPublishStrategyJib
 			}
 		}
 	}
@@ -576,6 +651,6 @@ func NewPlatform(ctx context.Context, c client.Client, clusterType string, skipR
 
 func ExampleOrCollect(ctx context.Context, c client.Client, namespace string, collection *kubernetes.Collection, force bool) error {
 	return ResourcesOrCollect(ctx, c, namespace, collection, force, IdentityResourceCustomizer,
-		"/samples/bases/camel_v1_integration.yaml",
+		"/config/samples/bases/camel_v1_integration.yaml",
 	)
 }

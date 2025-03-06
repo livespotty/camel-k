@@ -28,10 +28,9 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/trait"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/trait"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 func newKitCreateCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kitCreateCommandOptions) {
@@ -44,7 +43,7 @@ func newKitCreateCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kitCreate
 		Short:   "Create an Integration Kit",
 		Long:    `Create an Integration Kit.`,
 		Args:    options.validateArgs,
-		PreRunE: decode(&options),
+		PreRunE: decode(&options, options.Flags),
 		RunE:    options.run,
 	}
 
@@ -54,6 +53,7 @@ func newKitCreateCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kitCreate
 	cmd.Flags().StringArray("configmap", nil, "Add a ConfigMap")
 	cmd.Flags().StringArray("secret", nil, "Add a Secret")
 	cmd.Flags().StringArray("repository", nil, "Add a maven repository")
+	cmd.Flags().StringP("operator-id", "x", "camel-k", "Operator id selected to manage this kit")
 	cmd.Flags().StringArrayP("trait", "t", nil, "Configure a trait. E.g. \"-t service.enabled=false\"")
 
 	// completion support
@@ -71,6 +71,7 @@ type kitCreateCommandOptions struct {
 	Configmaps   []string `mapstructure:"configmaps"`
 	Secrets      []string `mapstructure:"secrets"`
 	Repositories []string `mapstructure:"repositories"`
+	OperatorID   string   `mapstructure:"operator-id"`
 	Traits       []string `mapstructure:"traits"`
 }
 
@@ -87,18 +88,7 @@ func (command *kitCreateCommandOptions) run(cmd *cobra.Command, args []string) e
 	if err != nil {
 		return err
 	}
-
 	catalog := trait.NewCatalog(c)
-	tp := catalog.ComputeTraitsProperties()
-	for _, t := range command.Traits {
-		kv := strings.SplitN(t, "=", 2)
-
-		if !util.StringSliceExists(tp, kv[0]) {
-			fmt.Fprintln(cmd.OutOrStdout(), "Error:", t, "is not a valid trait property")
-			return nil
-		}
-	}
-
 	kit := v1.NewIntegrationKit(command.Namespace, args[0])
 	key := ctrl.ObjectKey{
 		Namespace: command.Namespace,
@@ -115,6 +105,12 @@ func (command *kitCreateCommandOptions) run(cmd *cobra.Command, args []string) e
 	}
 
 	kit = v1.NewIntegrationKit(command.Namespace, kubernetes.SanitizeName(args[0]))
+
+	if command.OperatorID != "" {
+		// --operator-id={id} is a syntax sugar for '--annotation camel.apache.org/operator.id={id}'
+		kit.SetOperatorID(strings.TrimSpace(command.OperatorID))
+	}
+
 	kit.Labels = map[string]string{
 		v1.IntegrationKitTypeLabel: v1.IntegrationKitTypeUser,
 	}
@@ -157,7 +153,7 @@ func (command *kitCreateCommandOptions) run(cmd *cobra.Command, args []string) e
 	if err := command.parseAndConvertToTrait(command.Secrets, "mount.config"); err != nil {
 		return err
 	}
-	if err := configureTraits(command.Traits, &kit.Spec.Traits, catalog); err != nil {
+	if err := trait.ConfigureTraits(command.Traits, &kit.Spec.Traits, catalog); err != nil {
 		return err
 	}
 	existed := false

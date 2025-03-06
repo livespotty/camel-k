@@ -18,64 +18,68 @@ limitations under the License.
 package maven
 
 import (
-	"encoding/json"
+	"regexp"
 
-	"github.com/apache/camel-k/pkg/util/log"
+	"github.com/apache/camel-k/v2/pkg/util/log"
 )
 
-// nolint: stylecheck
 type mavenLog struct {
-	Level            string `json:"level"`
-	Ts               string `json:"ts"`
-	Logger           string `json:"logger"`
-	Msg              string `json:"msg"`
-	Class            string `json:"class"`
-	CallerMethodName string `json:"caller_method_name"`
-	CallerFileName   string `json:"caller_file_name"`
-	CallerLineNumber int    `json:"caller_line_number"`
-	Thread           string `json:"thread"`
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
 }
 
 const (
-	TRACE = "TRACE"
-	DEBUG = "DEBUG"
-	INFO  = "INFO"
-	WARN  = "WARN"
-	ERROR = "ERROR"
-	FATAL = "FATAL"
+	TRACE   = "TRACE"
+	DEBUG   = "DEBUG"
+	INFO    = "INFO"
+	WARNING = "WARNING"
+	ERROR   = "ERROR"
+	FATAL   = "FATAL"
 )
 
 var mavenLogger = log.WithName("maven.build")
+var mavenLoggingFormat = regexp.MustCompile(`^\[(TRACE|DEBUG|INFO|WARNING|ERROR|FATAL)\] (.*)$`)
 
-func mavenLogHandler(s string) {
-	mavenLog, parseError := parseLog(s)
-	if parseError == nil {
-		normalizeLog(mavenLog)
-	} else {
-		// Why we are ignoring the parsing errors here: there are a few scenarios where this would likely occur.
-		// For example, if something outside of Maven outputs something (i.e.: the JDK, a misbehaved plugin,
-		// etc). The build may still have succeeded, though.
-		nonNormalizedLog(s)
+// LogHandler is in charge to log the text passed and, if the trace is an error, to return the message to the caller.
+func LogHandler(s string) string {
+	l := parseLog(s)
+	normalizeLog(l)
+
+	if l.Level == ERROR {
+		return l.Msg
 	}
+
+	return ""
 }
 
-func parseLog(line string) (mavenLog, error) {
+func parseLog(line string) mavenLog {
 	var l mavenLog
-	err := json.Unmarshal([]byte(line), &l)
-	return l, err
+
+	matches := mavenLoggingFormat.FindAllStringSubmatch(line, -1)
+	if len(matches) == 0 || len(matches[0]) != 3 {
+		// If this is happening, then, we have a problem with parsing the maven output
+		// however we are printing the output in its plain format
+		l = mavenLog{
+			Level: INFO,
+			Msg:   line,
+		}
+	} else {
+		l = mavenLog{
+			Level: matches[0][1],
+			Msg:   matches[0][2],
+		}
+	}
+
+	return l
 }
 
 func normalizeLog(mavenLog mavenLog) {
 	switch mavenLog.Level {
 	case DEBUG, TRACE:
 		mavenLogger.Debug(mavenLog.Msg)
-	case INFO, WARN:
+	case INFO, WARNING:
 		mavenLogger.Info(mavenLog.Msg)
 	case ERROR, FATAL:
-		mavenLogger.Errorf(nil, mavenLog.Msg)
+		mavenLogger.Error(nil, mavenLog.Msg)
 	}
-}
-
-func nonNormalizedLog(rawLog string) {
-	mavenLogger.Info(rawLog)
 }

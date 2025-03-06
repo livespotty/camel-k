@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"regexp"
 
-	knativev1 "github.com/apache/camel-k/pkg/apis/camel/v1/knative"
-	uriutils "github.com/apache/camel-k/pkg/util/uri"
+	knativev1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/knative"
+	uriutils "github.com/apache/camel-k/v2/pkg/util/uri"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -70,6 +70,7 @@ func ExtractObjectReference(uri string) (v1.ObjectReference, error) {
 			Kind:       "Broker",
 		}, nil
 	}
+
 	name := matchOrEmpty(uriRegexp, 2, uri)
 	if name == "" {
 		return v1.ObjectReference{}, fmt.Errorf("cannot find name in uri %s", uri)
@@ -83,7 +84,7 @@ func ExtractObjectReference(uri string) (v1.ObjectReference, error) {
 	}, nil
 }
 
-// ExtractEventType extract the eventType from a event URI.
+// ExtractEventType extract the eventType from an event URI.
 func ExtractEventType(uri string) string {
 	return matchOrEmpty(uriRegexp, 2, uri)
 }

@@ -21,23 +21,24 @@ import (
 	"net/url"
 	"strings"
 
-	"k8s.io/utils/pointer"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	knativeapis "github.com/apache/camel-k/v2/pkg/apis/camel/v1/knative"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	knativeapis "github.com/apache/camel-k/pkg/apis/camel/v1/knative"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
-	"github.com/apache/camel-k/pkg/util/uri"
+	"github.com/apache/camel-k/v2/pkg/util/uri"
 )
 
 // KnativeURIBindingProvider converts a HTTP/HTTPS URI into a Camel Knative endpoint (to call it via CloudEvents).
 type KnativeURIBindingProvider struct{}
 
+// ID --.
 func (k KnativeURIBindingProvider) ID() string {
 	return "knative-uri"
 }
 
-func (k KnativeURIBindingProvider) Translate(ctx BindingContext, endpointCtx EndpointContext, e v1alpha1.Endpoint) (*Binding, error) {
+// Translate --.
+func (k KnativeURIBindingProvider) Translate(ctx BindingContext, endpointCtx EndpointContext, e v1.Endpoint) (*Binding, error) {
 	if e.URI == nil {
 		// works only on uris
 		return nil, nil
@@ -50,11 +51,10 @@ func (k KnativeURIBindingProvider) Translate(ctx BindingContext, endpointCtx End
 		// only translates http/https uri to Knative calls
 		return nil, nil
 	}
-	if endpointCtx.Type == v1alpha1.EndpointTypeSource {
+	if endpointCtx.Type == v1.EndpointTypeSource {
 		// HTTP/HTTPS uri are translated to Knative endpoints only when used as sinks
 		return nil, nil
 	}
-
 	originalURI, err := url.Parse(*e.URI)
 	if err != nil {
 		return nil, err
@@ -86,12 +86,13 @@ func (k KnativeURIBindingProvider) Translate(ctx BindingContext, endpointCtx End
 		Traits: v1.Traits{
 			Knative: &traitv1.KnativeTrait{
 				Configuration: config,
-				SinkBinding:   pointer.Bool(false),
+				SinkBinding:   ptr.To(false),
 			},
 		},
 	}, nil
 }
 
+// Order --.
 func (k KnativeURIBindingProvider) Order() int {
 	return OrderStandard
 }

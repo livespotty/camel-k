@@ -24,26 +24,31 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/apache/camel-k/v2/pkg/util/boolean"
+	"github.com/apache/camel-k/v2/pkg/util/property"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	eventing "knative.dev/eventing/pkg/apis/eventing/v1"
 	serving "knative.dev/serving/pkg/apis/serving/v1"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	knativeapi "github.com/apache/camel-k/pkg/apis/camel/v1/knative"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/metadata"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/envvar"
-	knativeutil "github.com/apache/camel-k/pkg/util/knative"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	knativeapi "github.com/apache/camel-k/v2/pkg/apis/camel/v1/knative"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/metadata"
+	"github.com/apache/camel-k/v2/pkg/util"
+	knativeutil "github.com/apache/camel-k/v2/pkg/util/knative"
+)
+
+const (
+	knativeTraitID       = "knative"
+	knativeTraitOrder    = 400
+	knativeHistoryHeader = "ce-knativehistory"
 )
 
 type knativeTrait struct {
@@ -51,13 +56,9 @@ type knativeTrait struct {
 	traitv1.KnativeTrait `property:",squash"`
 }
 
-const (
-	knativeHistoryHeader = "ce-knativehistory"
-)
-
 func newKnativeTrait() Trait {
 	t := &knativeTrait{
-		BaseTrait: NewBaseTrait("knative", 400),
+		BaseTrait: NewBaseTrait(knativeTraitID, knativeTraitOrder),
 	}
 
 	return t
@@ -68,158 +69,128 @@ func (t *knativeTrait) IsAllowedInProfile(profile v1.TraitProfile) bool {
 	return profile.Equal(v1.TraitProfileKnative)
 }
 
-func (t *knativeTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, true) {
-		return false, nil
+func (t *knativeTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil {
+		return false, nil, nil
 	}
-
+	if !ptr.Deref(t.Enabled, true) {
+		return false, NewIntegrationConditionUserDisabled("Knative"), nil
+	}
 	if !e.IntegrationInPhase(v1.IntegrationPhaseInitialization) && !e.IntegrationInRunningPhases() {
-		return false, nil
+		return false, nil, nil
 	}
 
-	if pointer.BoolDeref(t.Auto, true) {
+	_, err := e.ConsumeMeta(false, func(meta metadata.IntegrationMetadata) bool {
 		if len(t.ChannelSources) == 0 {
-			items := make([]string, 0)
-			sources, err := kubernetes.ResolveIntegrationSources(e.Ctx, e.Client, e.Integration, e.Resources)
-			if err != nil {
-				return false, err
-			}
-			if err := metadata.Each(e.CamelCatalog, sources, func(_ int, meta metadata.IntegrationMetadata) bool {
-				items = append(items, knativeutil.FilterURIs(meta.FromURIs, knativeapi.CamelServiceTypeChannel)...)
-				return true
-			}); err != nil {
-				return false, err
-			}
-
-			t.ChannelSources = items
+			t.ChannelSources = filterMetaItems(meta, knativeapi.CamelServiceTypeChannel, "from")
 		}
 		if len(t.ChannelSinks) == 0 {
-			items := make([]string, 0)
-			sources, err := kubernetes.ResolveIntegrationSources(e.Ctx, e.Client, e.Integration, e.Resources)
-			if err != nil {
-				return false, err
-			}
-			if err := metadata.Each(e.CamelCatalog, sources, func(_ int, meta metadata.IntegrationMetadata) bool {
-				items = append(items, knativeutil.FilterURIs(meta.ToURIs, knativeapi.CamelServiceTypeChannel)...)
-				return true
-			}); err != nil {
-				return false, err
-			}
-
-			t.ChannelSinks = items
+			t.ChannelSinks = filterMetaItems(meta, knativeapi.CamelServiceTypeChannel, "to")
 		}
 		if len(t.EndpointSources) == 0 {
-			items := make([]string, 0)
-			sources, err := kubernetes.ResolveIntegrationSources(e.Ctx, e.Client, e.Integration, e.Resources)
-			if err != nil {
-				return false, err
-			}
-			if err := metadata.Each(e.CamelCatalog, sources, func(_ int, meta metadata.IntegrationMetadata) bool {
-				items = append(items, knativeutil.FilterURIs(meta.FromURIs, knativeapi.CamelServiceTypeEndpoint)...)
-				return true
-			}); err != nil {
-				return false, err
-			}
-
-			t.EndpointSources = items
+			t.EndpointSources = filterMetaItems(meta, knativeapi.CamelServiceTypeEndpoint, "from")
 		}
 		if len(t.EndpointSinks) == 0 {
-			items := make([]string, 0)
-			sources, err := kubernetes.ResolveIntegrationSources(e.Ctx, e.Client, e.Integration, e.Resources)
-			if err != nil {
-				return false, err
-			}
-			if err := metadata.Each(e.CamelCatalog, sources, func(_ int, meta metadata.IntegrationMetadata) bool {
-				items = append(items, knativeutil.FilterURIs(meta.ToURIs, knativeapi.CamelServiceTypeEndpoint)...)
-				return true
-			}); err != nil {
-				return false, err
-			}
-
-			t.EndpointSinks = items
+			t.EndpointSinks = filterMetaItems(meta, knativeapi.CamelServiceTypeEndpoint, "to")
 		}
 		if len(t.EventSources) == 0 {
-			items := make([]string, 0)
-			sources, err := kubernetes.ResolveIntegrationSources(e.Ctx, e.Client, e.Integration, e.Resources)
-			if err != nil {
-				return false, err
-			}
-			if err := metadata.Each(e.CamelCatalog, sources, func(_ int, meta metadata.IntegrationMetadata) bool {
-				items = append(items, knativeutil.FilterURIs(meta.FromURIs, knativeapi.CamelServiceTypeEvent)...)
-				return true
-			}); err != nil {
-				return false, err
-			}
-
-			t.EventSources = items
+			t.EventSources = filterMetaItems(meta, knativeapi.CamelServiceTypeEvent, "from")
 		}
 		if len(t.EventSinks) == 0 {
-			items := make([]string, 0)
-			sources, err := kubernetes.ResolveIntegrationSources(e.Ctx, e.Client, e.Integration, e.Resources)
-			if err != nil {
-				return false, err
-			}
-			if err := metadata.Each(e.CamelCatalog, sources, func(_ int, meta metadata.IntegrationMetadata) bool {
-				items = append(items, knativeutil.FilterURIs(meta.ToURIs, knativeapi.CamelServiceTypeEvent)...)
-				return true
-			}); err != nil {
-				return false, err
-			}
+			t.EventSinks = filterMetaItems(meta, knativeapi.CamelServiceTypeEvent, "to")
+		}
+		return true
+	})
+	if err != nil {
+		return false, nil, err
+	}
 
-			t.EventSinks = items
+	if t.Enabled == nil {
+		// If the trait is enabled, then, we can skip this optimization
+		hasKnativeEndpoint := len(t.ChannelSources) > 0 || len(t.ChannelSinks) > 0 ||
+			len(t.EndpointSources) > 0 || len(t.EndpointSinks) > 0 ||
+			len(t.EventSources) > 0 || len(t.EventSinks) > 0
+		t.Enabled = ptr.To(hasKnativeEndpoint)
+	}
+
+	if ptr.Deref(t.Enabled, false) {
+		// Verify if Knative eventing is installed
+		knativeInstalled, err := knativeutil.IsEventingInstalled(e.Client)
+		if err != nil {
+			return false, nil, err
 		}
-		if t.FilterSourceChannels == nil {
-			// Filtering is no longer used by default
-			t.FilterSourceChannels = pointer.Bool(false)
+		if !knativeInstalled {
+			return false, NewIntegrationCondition(
+				"Knative",
+				v1.IntegrationConditionKnativeAvailable,
+				corev1.ConditionFalse,
+				v1.IntegrationConditionKnativeNotInstalledReason,
+				"integration cannot run. Knative is not installed in the cluster",
+			), fmt.Errorf("integration cannot run. Knative is not installed in the cluster")
 		}
+
 		if t.SinkBinding == nil {
 			allowed := t.isSinkBindingAllowed(e)
 			t.SinkBinding = &allowed
 		}
 	}
 
-	return true, nil
+	return ptr.Deref(t.Enabled, false), nil, nil
+}
+
+func filterMetaItems(meta metadata.IntegrationMetadata, cst knativeapi.CamelServiceType, uriType string) []string {
+	items := make([]string, 0)
+	var uris []string
+	if uriType == "from" {
+		uris = meta.FromURIs
+	} else if uriType == "to" {
+		uris = meta.ToURIs
+	}
+	items = append(items, knativeutil.FilterURIs(uris, cst)...)
+	if len(items) == 0 {
+		return nil
+	}
+	sort.Strings(items)
+	return items
 }
 
 func (t *knativeTrait) Apply(e *Environment) error {
-	if pointer.BoolDeref(t.SinkBinding, false) {
-		util.StringSliceUniqueAdd(&e.Integration.Status.Dependencies, "mvn:org.apache.camel.k:camel-k-knative")
+	if e.IntegrationInPhase(v1.IntegrationPhaseInitialization) {
+		util.StringSliceUniqueAdd(&e.Integration.Status.Capabilities, v1.CapabilityKnative)
 	}
-
 	if len(t.ChannelSources) > 0 || len(t.EndpointSources) > 0 || len(t.EventSources) > 0 {
 		util.StringSliceUniqueAdd(&e.Integration.Status.Capabilities, v1.CapabilityPlatformHTTP)
 	}
 	if len(t.ChannelSinks) > 0 || len(t.EndpointSinks) > 0 || len(t.EventSinks) > 0 {
 		util.StringSliceUniqueAdd(&e.Integration.Status.Capabilities, v1.CapabilityPlatformHTTP)
 	}
+	if !e.IntegrationInRunningPhases() {
+		return nil
+	}
 
-	if e.IntegrationInRunningPhases() {
-		env := knativeapi.NewCamelEnvironment()
-		if t.Configuration != "" {
-			if err := env.Deserialize(t.Configuration); err != nil {
-				return err
-			}
-		}
-
-		if err := t.configureChannels(e, &env); err != nil {
+	env := knativeapi.NewCamelEnvironment()
+	if t.Configuration != "" {
+		if err := env.Deserialize(t.Configuration); err != nil {
 			return err
 		}
-		if err := t.configureEndpoints(e, &env); err != nil {
-			return err
-		}
-		if err := t.configureEvents(e, &env); err != nil {
-			return err
-		}
-		if err := t.configureSinkBinding(e, &env); err != nil {
-			return err
-		}
-
-		conf, err := env.Serialize()
-		if err != nil {
-			return errors.Wrap(err, "unable to fetch environment configuration")
-		}
-
-		envvar.SetVal(&e.EnvVars, "CAMEL_KNATIVE_CONFIGURATION", conf)
+	}
+	if err := t.configureChannels(e, &env); err != nil {
+		return err
+	}
+	if err := t.configureEndpoints(e, &env); err != nil {
+		return err
+	}
+	if err := t.configureEvents(e, &env); err != nil {
+		return err
+	}
+	if err := t.configureSinkBinding(e, &env); err != nil {
+		return err
+	}
+	if e.ApplicationProperties == nil {
+		e.ApplicationProperties = make(map[string]string)
+	}
+	for k, v := range env.ToCamelProperties() {
+		e.ApplicationProperties[k] = v
 	}
 
 	return nil
@@ -238,9 +209,9 @@ func (t *knativeTrait) configureChannels(e *Environment, env *knativeapi.CamelEn
 				knativeapi.CamelMetaEndpointKind:      string(knativeapi.CamelEndpointKindSource),
 				knativeapi.CamelMetaKnativeAPIVersion: ref.APIVersion,
 				knativeapi.CamelMetaKnativeKind:       ref.Kind,
-				knativeapi.CamelMetaKnativeReply:      "false",
+				knativeapi.CamelMetaKnativeReply:      boolean.FalseString,
 			}
-			if pointer.BoolDeref(t.FilterSourceChannels, false) {
+			if ptr.Deref(t.FilterSourceChannels, false) {
 				meta[knativeapi.CamelMetaFilterPrefix+knativeHistoryHeader] = loc.Host
 			}
 			svc := knativeapi.CamelServiceDefinition{
@@ -261,25 +232,23 @@ func (t *knativeTrait) configureChannels(e *Environment, env *knativeapi.CamelEn
 		return err
 	}
 
-	if !pointer.BoolDeref(t.SinkBinding, false) {
-		// Sinks
-		err = t.ifServiceMissingDo(e, env, t.ChannelSinks, knativeapi.CamelServiceTypeChannel, knativeapi.CamelEndpointKindSink,
-			func(ref *corev1.ObjectReference, serviceURI string, urlProvider func() (*url.URL, error)) error {
-				loc, err := urlProvider()
-				if err != nil {
-					return err
-				}
-				svc, err := knativeapi.BuildCamelServiceDefinition(ref.Name, knativeapi.CamelEndpointKindSink,
-					knativeapi.CamelServiceTypeChannel, *loc, ref.APIVersion, ref.Kind)
-				if err != nil {
-					return err
-				}
-				env.Services = append(env.Services, svc)
-				return nil
-			})
-		if err != nil {
-			return err
-		}
+	// Sinks
+	err = t.ifServiceMissingDo(e, env, t.ChannelSinks, knativeapi.CamelServiceTypeChannel, knativeapi.CamelEndpointKindSink,
+		func(ref *corev1.ObjectReference, serviceURI string, urlProvider func() (*url.URL, error)) error {
+			loc, err := urlProvider()
+			if err != nil {
+				return err
+			}
+			svc, err := knativeapi.BuildCamelServiceDefinition(ref.Name, knativeapi.CamelEndpointKindSink,
+				knativeapi.CamelServiceTypeChannel, *loc, ref.APIVersion, ref.Kind)
+			if err != nil {
+				return err
+			}
+			env.Services = append(env.Services, svc)
+			return nil
+		})
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -314,31 +283,29 @@ func (t *knativeTrait) configureEndpoints(e *Environment, env *knativeapi.CamelE
 				knativeapi.CamelMetaEndpointKind:      string(knativeapi.CamelEndpointKindSource),
 				knativeapi.CamelMetaKnativeAPIVersion: serving.SchemeGroupVersion.String(),
 				knativeapi.CamelMetaKnativeKind:       "Service",
-				// knative.reply is left to default ("true") in case of simple service
+				// knative.reply is left to default (boolean.TrueString) in case of simple service
 			},
 		}
 		env.Services = append(env.Services, svc)
 	}
 
 	// Sinks
-	if !pointer.BoolDeref(t.SinkBinding, false) {
-		err := t.ifServiceMissingDo(e, env, t.EndpointSinks, knativeapi.CamelServiceTypeEndpoint, knativeapi.CamelEndpointKindSink,
-			func(ref *corev1.ObjectReference, serviceURI string, urlProvider func() (*url.URL, error)) error {
-				loc, err := urlProvider()
-				if err != nil {
-					return err
-				}
-				svc, err := knativeapi.BuildCamelServiceDefinition(ref.Name, knativeapi.CamelEndpointKindSink,
-					knativeapi.CamelServiceTypeEndpoint, *loc, ref.APIVersion, ref.Kind)
-				if err != nil {
-					return err
-				}
-				env.Services = append(env.Services, svc)
-				return nil
-			})
-		if err != nil {
-			return err
-		}
+	err := t.ifServiceMissingDo(e, env, t.EndpointSinks, knativeapi.CamelServiceTypeEndpoint, knativeapi.CamelEndpointKindSink,
+		func(ref *corev1.ObjectReference, serviceURI string, urlProvider func() (*url.URL, error)) error {
+			loc, err := urlProvider()
+			if err != nil {
+				return err
+			}
+			svc, err := knativeapi.BuildCamelServiceDefinition(ref.Name, knativeapi.CamelEndpointKindSink,
+				knativeapi.CamelServiceTypeEndpoint, *loc, ref.APIVersion, ref.Kind)
+			if err != nil {
+				return err
+			}
+			env.Services = append(env.Services, svc)
+			return nil
+		})
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -352,10 +319,13 @@ func (t *knativeTrait) configureEvents(e *Environment, env *knativeapi.CamelEnvi
 			eventType := knativeutil.ExtractEventType(serviceURI)
 			serviceName := eventType
 			if serviceName == "" {
+				//nolint:goconst
 				serviceName = "default"
 			}
 			servicePath := fmt.Sprintf("/events/%s", eventType)
-			t.createTrigger(e, ref, eventType, servicePath)
+			if triggerErr := t.createTrigger(e, ref, eventType, servicePath); triggerErr != nil {
+				return triggerErr
+			}
 
 			if !env.ContainsService(serviceName, knativeapi.CamelEndpointKindSource, knativeapi.CamelServiceTypeEvent, ref.APIVersion, ref.Kind) {
 				svc := knativeapi.CamelServiceDefinition{
@@ -367,7 +337,7 @@ func (t *knativeTrait) configureEvents(e *Environment, env *knativeapi.CamelEnvi
 						knativeapi.CamelMetaKnativeAPIVersion: ref.APIVersion,
 						knativeapi.CamelMetaKnativeKind:       ref.Kind,
 						knativeapi.CamelMetaKnativeName:       ref.Name,
-						knativeapi.CamelMetaKnativeReply:      "false",
+						knativeapi.CamelMetaKnativeReply:      boolean.FalseString,
 					},
 				}
 				env.Services = append(env.Services, svc)
@@ -380,24 +350,22 @@ func (t *knativeTrait) configureEvents(e *Environment, env *knativeapi.CamelEnvi
 	}
 
 	// Sinks
-	if !pointer.BoolDeref(t.SinkBinding, false) {
-		err = t.ifServiceMissingDo(e, env, t.EventSinks, knativeapi.CamelServiceTypeEvent, knativeapi.CamelEndpointKindSink,
-			func(ref *corev1.ObjectReference, serviceURI string, urlProvider func() (*url.URL, error)) error {
-				loc, err := urlProvider()
-				if err != nil {
-					return err
-				}
-				svc, err := knativeapi.BuildCamelServiceDefinition(ref.Name, knativeapi.CamelEndpointKindSink,
-					knativeapi.CamelServiceTypeEvent, *loc, ref.APIVersion, ref.Kind)
-				if err != nil {
-					return err
-				}
-				env.Services = append(env.Services, svc)
-				return nil
-			})
-		if err != nil {
-			return err
-		}
+	err = t.ifServiceMissingDo(e, env, t.EventSinks, knativeapi.CamelServiceTypeEvent, knativeapi.CamelEndpointKindSink,
+		func(ref *corev1.ObjectReference, serviceURI string, urlProvider func() (*url.URL, error)) error {
+			loc, err := urlProvider()
+			if err != nil {
+				return err
+			}
+			svc, err := knativeapi.BuildCamelServiceDefinition(ref.Name, knativeapi.CamelEndpointKindSink,
+				knativeapi.CamelServiceTypeEvent, *loc, ref.APIVersion, ref.Kind)
+			if err != nil {
+				return err
+			}
+			env.Services = append(env.Services, svc)
+			return nil
+		})
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -421,7 +389,7 @@ func (t *knativeTrait) isSinkBindingAllowed(e *Environment) bool {
 }
 
 func (t *knativeTrait) configureSinkBinding(e *Environment, env *knativeapi.CamelEnvironment) error {
-	if !pointer.BoolDeref(t.SinkBinding, false) {
+	if !ptr.Deref(t.SinkBinding, false) {
 		return nil
 	}
 	var serviceType knativeapi.CamelServiceType
@@ -443,72 +411,117 @@ func (t *knativeTrait) configureSinkBinding(e *Environment, env *knativeapi.Came
 	}
 
 	err := t.withServiceDo(false, e, env, services, serviceType, knativeapi.CamelEndpointKindSink, func(ref *corev1.ObjectReference, serviceURI string, _ func() (*url.URL, error)) error {
-		e.ApplicationProperties["camel.k.customizer.sinkbinding.enabled"] = "true"
-		e.ApplicationProperties["camel.k.customizer.sinkbinding.name"] = ref.Name
-		e.ApplicationProperties["camel.k.customizer.sinkbinding.type"] = string(serviceType)
-		e.ApplicationProperties["camel.k.customizer.sinkbinding.kind"] = ref.Kind
-		e.ApplicationProperties["camel.k.customizer.sinkbinding.api-version"] = ref.APIVersion
+		// Mark the service which will be used as SinkBinding
+		env.SetSinkBinding(ref.Name, knativeapi.CamelEndpointKindSink, serviceType, ref.APIVersion, ref.Kind)
 
-		if e.IntegrationInPhase(v1.IntegrationPhaseDeploying, v1.IntegrationPhaseRunning) {
-			e.PostStepProcessors = append(e.PostStepProcessors, func(e *Environment) error {
-				sinkBindingInjected := false
-				e.Resources.Visit(func(object runtime.Object) {
-					gvk := object.GetObjectKind().GroupVersionKind()
-					if gvk.Kind == "SinkBinding" && strings.Contains(gvk.Group, "knative") {
-						sinkBindingInjected = true
-					}
-				})
-				if sinkBindingInjected {
-					return nil
-				}
-
-				controller := e.Resources.GetController(func(object ctrl.Object) bool {
-					return true
-				})
-				if controller != nil && !reflect.ValueOf(controller).IsNil() {
-					gvk := controller.GetObjectKind().GroupVersionKind()
-					av, k := gvk.ToAPIVersionAndKind()
-					source := corev1.ObjectReference{
-						Kind:       k,
-						Namespace:  e.Integration.Namespace,
-						Name:       e.Integration.Name,
-						APIVersion: av,
-					}
-					target := corev1.ObjectReference{
-						Kind:       ref.Kind,
-						Namespace:  e.Integration.Namespace,
-						Name:       ref.Name,
-						APIVersion: ref.APIVersion,
-					}
-
-					// Add the SinkBinding in first position, to make sure it is created
-					// before the reference source, so that the SinkBinding webhook has
-					// all the information to perform injection.
-					e.Resources.AddFirst(knativeutil.CreateSinkBinding(source, target))
-				}
-				return nil
-			})
+		if !e.IntegrationInPhase(v1.IntegrationPhaseDeploying, v1.IntegrationPhaseRunning) {
+			return nil
 		}
+
+		e.PostStepProcessors = append(e.PostStepProcessors, func(e *Environment) error {
+			sinkBindingInjected := false
+			e.Resources.Visit(func(object runtime.Object) {
+				gvk := object.GetObjectKind().GroupVersionKind()
+				if gvk.Kind == "SinkBinding" && strings.Contains(gvk.Group, "knative") {
+					sinkBindingInjected = true
+				}
+			})
+			if sinkBindingInjected {
+				return nil
+			}
+
+			controller := e.Resources.GetController(func(object ctrl.Object) bool {
+				return true
+			})
+			if controller != nil && !reflect.ValueOf(controller).IsNil() {
+				gvk := controller.GetObjectKind().GroupVersionKind()
+				av, k := gvk.ToAPIVersionAndKind()
+				source := corev1.ObjectReference{
+					Kind:       k,
+					Namespace:  e.Integration.Namespace,
+					Name:       e.Integration.Name,
+					APIVersion: av,
+				}
+				target := corev1.ObjectReference{
+					Kind:       ref.Kind,
+					Namespace:  e.Integration.Namespace,
+					Name:       ref.Name,
+					APIVersion: ref.APIVersion,
+				}
+
+				if ptr.Deref(t.NamespaceLabel, true) {
+					// set the namespace label to allow automatic sinkbinding injection
+					enabled, err := knativeutil.EnableKnativeBindInNamespace(e.Ctx, e.Client, e.Integration.Namespace)
+					if err != nil {
+						t.L.Errorf(err, "Error setting label 'bindings.knative.dev/include=true' in namespace: %s", e.Integration.Namespace)
+					} else if enabled {
+						t.L.Infof("Label 'bindings.knative.dev/include=true' set in namespace: %s", e.Integration.Namespace)
+					}
+				}
+
+				// Add the SinkBinding in first position, to make sure it is created
+				// before the reference source, so that the SinkBinding webhook has
+				// all the information to perform injection.
+				e.Resources.AddFirst(knativeutil.CreateSinkBinding(source, target))
+			}
+			return nil
+		})
+
 		return nil
 	})
 
 	return err
 }
 
-func (t *knativeTrait) createTrigger(e *Environment, ref *corev1.ObjectReference, eventType string, path string) {
-	// TODO extend to additional filters too, to filter them at source and not at destination
+func (t *knativeTrait) createTrigger(e *Environment, ref *corev1.ObjectReference, eventType string, path string) error {
 	found := e.Resources.HasKnativeTrigger(func(trigger *eventing.Trigger) bool {
 		return trigger.Spec.Broker == ref.Name &&
-			trigger.Spec.Filter != nil &&
-			trigger.Spec.Filter.Attributes["type"] == eventType // can be also missing
+			trigger.Name == knativeutil.GetTriggerName(ref.Name, e.Integration.Name, eventType)
 	})
-	if !found {
-		if ref.Namespace == "" {
-			ref.Namespace = e.Integration.Namespace
-		}
-		trigger := knativeutil.CreateTrigger(*ref, e.Integration.Name, eventType, path)
-		e.Resources.Add(trigger)
+
+	if found {
+		return nil
 	}
+
+	if ref.Namespace == "" {
+		ref.Namespace = e.Integration.Namespace
+	}
+
+	controllerStrategy, err := e.DetermineControllerStrategy()
+	if err != nil {
+		return err
+	}
+
+	var attributes = make(map[string]string)
+	for _, filterExpression := range t.Filters {
+		key, value := property.SplitPropertyFileEntry(filterExpression)
+		attributes[key] = value
+	}
+
+	if _, eventTypeSpecified := attributes["type"]; !eventTypeSpecified && ptr.Deref(t.FilterEventType, true) && eventType != "" {
+		// Apply default trigger filter attribute for the event type
+		attributes["type"] = eventType
+	}
+
+	var trigger *eventing.Trigger
+	switch controllerStrategy {
+	case ControllerStrategyKnativeService:
+		trigger, err = knativeutil.CreateKnativeServiceTrigger(*ref, e.Integration.Name, eventType, path, attributes)
+		if err != nil {
+			return err
+		}
+	case ControllerStrategyDeployment:
+		trigger, err = knativeutil.CreateServiceTrigger(*ref, e.Integration.Name, eventType, path, attributes)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("failed to create Knative trigger: unsupported controller strategy %s", controllerStrategy)
+	}
+
+	e.Resources.Add(trigger)
+
+	return nil
 }
 
 func (t *knativeTrait) ifServiceMissingDo(
@@ -545,16 +558,16 @@ func (t *knativeTrait) withServiceDo(
 		} else {
 			actualRef, err = knativeutil.GetAddressableReference(e.Ctx, t.Client, possibleRefs, e.Integration.Namespace, ref.Name)
 			if err != nil && k8serrors.IsNotFound(err) {
-				return errors.Errorf("cannot find %s", serviceType.ResourceDescription(ref.Name))
+				return fmt.Errorf("cannot find %s", serviceType.ResourceDescription(ref.Name))
 			} else if err != nil {
-				return errors.Wrapf(err, "error looking up %s", serviceType.ResourceDescription(ref.Name))
+				return fmt.Errorf("error looking up %s: %w", serviceType.ResourceDescription(ref.Name), err)
 			}
 		}
 
 		urlProvider := func() (*url.URL, error) {
 			targetURL, err := knativeutil.GetSinkURL(e.Ctx, t.Client, actualRef, e.Integration.Namespace)
 			if err != nil {
-				return nil, errors.Wrapf(err, "cannot determine address of %s", serviceType.ResourceDescription(ref.Name))
+				return nil, fmt.Errorf("cannot determine address of %s: %w", serviceType.ResourceDescription(ref.Name), err)
 			}
 			t.L.Infof("Found URL for %s: %s", serviceType.ResourceDescription(ref.Name), targetURL.String())
 			return targetURL, nil
@@ -562,7 +575,7 @@ func (t *knativeTrait) withServiceDo(
 
 		err = gen(actualRef, serviceURI, urlProvider)
 		if err != nil {
-			return errors.Wrapf(err, "unexpected error while executing handler for %s", serviceType.ResourceDescription(ref.Name))
+			return fmt.Errorf("unexpected error while executing handler for %s: %w", serviceType.ResourceDescription(ref.Name), err)
 		}
 	}
 	return nil

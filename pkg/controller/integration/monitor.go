@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -30,20 +31,23 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/utils/ptr"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	servingv1 "knative.dev/serving/pkg/apis/serving/v1"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/trait"
-	"github.com/apache/camel-k/pkg/util/digest"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/trait"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/digest"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	utilResource "github.com/apache/camel-k/v2/pkg/util/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// The key used for propagating error details from Camel health to MicroProfile Health (See CAMEL-17138).
-const runtimeHealthCheckErrorMessage = "error.message"
-
+// NewMonitorAction is an action used to monitor manager Integrations.
 func NewMonitorAction() Action {
 	return &monitorAction{}
 }
@@ -62,60 +66,143 @@ func (action *monitorAction) CanHandle(integration *v1.Integration) bool {
 		integration.Status.Phase == v1.IntegrationPhaseError
 }
 
+//nolint:nestif
 func (action *monitorAction) Handle(ctx context.Context, integration *v1.Integration) (*v1.Integration, error) {
 	// When in InitializationFailed condition a kit is not available for the integration
 	// so handle it differently from the rest
 	if isInInitializationFailed(integration.Status) {
 		// Only check if the Integration requires a rebuild
-		return action.checkDigestAndRebuild(integration, nil)
+		return action.checkDigestAndRebuild(ctx, integration, nil)
 	}
 
-	// At that staged the Integration must have a Kit
-	if integration.Status.IntegrationKit == nil {
-		return nil, fmt.Errorf("no kit set on integration %s", integration.Name)
+	var kit *v1.IntegrationKit
+	var err error
+	if integration.Status.IntegrationKit == nil && integration.Status.Image == "" {
+		return nil, fmt.Errorf("no kit nor container image set on integration %s", integration.Name)
 	}
 
-	kit, err := kubernetes.GetIntegrationKit(ctx, action.client,
-		integration.Status.IntegrationKit.Name, integration.Status.IntegrationKit.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("unable to find integration kit %s/%s: %w",
-			integration.Status.IntegrationKit.Namespace, integration.Status.IntegrationKit.Name, err)
+	if integration.Status.IntegrationKit != nil {
+		// Managed Integration
+		kit, err = kubernetes.GetIntegrationKit(ctx, action.client,
+			integration.Status.IntegrationKit.Name, integration.Status.IntegrationKit.Namespace)
+		if err != nil {
+			return nil, fmt.Errorf("unable to find integration kit %s/%s: %w",
+				integration.Status.IntegrationKit.Namespace, integration.Status.IntegrationKit.Name, err)
+		}
+
+		// If integration is in error and its kit is also in error then integration does not change
+		if isInIntegrationKitFailed(integration.Status) &&
+			kit.Status.Phase == v1.IntegrationKitPhaseError {
+			return nil, nil
+		}
 	}
 
 	// Check if the Integration requires a rebuild
-	if changed, err := action.checkDigestAndRebuild(integration, kit); err != nil {
+	if changed, err := action.checkDigestAndRebuild(ctx, integration, kit); err != nil {
 		return nil, err
 	} else if changed != nil {
 		return changed, nil
 	}
 
-	// Check if an IntegrationKit with higher priority is ready
-	priority, ok := kit.Labels[v1.IntegrationKitPriorityLabel]
-	if !ok {
-		priority = "0"
-	}
-	withHigherPriority, err := labels.NewRequirement(v1.IntegrationKitPriorityLabel, selection.GreaterThan, []string{priority})
-	if err != nil {
-		return nil, err
-	}
-	kits, err := lookupKitsForIntegration(ctx, action.client, integration, ctrl.MatchingLabelsSelector{
-		Selector: labels.NewSelector().Add(*withHigherPriority),
-	})
-	if err != nil {
-		return nil, err
-	}
-	priorityReadyKit, err := findHighestPriorityReadyKit(kits)
-	if err != nil {
-		return nil, err
-	}
-	if priorityReadyKit != nil {
-		integration.SetIntegrationKit(priorityReadyKit)
-	}
+	if kit != nil {
+		// Check if an IntegrationKit with higher priority is ready
+		priority, ok := kit.Labels[v1.IntegrationKitPriorityLabel]
+		if !ok {
+			priority = "0"
+		}
+		withHigherPriority, err := labels.NewRequirement(v1.IntegrationKitPriorityLabel,
+			selection.GreaterThan, []string{priority})
+		if err != nil {
+			return nil, err
+		}
 
+		kits, err := lookupKitsForIntegration(ctx, action.client, integration, ctrl.MatchingLabelsSelector{
+			Selector: labels.NewSelector().Add(*withHigherPriority),
+		})
+		if err != nil {
+			return nil, err
+		}
+		priorityReadyKit, err := findHighestPriorityReadyKit(kits)
+		if err != nil {
+			return nil, err
+		}
+		if priorityReadyKit != nil {
+			integration.SetIntegrationKit(priorityReadyKit)
+		}
+	}
 	// Run traits that are enabled for the phase
 	environment, err := trait.Apply(ctx, action.client, integration, kit)
 	if err != nil {
+		integration.Status.Phase = v1.IntegrationPhaseError
+		integration.SetReadyCondition(corev1.ConditionFalse,
+			v1.IntegrationConditionInitializationFailedReason, err.Error())
+		return integration, err
+	}
+	// If the platform is not in ready status (it may happen when a new IntegrationPlatform is created), then, we may not be able to
+	// properly apply all the traits. We must set the phase in an unknown status which should be periodically reconciled in order to make sure that
+	// we eventually return in a ready phase (likely once the platform is done)
+	if environment.Platform == nil || environment.Platform.Status.Phase != v1.IntegrationPlatformPhaseReady {
+		integration.Status.Phase = v1.IntegrationPhaseUnknown
+		integration.Status.SetCondition(
+			v1.IntegrationConditionPlatformAvailable,
+			corev1.ConditionFalse,
+			"PlatformMissing",
+			"IntegrationPlatform is missing or not yet ready. If the problem persist, make sure to fix the IntegrationPlatform error or create a new one.",
+		)
+		return integration, nil
+	}
+	action.checkTraitAnnotationsDeprecatedNotice(integration)
+
+	return action.monitorPods(ctx, environment, integration)
+}
+
+// Deprecated: to be removed in future versions, when we won't support any longer trait annotations into Integrations.
+func (action *monitorAction) checkTraitAnnotationsDeprecatedNotice(integration *v1.Integration) {
+	if integration.Annotations != nil {
+		for k := range integration.Annotations {
+			if strings.HasPrefix(k, v1.TraitAnnotationPrefix) {
+				integration.Status.SetCondition(
+					v1.IntegrationConditionType("AnnotationTraitsDeprecated"),
+					corev1.ConditionTrue,
+					"DeprecationNotice",
+					"Annotation traits configuration is deprecated and will be removed soon. Use .spec.traits configuration instead.",
+				)
+				action.L.Infof(
+					"WARN: annotation traits configuration is deprecated and will be removed soon. Use .spec.traits configuration for %s integration instead.",
+					integration.Name,
+				)
+				return
+			}
+		}
+	}
+}
+
+func (action *monitorAction) monitorPods(ctx context.Context, environment *trait.Environment, integration *v1.Integration) (*v1.Integration, error) {
+	controller, err := action.newController(environment, integration)
+	if err != nil {
 		return nil, err
+	}
+
+	// In order to simplify the monitoring and have a minor resource requirement, we will watch only those Pods
+	// which are labeled with `camel.apache.org/integration`. This is a design choice that requires the user to
+	// voluntarily add a label to their Pods (via template, possibly) in order to monitor the non managed Camel applications.
+
+	if !controller.hasTemplateIntegrationLabel() {
+		// This is happening when the Deployment, CronJob, etc resources
+		// miss the Integration label, required to identify sibling Pods.
+		integration.Status.SetConditions(
+			v1.IntegrationCondition{
+				Type:   v1.IntegrationConditionReady,
+				Status: corev1.ConditionFalse,
+				Reason: v1.IntegrationConditionMonitoringPodsAvailableReason,
+				Message: fmt.Sprintf(
+					"Could not find `camel.apache.org/integration: %s` label in the %s template. Make sure to include this label in the template for Pod monitoring purposes.",
+					integration.GetName(),
+					controller.getControllerName(),
+				),
+			},
+		)
+		return integration, nil
 	}
 
 	// Enforce the scale sub-resource label selector.
@@ -147,15 +234,20 @@ func (action *monitorAction) Handle(ctx context.Context, integration *v1.Integra
 		}
 		nonTerminatingPods++
 	}
-	podCount := int32(len(pendingPods.Items) + nonTerminatingPods)
-	integration.Status.Replicas = &podCount
+	podCount := len(pendingPods.Items) + nonTerminatingPods
+	replicas, err := util.IToInt32(podCount)
+	if err != nil {
+		return nil, err
+	}
+	integration.Status.Replicas = replicas
 
 	// Reconcile Integration phase and ready condition
 	if integration.Status.Phase == v1.IntegrationPhaseDeploying {
 		integration.Status.Phase = v1.IntegrationPhaseRunning
 	}
-	err = action.updateIntegrationPhaseAndReadyCondition(ctx, environment, integration, pendingPods.Items, runningPods.Items)
-	if err != nil {
+	if err = action.updateIntegrationPhaseAndReadyCondition(
+		ctx, controller, environment, integration, pendingPods.Items, runningPods.Items,
+	); err != nil {
 		return nil, err
 	}
 
@@ -176,22 +268,29 @@ func isInInitializationFailed(status v1.IntegrationStatus) bool {
 	return false
 }
 
-func (action *monitorAction) checkDigestAndRebuild(integration *v1.Integration, kit *v1.IntegrationKit) (*v1.Integration, error) {
-	hash, err := digest.ComputeForIntegration(integration)
+func isInIntegrationKitFailed(status v1.IntegrationStatus) bool {
+	if cond := status.GetCondition(v1.IntegrationConditionKitAvailable); cond != nil {
+		if cond.Status == corev1.ConditionFalse &&
+			status.Phase != v1.IntegrationPhaseError {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (action *monitorAction) checkDigestAndRebuild(ctx context.Context, integration *v1.Integration, kit *v1.IntegrationKit) (*v1.Integration, error) {
+	secrets, configmaps := getIntegrationSecretAndConfigmapResourceVersions(ctx, action.client, integration)
+	hash, err := digest.ComputeForIntegration(integration, configmaps, secrets)
 	if err != nil {
 		return nil, err
 	}
 
 	if hash != integration.Status.Digest {
-		action.L.Info("Monitor: Integration needs a rebuild")
-
-		if kit != nil &&
-			v1.GetOperatorIDAnnotation(integration) != "" &&
-			v1.GetOperatorIDAnnotation(integration) != v1.GetOperatorIDAnnotation(kit) {
-			// Operator to reconcile the integration has changed. Reset integration kit so new operator can handle the kit reference
+		action.L.Infof("Integration %s digest has changed: resetting its status. Will check if it needs to be rebuilt and restarted.", integration.Name)
+		if isIntegrationKitResetRequired(integration, kit) {
 			integration.SetIntegrationKit(nil)
 		}
-
 		integration.Initialize()
 		integration.Status.Digest = hash
 
@@ -201,10 +300,81 @@ func (action *monitorAction) checkDigestAndRebuild(integration *v1.Integration, 
 	return nil, nil
 }
 
+func isIntegrationKitResetRequired(integration *v1.Integration, kit *v1.IntegrationKit) bool {
+	if kit == nil {
+		return false
+	}
+
+	if v1.GetOperatorIDAnnotation(integration) != "" &&
+		v1.GetOperatorIDAnnotation(integration) != v1.GetOperatorIDAnnotation(kit) {
+		// Operator to reconcile the integration has changed. Reset integration kit
+		// so new operator can handle the kit reference
+		return true
+	}
+
+	if v1.GetIntegrationProfileAnnotation(integration) != "" &&
+		v1.GetIntegrationProfileAnnotation(integration) != v1.GetIntegrationProfileAnnotation(kit) {
+		// Integration profile for the integration has changed. Reset integration kit
+		// so new profile can be applied
+		return true
+	}
+
+	if v1.GetIntegrationProfileNamespaceAnnotation(integration) != "" &&
+		v1.GetIntegrationProfileNamespaceAnnotation(integration) != v1.GetIntegrationProfileNamespaceAnnotation(kit) {
+		// Integration profile namespace for the integration has changed. Reset integration kit
+		// so new profile can be applied
+		return true
+	}
+
+	return false
+}
+
+// getIntegrationSecretAndConfigmapResourceVersions returns the list of resource versions only useful to watch for changes.
+func getIntegrationSecretAndConfigmapResourceVersions(ctx context.Context, client client.Client, integration *v1.Integration) ([]string, []string) {
+	configmaps := make([]string, 0)
+	secrets := make([]string, 0)
+	if integration.Spec.Traits.Mount != nil && ptr.Deref(integration.Spec.Traits.Mount.HotReload, false) {
+		mergedResources := make([]string, 0)
+		mergedResources = append(mergedResources, integration.Spec.Traits.Mount.Configs...)
+		mergedResources = append(mergedResources, integration.Spec.Traits.Mount.Resources...)
+		for _, c := range mergedResources {
+			if conf, parseErr := utilResource.ParseConfig(c); parseErr == nil {
+				if conf.StorageType() == utilResource.StorageTypeConfigmap {
+					cm := corev1.ConfigMap{
+						TypeMeta: metav1.TypeMeta{
+							Kind:       "ConfigMap",
+							APIVersion: corev1.SchemeGroupVersion.String(),
+						},
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: integration.Namespace,
+							Name:      conf.Name(),
+						},
+					}
+					configmaps = append(configmaps, kubernetes.LookupResourceVersion(ctx, client, &cm))
+				} else if conf.StorageType() == utilResource.StorageTypeSecret {
+					sec := corev1.Secret{
+						TypeMeta: metav1.TypeMeta{
+							Kind:       "Secret",
+							APIVersion: corev1.SchemeGroupVersion.String(),
+						},
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: integration.Namespace,
+							Name:      conf.Name(),
+						},
+					}
+					secrets = append(secrets, kubernetes.LookupResourceVersion(ctx, client, &sec))
+				}
+			}
+		}
+	}
+	return secrets, configmaps
+}
+
 type controller interface {
 	checkReadyCondition(ctx context.Context) (bool, error)
-	getPodSpec() corev1.PodSpec
-	updateReadyCondition(readyPods []corev1.Pod) bool
+	updateReadyCondition(readyPods int32) bool
+	hasTemplateIntegrationLabel() bool
+	getControllerName() string
 }
 
 func (action *monitorAction) newController(env *trait.Environment, integration *v1.Integration) (controller, error) {
@@ -215,7 +385,7 @@ func (action *monitorAction) newController(env *trait.Environment, integration *
 		obj = getUpdatedController(env, &appsv1.Deployment{})
 		deploy, ok := obj.(*appsv1.Deployment)
 		if !ok {
-			return nil, fmt.Errorf("type assertion failed: %v", obj)
+			return nil, fmt.Errorf("type assertion failed, not a Deployment: %v", obj)
 		}
 		controller = &deploymentController{
 			obj:         deploy,
@@ -225,7 +395,7 @@ func (action *monitorAction) newController(env *trait.Environment, integration *
 		obj = getUpdatedController(env, &servingv1.Service{})
 		svc, ok := obj.(*servingv1.Service)
 		if !ok {
-			return nil, fmt.Errorf("type assertion failed: %v", obj)
+			return nil, fmt.Errorf("type assertion failed, not a Knative Service: %v", obj)
 		}
 		controller = &knativeServiceController{
 			obj:         svc,
@@ -235,7 +405,7 @@ func (action *monitorAction) newController(env *trait.Environment, integration *
 		obj = getUpdatedController(env, &batchv1.CronJob{})
 		cj, ok := obj.(*batchv1.CronJob)
 		if !ok {
-			return nil, fmt.Errorf("type assertion failed: %v", obj)
+			return nil, fmt.Errorf("type assertion failed, not a CronJob: %v", obj)
 		}
 		controller = &cronJobController{
 			obj:         cj,
@@ -260,36 +430,42 @@ func getUpdatedController(env *trait.Environment, obj ctrl.Object) ctrl.Object {
 	})
 }
 
-func (action *monitorAction) updateIntegrationPhaseAndReadyCondition(ctx context.Context, environment *trait.Environment, integration *v1.Integration, pendingPods []corev1.Pod, runningPods []corev1.Pod) error {
-	controller, err := action.newController(environment, integration)
+func (action *monitorAction) updateIntegrationPhaseAndReadyCondition(
+	ctx context.Context, controller controller, environment *trait.Environment, integration *v1.Integration,
+	pendingPods []corev1.Pod, runningPods []corev1.Pod,
+) error {
+	if done, err := controller.checkReadyCondition(ctx); done || err != nil {
+		// There may be pods that are not ready but still probable for getting error messages.
+		// Ignore returned error from probing as it's expected when the ctrl obj is not ready.
+		_, _, _ = action.probeReadiness(ctx, environment, integration, runningPods)
+		return err
+	}
+	if arePodsFailingStatuses(integration, pendingPods, runningPods) {
+		return nil
+	}
+	readyPods, probeOk, err := action.probeReadiness(ctx, environment, integration, runningPods)
 	if err != nil {
 		return err
 	}
-
-	if done, err := controller.checkReadyCondition(ctx); done || err != nil {
-		return err
-	}
-	if done := checkPodStatuses(integration, pendingPods, runningPods); done {
+	if !probeOk {
+		integration.Status.Phase = v1.IntegrationPhaseError
 		return nil
 	}
-	integration.Status.Phase = v1.IntegrationPhaseRunning
-
-	readyPods, unreadyPods := filterPodsByReadyStatus(runningPods, controller.getPodSpec())
 	if done := controller.updateReadyCondition(readyPods); done {
+		integration.Status.Phase = v1.IntegrationPhaseRunning
 		return nil
-	}
-	if err := action.probeReadiness(ctx, environment, integration, unreadyPods); err != nil {
-		return err
 	}
 
 	return nil
 }
 
-func checkPodStatuses(integration *v1.Integration, pendingPods []corev1.Pod, runningPods []corev1.Pod) bool {
+func arePodsFailingStatuses(integration *v1.Integration, pendingPods []corev1.Pod, runningPods []corev1.Pod) bool {
 	// Check Pods statuses
 	for _, pod := range pendingPods {
 		// Check the scheduled condition
-		if scheduled := kubernetes.GetPodCondition(pod, corev1.PodScheduled); scheduled != nil && scheduled.Status == corev1.ConditionFalse && scheduled.Reason == "Unschedulable" {
+		if scheduled := kubernetes.GetPodCondition(pod, corev1.PodScheduled); scheduled != nil &&
+			scheduled.Status == corev1.ConditionFalse &&
+			scheduled.Reason == "Unschedulable" {
 			integration.Status.Phase = v1.IntegrationPhaseError
 			integration.SetReadyConditionError(scheduled.Message)
 			return true
@@ -335,125 +511,134 @@ func checkPodStatuses(integration *v1.Integration, pendingPods []corev1.Pod, run
 	return false
 }
 
-func filterPodsByReadyStatus(runningPods []corev1.Pod, podSpec corev1.PodSpec) ([]corev1.Pod, []corev1.Pod) {
-	var readyPods []corev1.Pod
-	var unreadyPods []corev1.Pod
-	for _, pod := range runningPods {
-		// We compare the Integration PodSpec to that of the Pod in order to make
-		// sure we account for up-to-date version.
-		if !comparePodSpec(podSpec, pod.Spec) {
-			continue
-		}
-		ready := kubernetes.GetPodCondition(pod, corev1.PodReady)
-		if ready == nil {
-			continue
-		}
-		switch ready.Status {
-		case corev1.ConditionTrue:
-			// We still account terminating Pods to handle rolling deployments
-			readyPods = append(readyPods, pod)
-		case corev1.ConditionFalse:
-			if pod.DeletionTimestamp != nil {
-				continue
-			}
-			unreadyPods = append(unreadyPods, pod)
-		}
-	}
-
-	return readyPods, unreadyPods
-}
-
-// comparePodSpec compares given pod spec according to integration specific information (e.g. digest, container image).
-func comparePodSpec(runningPodSpec corev1.PodSpec, referencePod corev1.PodSpec) bool {
-	runningPodContainer := findIntegrationContainer(runningPodSpec)
-	referencePodContainer := findIntegrationContainer(referencePod)
-
-	if runningPodContainer == nil || referencePodContainer == nil {
-		return false
-	}
-
-	// integration digest must be the same
-	if getIntegrationDigest(runningPodContainer.Env) != getIntegrationDigest(referencePodContainer.Env) {
-		return false
-	}
-
-	// integration container image must be the same (same integration kit)
-	if runningPodContainer.Image != referencePodContainer.Image {
-		return false
-	}
-
-	return true
-}
-
-func getIntegrationDigest(envs []corev1.EnvVar) string {
-	for _, env := range envs {
-		if env.Name == digest.IntegrationDigestEnvVar {
-			return env.Value
-		}
-	}
-
-	return ""
-}
-
-func findIntegrationContainer(spec corev1.PodSpec) *corev1.Container {
-	for _, c := range spec.Containers {
-		if c.Name == "integration" {
-			return &c
-		}
-	}
-
-	return nil
-}
-
 // probeReadiness calls the readiness probes of the non-ready Pods directly to retrieve insights from the Camel runtime.
-func (action *monitorAction) probeReadiness(ctx context.Context, environment *trait.Environment, integration *v1.Integration, unreadyPods []corev1.Pod) error {
-	var runtimeNotReadyMessages []string
-	for i := range unreadyPods {
-		pod := &unreadyPods[i]
-		if ready := kubernetes.GetPodCondition(*pod, corev1.PodReady); ready.Reason != "ContainersNotReady" {
+// The func return the number of readyPods, the success of the probe and any error may have happened during its execution.
+func (action *monitorAction) probeReadiness(ctx context.Context, environment *trait.Environment, integration *v1.Integration, pods []corev1.Pod) (int32, bool, error) {
+	// as a default we assume the Integration is Ready
+	readyCondition := v1.IntegrationCondition{
+		Type:   v1.IntegrationConditionReady,
+		Status: corev1.ConditionTrue,
+		Pods:   make([]v1.PodCondition, len(pods)),
+	}
+
+	readyPods := int32(0)
+	unreadyPods := int32(0)
+
+	runtimeReady := true
+	runtimeFailed := false
+	probeReadinessOk := true
+
+	for i := range pods {
+		pod := &pods[i]
+		readyCondition.Pods[i].Name = pod.Name
+		for p := range pod.Status.Conditions {
+			if pod.Status.Conditions[p].Type == corev1.PodReady {
+				readyCondition.Pods[i].Condition = pod.Status.Conditions[p]
+				break
+			}
+		}
+		// If it's in ready status, then we don't care to probe.
+		if ready := kubernetes.GetPodCondition(*pod, corev1.PodReady); ready.Status == corev1.ConditionTrue {
+			readyPods++
 			continue
 		}
+		unreadyPods++
 		container := getIntegrationContainer(environment, pod)
 		if container == nil {
-			return fmt.Errorf("integration container not found in Pod %s/%s", pod.Namespace, pod.Name)
+			return readyPods, false, fmt.Errorf("integration container not found in Pod %s/%s", pod.Namespace, pod.Name)
 		}
+
+		// TODO: this code must be moved to a dedicated function
+		//
+		//nolint:nestif
 		if probe := container.ReadinessProbe; probe != nil && probe.HTTPGet != nil {
 			body, err := proxyGetHTTPProbe(ctx, action.client, probe, pod, container)
+			// When invoking the HTTP probe, the kubernetes client exposes a very
+			// specific behavior:
+			//
+			// - if there is no error, that means the pod in not ready just because
+			//   the probe has to be called few time as per configuration, so it means
+			//   it's not ready, but the probe is OK, and the pod could become ready
+			//   at some point
+			// - if the error is Service Unavailable (HTTP 503) then it means the pod
+			//   is not ready and the probe is failing, in this case we can use the
+			//   response to scrape for camel info
+			//
+			// Here an example of a failed probe (from curl):
+			//
+			//   Trying 127.0.0.1:8080...
+			//   TCP_NODELAY set
+			//   Connected to localhost (127.0.0.1) port 8080 (#0)
+			//   GET /q/health/ready HTTP/1.1
+			//   Host: localhost:8080
+			//   User-Agent: curl/7.68.0
+			//   Accept: */*
+			//
+			//   Mark bundle as not supporting multiuse
+			//   HTTP/1.1 503 Service Unavailable
+			//   content-type: application/json; charset=UTF-8
+			//   content-length: 871
+			//
+			//   {
+			//     "status": "DOWN",
+			//     "checks": [ {
+			//       "name": "camel-routes",
+			//       "status": "DOWN",
+			//       "data": {
+			//         "route.id": "route1",
+			//         "route.status": "Stopped",
+			//         "check.kind": "READINESS"
+			//       }
+			//     }]
+			//   }
 			if err == nil {
 				continue
 			}
+
 			if errors.Is(err, context.DeadlineExceeded) {
-				runtimeNotReadyMessages = append(runtimeNotReadyMessages, fmt.Sprintf("readiness probe timed out for Pod %s/%s", pod.Namespace, pod.Name))
+				readyCondition.Pods[i].Condition.Message = fmt.Sprintf("readiness probe timed out for Pod %s/%s", pod.Namespace, pod.Name)
+				runtimeReady = false
 				continue
 			}
 			if !k8serrors.IsServiceUnavailable(err) {
-				runtimeNotReadyMessages = append(runtimeNotReadyMessages, fmt.Sprintf("readiness probe failed for Pod %s/%s: %s", pod.Namespace, pod.Name, err.Error()))
+				readyCondition.Pods[i].Condition.Message = fmt.Sprintf("readiness probe failed for Pod %s/%s: %s", pod.Namespace, pod.Name, err.Error())
+				runtimeReady = false
 				continue
 			}
+
 			health, err := NewHealthCheck(body)
 			if err != nil {
-				return err
+				return readyPods, false, err
 			}
 			for _, check := range health.Checks {
-				if check.Status == HealthCheckStateUp {
+				if check.Status == v1.HealthCheckStatusUp {
 					continue
 				}
-				if _, ok := check.Data[runtimeHealthCheckErrorMessage]; ok {
-					integration.Status.Phase = v1.IntegrationPhaseError
-				}
-				runtimeNotReadyMessages = append(runtimeNotReadyMessages, fmt.Sprintf("Pod %s runtime is not ready: %s", pod.Name, check.Data))
+
+				runtimeReady = false
+				runtimeFailed = true
+
+				readyCondition.Pods[i].Health = append(readyCondition.Pods[i].Health, check)
 			}
 		}
 	}
-	if len(runtimeNotReadyMessages) > 0 {
-		reason := v1.IntegrationConditionRuntimeNotReadyReason
-		if integration.Status.Phase == v1.IntegrationPhaseError {
-			reason = v1.IntegrationConditionErrorReason
-		}
-		integration.SetReadyCondition(corev1.ConditionFalse, reason, fmt.Sprintf("%s", runtimeNotReadyMessages))
+
+	if runtimeFailed {
+		probeReadinessOk = false
+		readyCondition.Reason = v1.IntegrationConditionErrorReason
+		readyCondition.Status = corev1.ConditionFalse
+		readyCondition.Message = fmt.Sprintf("%d/%d pods are not ready", unreadyPods, unreadyPods+readyPods)
+		integration.Status.SetConditions(readyCondition)
+	}
+	if !runtimeReady {
+		probeReadinessOk = false
+		readyCondition.Reason = v1.IntegrationConditionRuntimeNotReadyReason
+		readyCondition.Status = corev1.ConditionFalse
+		readyCondition.Message = fmt.Sprintf("%d/%d pods are not ready", unreadyPods, unreadyPods+readyPods)
+		integration.Status.SetConditions(readyCondition)
 	}
 
-	return nil
+	return readyPods, probeReadinessOk, nil
 }
 
 func findHighestPriorityReadyKit(kits []v1.IntegrationKit) (*v1.IntegrationKit, error) {

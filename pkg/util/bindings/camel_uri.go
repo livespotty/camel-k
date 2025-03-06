@@ -18,19 +18,21 @@ limitations under the License.
 package bindings
 
 import (
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
-	"github.com/apache/camel-k/pkg/util/uri"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/uri"
 )
 
 // CamelURIBindingProvider converts an explicit URI into a Camel endpoint.
 // It's used as fallback if the URI scheme is not known by other providers.
 type CamelURIBindingProvider struct{}
 
+// ID --.
 func (k CamelURIBindingProvider) ID() string {
 	return "camel-uri"
 }
 
-func (k CamelURIBindingProvider) Translate(ctx BindingContext, endpointCtx EndpointContext, e v1alpha1.Endpoint) (*Binding, error) {
+// Translate --.
+func (k CamelURIBindingProvider) Translate(ctx BindingContext, endpointCtx EndpointContext, e v1.Endpoint) (*Binding, error) {
 	if e.URI == nil {
 		// works only on uris
 		return nil, nil
@@ -48,6 +50,7 @@ func (k CamelURIBindingProvider) Translate(ctx BindingContext, endpointCtx Endpo
 	}, nil
 }
 
+// Order --.
 func (k CamelURIBindingProvider) Order() int {
 	// Using it as fallback
 	return OrderLast

@@ -24,10 +24,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/platform"
-	"github.com/apache/camel-k/pkg/trait"
-	"github.com/apache/camel-k/pkg/util/camel"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
 )
 
 // ******************************
@@ -47,6 +45,7 @@ To configure your bash shell to load completions for each session add to your ba
 . <(kamel completion bash)
 `
 
+//nolint:dupword
 var bashCompletionFunction = `
 __kamel_dependency_type() {
     case ${cur} in
@@ -71,12 +70,6 @@ __kamel_dependency_type() {
     esac
 }
 
-__kamel_traits() {
-    local type_list="` + strings.Join(trait.NewCatalog(nil).ComputeTraitsProperties(), " ") + `"
-    COMPREPLY=( $( compgen -W "${type_list}" -- "$cur") )
-    compopt -o nospace
-}
-
 __kamel_languages() {
     local type_list="js groovy kotlin java xml"
     COMPREPLY=( $( compgen -W "${type_list}" -- "$cur") )
@@ -93,13 +86,26 @@ __kamel_kubectl_get_servicebinding() {
     local kubectl_out
     local service_names
     local services_list
+    local namespace_condition
+
+    if command -v awk &> /dev/null ; then
+        local namespace_config=$(${COMP_WORDS[0]} config --list | awk '/default-namespace/{print $2}')
+        if [ ! -z $namespace_config ]; then
+            namespace_condition=$(echo "--namespace ${namespace_config}")
+        fi
+    fi
+
+    local namespace_flag=$(echo "${flaghash['-n']}${flaghash['--namespace']}")
+    if [ ! -z $namespace_flag ]; then
+        namespace_condition=$(echo "--namespace ${namespace_flag}")
+    fi
 
     template="{{ range .items  }}{{ .metadata.name }} {{ end }}"
-    template_gvkn="{{ range .items  }}{{ .kind  }}/{{ .apiVersion  }}/{{ .metadata.name }} {{ end }}" 
-    if kubectl_out=$(kubectl get -o template --template="${template}" crd -l service.binding/provisioned-service=true 2>/dev/null); then
+    template_gvkn="{{ range .items  }}{{ .kind  }}/{{ .apiVersion  }}/{{ .metadata.name }} {{ end }}"
+    if kubectl_out=$(kubectl get -o template --template="${template}" ${namespace_condition} crd -l service.binding/provisioned-service=true 2>/dev/null); then
         kubectl_out="${kubectl_out// /,}"
         service_names="${kubectl_out}servicebinding"
-        if kubectl_out=$(kubectl get -o template --template="${template_gvkn}" ${service_names} 2>/dev/null); then
+        if kubectl_out=$(kubectl get -o template --template="${template_gvkn}" ${namespace_condition} ${service_names} 2>/dev/null); then
             for resource in  $kubectl_out
             do
                name=$(echo ${resource} | cut -d'/' -f 4)
@@ -116,10 +122,23 @@ __kamel_kubectl_get_servicebinding() {
 __kamel_kubectl_get_configmap() {
     local template
     local kubectl_out
+    local namespace_condition
+
+    if command -v awk &> /dev/null ; then
+        local namespace_config=$(${COMP_WORDS[0]} config --list | awk '/default-namespace/{print $2}')
+        if [ ! -z $namespace_config ]; then
+            namespace_condition=$(echo "--namespace ${namespace_config}")
+        fi
+    fi
+
+    local namespace_flag=$(echo "${flaghash['-n']}${flaghash['--namespace']}")
+    if [ ! -z $namespace_flag ]; then
+        namespace_condition=$(echo "--namespace ${namespace_flag}")
+    fi
 
     template="{{ range .items  }}{{ .metadata.name }} {{ end }}"
 
-    if kubectl_out=$(kubectl get -o template --template="${template}" configmap 2>/dev/null); then
+    if kubectl_out=$(kubectl get -o template --template="${template}" ${namespace_condition} configmap 2>/dev/null); then
         COMPREPLY=( $( compgen -W "${kubectl_out}" -- "$cur" ) )
     fi
 }
@@ -127,10 +146,23 @@ __kamel_kubectl_get_configmap() {
 __kamel_kubectl_get_secret() {
     local template
     local kubectl_out
+    local namespace_condition
+
+    if command -v awk &> /dev/null ; then
+        local namespace_config=$(${COMP_WORDS[0]} config --list | awk '/default-namespace/{print $2}')
+        if [ ! -z $namespace_config ]; then
+            namespace_condition=$(echo "--namespace ${namespace_config}")
+        fi
+    fi
+
+    local namespace_flag=$(echo "${flaghash['-n']}${flaghash['--namespace']}")
+    if [ ! -z $namespace_flag ]; then
+        namespace_condition=$(echo "--namespace ${namespace_flag}")
+    fi
 
     template="{{ range .items  }}{{ .metadata.name }} {{ end }}"
 
-    if kubectl_out=$(kubectl get -o template --template="${template}" secret 2>/dev/null); then
+    if kubectl_out=$(kubectl get -o template --template="${template}" ${namespace_condition} secret 2>/dev/null); then
         COMPREPLY=( $( compgen -W "${kubectl_out}" -- "$cur" ) )
     fi
 }
@@ -138,10 +170,23 @@ __kamel_kubectl_get_secret() {
 __kamel_kubectl_get_integrations() {
     local template
     local kubectl_out
+    local namespace_condition
+
+    if command -v awk &> /dev/null ; then
+        local namespace_config=$(${COMP_WORDS[0]} config --list | awk '/default-namespace/{print $2}')
+        if [ ! -z $namespace_config ]; then
+            namespace_condition=$(echo "--namespace ${namespace_config}")
+        fi
+    fi
+
+    local namespace_flag=$(echo "${flaghash['-n']}${flaghash['--namespace']}")
+    if [ ! -z $namespace_flag ]; then
+        namespace_condition=$(echo "--namespace ${namespace_flag}")
+    fi
 
     template="{{ range .items  }}{{ .metadata.name }} {{ end }}"
 
-    if kubectl_out=$(kubectl get -o template --template="${template}" integrations 2>/dev/null); then
+    if kubectl_out=$(kubectl get -o template --template="${template}" ${namespace_condition} integrations 2>/dev/null); then
         COMPREPLY=( $( compgen -W "${kubectl_out}" -- "$cur" ) )
     fi
 }
@@ -149,10 +194,23 @@ __kamel_kubectl_get_integrations() {
 __kamel_kubectl_get_integrationkits() {
     local template
     local kubectl_out
+    local namespace_condition
+
+    if command -v awk &> /dev/null ; then
+        local namespace_config=$(${COMP_WORDS[0]} config --list | awk '/default-namespace/{print $2}')
+        if [ ! -z $namespace_config ]; then
+            namespace_condition=$(echo "--namespace ${namespace_config}")
+        fi
+    fi
+
+    local namespace_flag=$(echo "${flaghash['-n']}${flaghash['--namespace']}")
+    if [ ! -z $namespace_flag ]; then
+        namespace_condition=$(echo "--namespace ${namespace_flag}")
+    fi
 
     template="{{ range .items  }}{{ .metadata.name }} {{ end }}"
 
-    if kubectl_out=$(kubectl get -o template --template="${template}" integrationkits 2>/dev/null); then
+    if kubectl_out=$(kubectl get -o template --template="${template}" ${namespace_condition} integrationkits 2>/dev/null); then
         COMPREPLY=( $( compgen -W "${kubectl_out}" -- "$cur" ) )
     fi
 }
@@ -160,19 +218,75 @@ __kamel_kubectl_get_integrationkits() {
 __kamel_kubectl_get_non_platform_integrationkits() {
     local template
     local kubectl_out
+    local namespace_condition
+
+    if command -v awk &> /dev/null ; then
+        local namespace_config=$(${COMP_WORDS[0]} config --list | awk '/default-namespace/{print $2}')
+        if [ ! -z $namespace_config ]; then
+            namespace_condition=$(echo "--namespace ${namespace_config}")
+        fi
+    fi
+
+    local namespace_flag=$(echo "${flaghash['-n']}${flaghash['--namespace']}")
+    if [ ! -z $namespace_flag ]; then
+        namespace_condition=$(echo "--namespace ${namespace_flag}")
+    fi
 
     template="{{ range .items  }}{{ .metadata.name }} {{ end }}"
     label_condition="camel.apache.org/kit.type!=platform"
 
-    if kubectl_out=$(kubectl get -l ${label_condition} -o template --template="${template}" integrationkits 2>/dev/null); then
+    if kubectl_out=$(kubectl get -l ${label_condition} -o template --template="${template}" ${namespace_condition} integrationkits 2>/dev/null); then
         COMPREPLY=( $( compgen -W "${kubectl_out}" -- "$cur" ) )
     fi
 }
 
-__kamel_kubectl_get_known_integrationkits() {
-    local type_list="` + strings.Join(platform.GetKitsNames(), " ") + `"
-    COMPREPLY=( $( compgen -W "${type_list}" -- "$cur") )
-    compopt -o nospace
+__kamel_kubectl_get_kamelets() {
+    local template
+    local kubectl_out
+    local namespace_condition
+
+    if command -v awk &> /dev/null ; then
+        local namespace_config=$(${COMP_WORDS[0]} config --list | awk '/default-namespace/{print $2}')
+        if [ ! -z $namespace_config ]; then
+            namespace_condition=$(echo "--namespace ${namespace_config}")
+        fi
+    fi
+
+    local namespace_flag=$(echo "${flaghash['-n']}${flaghash['--namespace']}")
+    if [ ! -z $namespace_flag ]; then
+        namespace_condition=$(echo "--namespace ${namespace_flag}")
+    fi
+
+    template="{{ range .items  }}{{ .metadata.name }} {{ end }}"
+
+    if kubectl_out=$(kubectl get -o template --template="${template}" ${namespace_condition} kamelets 2>/dev/null); then
+        COMPREPLY=( $( compgen -W "${kubectl_out}" -- "$cur" ) )
+    fi
+}
+
+__kamel_kubectl_get_non_bundled_non_readonly_kamelets() {
+    local template
+    local kubectl_out
+    local namespace_condition
+
+    if command -v awk &> /dev/null ; then
+        local namespace_config=$(${COMP_WORDS[0]} config --list | awk '/default-namespace/{print $2}')
+        if [ ! -z $namespace_config ]; then
+            namespace_condition=$(echo "--namespace ${namespace_config}")
+        fi
+    fi
+
+    local namespace_flag=$(echo "${flaghash['-n']}${flaghash['--namespace']}")
+    if [ ! -z $namespace_flag ]; then
+        namespace_condition=$(echo "--namespace ${namespace_flag}")
+    fi
+
+    template="{{ range .items  }}{{ .metadata.name }} {{ end }}"
+    label_conditions="camel.apache.org/kamelet.bundled=false,camel.apache.org/kamelet.readonly=false"
+
+    if kubectl_out=$(kubectl get -l ${label_conditions} -o template --template="${template}" ${namespace_condition} kamelets 2>/dev/null); then
+        COMPREPLY=( $( compgen -W "${kubectl_out}" -- "$cur" ) )
+    fi
 }
 
 __custom_func() {
@@ -185,6 +299,10 @@ __custom_func() {
             __kamel_kubectl_get_integrationkits
             return
             ;;
+        kamel_describe_kamelet)
+            __kamel_kubectl_get_kamelets
+            return
+            ;;
         kamel_delete)
             __kamel_kubectl_get_integrations
             return
@@ -193,8 +311,20 @@ __custom_func() {
             __kamel_kubectl_get_integrations
             return
             ;;
+        kamel_get)
+            __kamel_kubectl_get_integrations
+            return
+            ;;
         kamel_kit_delete)
             __kamel_kubectl_get_non_platform_integrationkits
+            return
+            ;;
+        kamel_kit_get)
+            __kamel_kubectl_get_integrationkits
+            return
+            ;;
+        kamel_kamelet_delete)
+            __kamel_kubectl_get_non_bundled_non_readonly_kamelets
             return
             ;;
         *)
@@ -211,9 +341,10 @@ __custom_func() {
 
 func newCmdCompletionBash(root *cobra.Command) *cobra.Command {
 	return &cobra.Command{
-		Use:   "bash",
-		Short: "Generates bash completion scripts",
-		Long:  bashCompletionCmdLongDescription,
+		Use:        "bash",
+		Short:      "Generates bash completion scripts",
+		Long:       bashCompletionCmdLongDescription,
+		Deprecated: "no longer supported.",
 		Run: func(_ *cobra.Command, _ []string) {
 			err := root.GenBashCompletion(root.OutOrStdout())
 			if err != nil {
@@ -294,7 +425,7 @@ func configureBashAnnotationForFlag(command *cobra.Command, flagName string, ann
 func computeCamelDependencies() string {
 	catalog, err := camel.DefaultCatalog()
 	if err != nil || catalog == nil {
-		catalog = camel.NewRuntimeCatalog(v1.CamelCatalog{}.Spec)
+		catalog = camel.NewRuntimeCatalog(v1.CamelCatalog{})
 	}
 
 	results := make([]string, 0, len(catalog.Artifacts)+len(catalog.Loaders))

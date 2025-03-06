@@ -23,7 +23,7 @@ import (
 
 	yaml2 "gopkg.in/yaml.v2"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
 // TemplateToYamlDSL converts a kamelet template into its Camel YAML DSL equivalent.
@@ -41,7 +41,7 @@ func TemplateToYamlDSL(template v1.Template, id string) ([]byte, error) {
 		jsondata["id"] = id
 	}
 	templateWrapper := make(map[string]interface{}, 2)
-	templateWrapper["template"] = jsondata
+	templateWrapper["routeTemplate"] = jsondata
 	listWrapper := make([]interface{}, 0, 1)
 	listWrapper = append(listWrapper, templateWrapper)
 	yamldata, err := yaml2.Marshal(listWrapper)

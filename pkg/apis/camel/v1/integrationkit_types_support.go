@@ -18,11 +18,16 @@ limitations under the License.
 package v1
 
 import (
+	"fmt"
+	"path/filepath"
 	"strconv"
 
+	"github.com/apache/camel-k/v2/pkg/util/sets"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+const IntegrationKitLabel = "camel.apache.org/integrationkit"
 
 func NewIntegrationKit(namespace string, name string) *IntegrationKit {
 	return &IntegrationKit{
@@ -54,7 +59,7 @@ func (in *IntegrationKitSpec) Configurations() []ConfigurationSpec {
 	return in.Configuration
 }
 
-// SetOperatorID sets the given operator id as an annotation
+// SetOperatorID sets the given operator id as an annotation.
 func (in *IntegrationKit) SetOperatorID(operatorID string) {
 	SetAnnotation(&in.ObjectMeta, OperatorIDAnnotation, operatorID)
 }
@@ -97,6 +102,28 @@ func (in *IntegrationKit) HasHigherPriorityThan(kit *IntegrationKit) bool {
 		}
 	}
 	return p1 > p2
+}
+
+// IsExternal returns true for external IntegrationKits (integration kit not created by the operator).
+func (in *IntegrationKit) IsExternal() bool {
+	return in.Labels[IntegrationKitTypeLabel] == IntegrationKitTypeExternal
+}
+
+// Deprecated: synthetic Integration Kits are replaced by syntentic Integrations.
+// IsSynthetic returns true for synthetic IntegrationKits.
+func (in *IntegrationKit) IsSynthetic() bool {
+	return in.Labels[IntegrationKitTypeLabel] == IntegrationKitTypeSynthetic
+}
+
+// HasCapability returns true if the Kit is enabled with such a capability.
+func (in *IntegrationKit) HasCapability(capability string) bool {
+	for _, cap := range in.Spec.Capabilities {
+		if cap == capability {
+			return true
+		}
+	}
+
+	return false
 }
 
 // GetCondition returns the condition with the provided type.
@@ -172,36 +199,47 @@ func (in *IntegrationKitStatus) RemoveCondition(condType IntegrationKitCondition
 	in.Conditions = newConditions
 }
 
-var _ ResourceCondition = IntegrationKitCondition{}
+var _ ResourceCondition = &IntegrationKitCondition{}
 
 func (in *IntegrationKitStatus) GetConditions() []ResourceCondition {
 	res := make([]ResourceCondition, 0, len(in.Conditions))
 	for _, c := range in.Conditions {
-		res = append(res, c)
+		res = append(res, &c)
 	}
 	return res
 }
 
-func (c IntegrationKitCondition) GetType() string {
+// GetDependenciesPaths returns the set of dependency paths.
+func (in *IntegrationKitStatus) GetDependenciesPaths() *sets.Set {
+	s := sets.NewSet()
+	for _, dep := range in.Artifacts {
+		path := filepath.Dir(dep.Target)
+		s.Add(fmt.Sprintf("%s/*", path))
+	}
+
+	return s
+}
+
+func (c *IntegrationKitCondition) GetType() string {
 	return string(c.Type)
 }
 
-func (c IntegrationKitCondition) GetStatus() corev1.ConditionStatus {
+func (c *IntegrationKitCondition) GetStatus() corev1.ConditionStatus {
 	return c.Status
 }
 
-func (c IntegrationKitCondition) GetLastUpdateTime() metav1.Time {
+func (c *IntegrationKitCondition) GetLastUpdateTime() metav1.Time {
 	return c.LastUpdateTime
 }
 
-func (c IntegrationKitCondition) GetLastTransitionTime() metav1.Time {
+func (c *IntegrationKitCondition) GetLastTransitionTime() metav1.Time {
 	return c.LastTransitionTime
 }
 
-func (c IntegrationKitCondition) GetReason() string {
+func (c *IntegrationKitCondition) GetReason() string {
 	return c.Reason
 }
 
-func (c IntegrationKitCondition) GetMessage() string {
+func (c *IntegrationKitCondition) GetMessage() string {
 	return c.Message
 }

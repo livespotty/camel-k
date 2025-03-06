@@ -18,31 +18,34 @@ limitations under the License.
 package camel
 
 import (
-	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/Masterminds/semver"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/log"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/log"
 )
 
 var (
-	BasePath                  = "/etc/camel"
-	ConfDPath                 = path.Join(BasePath, "conf.d")
-	SourcesMountPath          = path.Join(BasePath, "sources")
-	ResourcesDefaultMountPath = path.Join(BasePath, "resources")
-	ConfigResourcesMountPath  = path.Join(ConfDPath, "_resources")
-	ConfigConfigmapsMountPath = path.Join(ConfDPath, "_configmaps")
-	ConfigSecretsMountPath    = path.Join(ConfDPath, "_secrets")
-	ServiceBindingsMountPath  = path.Join(ConfDPath, "_servicebindings")
+	BasePath         = "/etc/camel"
+	ConfDPath        = filepath.Join(BasePath, "conf.d")
+	ResourcesDPath   = filepath.Join(BasePath, "resources.d")
+	SourcesMountPath = filepath.Join(BasePath, "sources")
+	// Deprecated: replaced by /etc/camel/resources.d/[_configmaps/_secrets] (ResourcesConfigmapsMountPath/ResourcesSecretsMountPath).
+	ResourcesDefaultMountPath    = filepath.Join(BasePath, "resources")
+	ResourcesConfigmapsMountPath = filepath.Join(ResourcesDPath, "_configmaps")
+	ResourcesSecretsMountPath    = filepath.Join(ResourcesDPath, "_secrets")
+	ConfigConfigmapsMountPath    = filepath.Join(ConfDPath, "_configmaps")
+	ConfigSecretsMountPath       = filepath.Join(ConfDPath, "_secrets")
+	ServiceBindingsMountPath     = filepath.Join(ConfDPath, "_servicebindings")
 )
 
 func findBestMatch(catalogs []v1.CamelCatalog, runtime v1.RuntimeSpec) (*RuntimeCatalog, error) {
 	for _, catalog := range catalogs {
 		if catalog.Spec.Runtime.Version == runtime.Version && catalog.Spec.Runtime.Provider == runtime.Provider {
-			return NewRuntimeCatalog(catalog.Spec), nil
+			return NewRuntimeCatalog(catalog), nil
 		}
 	}
 
@@ -54,7 +57,7 @@ func findBestMatch(catalogs []v1.CamelCatalog, runtime v1.RuntimeSpec) (*Runtime
 	cc := newCatalogVersionCollection(catalogs)
 	for _, c := range cc {
 		if rc.Check(c.RuntimeVersion) {
-			return NewRuntimeCatalog(c.Catalog.Spec), nil
+			return NewRuntimeCatalog(*c.Catalog), nil
 		}
 	}
 
@@ -102,7 +105,7 @@ func newCatalogVersionCollection(catalogs []v1.CamelCatalog) CatalogVersionColle
 }
 
 func getDependency(artifact v1.CamelArtifact, runtimeProvider v1.RuntimeProvider) string {
-	if runtimeProvider == v1.RuntimeProviderQuarkus {
+	if runtimeProvider.IsQuarkusBased() {
 		return strings.Replace(artifact.ArtifactID, "camel-quarkus-", "camel:", 1)
 	}
 	return strings.Replace(artifact.ArtifactID, "camel-", "camel:", 1)

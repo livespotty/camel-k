@@ -25,33 +25,22 @@ import (
 	"strings"
 	"time"
 
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
 
-type HealthCheckState string
-
 const (
-	HealthCheckStateDown HealthCheckState = "DOWN"
-	HealthCheckStateUp   HealthCheckState = "UP"
+	// The key used for propagating error details from Camel health to MicroProfile Health
+	// (See CAMEL-17138).
+	HealthCheckErrorMessage = "error.message"
 )
 
-type HealthCheck struct {
-	Status HealthCheckState      `json:"status,omitempty"`
-	Checks []HealthCheckResponse `json:"checks,omitempty"`
-}
-
-type HealthCheckResponse struct {
-	Name   string                 `json:"name,omitempty"`
-	Status HealthCheckState       `json:"status,omitempty"`
-	Data   map[string]interface{} `json:"data,omitempty"`
-}
-
-func NewHealthCheck(body []byte) (*HealthCheck, error) {
-	health := HealthCheck{}
-	err := json.Unmarshal(body, &health)
-	if err != nil {
+func NewHealthCheck(body []byte) (*v1.HealthCheck, error) {
+	health := v1.HealthCheck{}
+	if err := json.Unmarshal(body, &health); err != nil {
 		return nil, err
 	}
 
@@ -72,8 +61,10 @@ func proxyGetHTTPProbe(ctx context.Context, c kubernetes.Interface, p *corev1.Pr
 
 	probeCtx, cancel := context.WithTimeout(ctx, time.Duration(p.TimeoutSeconds)*time.Second)
 	defer cancel()
+
 	params := make(map[string]string)
-	return c.CoreV1().Pods(pod.Namespace).
+	return c.CoreV1().
+		Pods(pod.Namespace).
 		ProxyGet(strings.ToLower(string(p.HTTPGet.Scheme)), pod.Name, strconv.Itoa(port), p.HTTPGet.Path, params).
 		DoRaw(probeCtx)
 }

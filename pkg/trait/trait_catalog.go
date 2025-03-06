@@ -18,16 +18,16 @@ limitations under the License.
 package trait
 
 import (
-	"reflect"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
-	"github.com/fatih/structs"
-	"github.com/pkg/errors"
-
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/util/log"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/util/log"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/json"
 )
 
 // Catalog collects all information about traits in one place.
@@ -87,9 +87,10 @@ func (c *Catalog) TraitsForProfile(profile v1.TraitProfile) []Trait {
 	return res
 }
 
-func (c *Catalog) apply(environment *Environment) error {
+func (c *Catalog) apply(environment *Environment) ([]*TraitCondition, *v1.Traits, error) {
+	traitsConditions := []*TraitCondition{}
 	if err := c.Configure(environment); err != nil {
-		return err
+		return traitsConditions, nil, err
 	}
 	traits := c.traitsFor(environment)
 	environment.ConfiguredTraits = traits
@@ -102,47 +103,94 @@ func (c *Catalog) apply(environment *Environment) error {
 			continue
 		}
 		applicable = true
-		enabled, err := trait.Configure(environment)
-		if err != nil {
-			return err
+		enabled, condition, err := trait.Configure(environment)
+		if condition != nil {
+			traitsConditions = append(traitsConditions, condition)
 		}
-
+		if err != nil {
+			return traitsConditions, nil, fmt.Errorf("%s trait configuration failed: %w", trait.ID(), err)
+		}
 		if enabled {
 			err = trait.Apply(environment)
 			if err != nil {
-				return err
+				return traitsConditions, nil, fmt.Errorf("%s trait execution failed: %w", trait.ID(), err)
 			}
-
 			environment.ExecutedTraits = append(environment.ExecutedTraits, trait)
-
 			// execute post step processors
 			for _, processor := range environment.PostStepProcessors {
 				err := processor(environment)
 				if err != nil {
-					return errors.Wrap(err, "error executing post step action")
+					return traitsConditions, nil, fmt.Errorf("%s trait executing post step action failed: %w", trait.ID(), err)
 				}
 			}
 		}
 	}
-
-	traitIds := make([]string, 0)
-	for _, trait := range environment.ExecutedTraits {
-		traitIds = append(traitIds, string(trait.ID()))
+	cs, ts, err := c.executedTraitCondition(environment.ExecutedTraits)
+	if err != nil {
+		return traitsConditions, &ts, err
 	}
-	c.L.Debugf("Applied traits: %s", strings.Join(traitIds, ","))
+	traitsConditions = append(traitsConditions, cs)
 
 	if !applicable && environment.PlatformInPhase(v1.IntegrationPlatformPhaseReady) {
-		return errors.New("no trait can be executed because of no ready platform found")
+		return traitsConditions, nil, errors.New("no trait can be executed because of no ready platform found")
 	}
 
 	for _, processor := range environment.PostProcessors {
 		err := processor(environment)
 		if err != nil {
-			return errors.Wrap(err, "error executing post processor")
+			return traitsConditions, nil, fmt.Errorf("error executing post processor: %w", err)
 		}
 	}
 
-	return nil
+	return traitsConditions, &ts, nil
+}
+
+func (c *Catalog) executedTraitCondition(executedTrait []Trait) (*TraitCondition, v1.Traits, error) {
+	var traits v1.Traits
+	var traitMap = make(map[string]map[string]interface{})
+	traitIds := make([]string, 0)
+	for _, trait := range executedTrait {
+		data, err := json.Marshal(trait)
+		if err != nil {
+			return nil, traits, err
+		}
+		var traitIDMap map[string]interface{}
+		if err := json.Unmarshal(data, &traitIDMap); err != nil {
+			return nil, traits, err
+		}
+		if len(traitIDMap) > 0 {
+			if isAddon(string(trait.ID())) {
+				traitMap["addons"] = map[string]interface{}{
+					string(trait.ID()): traitIDMap,
+				}
+			} else {
+				traitMap[string(trait.ID())] = traitIDMap
+			}
+		}
+
+		traitIds = append(traitIds, string(trait.ID()))
+	}
+
+	traitData, err := json.Marshal(traitMap)
+	if err != nil {
+		return nil, traits, err
+	}
+	if err := json.Unmarshal(traitData, &traits); err != nil {
+		return nil, traits, err
+	}
+
+	message := fmt.Sprintf("Applied traits: %s", strings.Join(traitIds, ","))
+	c.L.Debug(message)
+
+	return NewIntegrationCondition("", v1.IntegrationConditionTraitInfo, corev1.ConditionTrue, TraitConfigurationReason, message), traits, nil
+}
+
+// Deprecated: remove this check when we include the addons traits into regular traits
+// see https://github.com/apache/camel-k/issues/5787
+// isAddon returns true if the trait is an addon.
+func isAddon(id string) bool {
+	return id == "master" || id == "keda" || id == "3scale" || id == "tracing" ||
+		id == "aws-secrets-manager" || id == "azure-key-vault" || id == "gcp-secret-manager" || id == "hashicorp-vault"
 }
 
 // GetTrait returns the trait with the given ID.
@@ -153,38 +201,6 @@ func (c *Catalog) GetTrait(id string) Trait {
 		}
 	}
 	return nil
-}
-
-// ComputeTraitsProperties returns all key/value configuration properties that can be used to configure traits.
-func (c *Catalog) ComputeTraitsProperties() []string {
-	results := make([]string, 0)
-	for _, trait := range c.AllTraits() {
-		trait := trait // pin
-		c.processFields(structs.Fields(trait), func(name string) {
-			results = append(results, string(trait.ID())+"."+name)
-		})
-	}
-
-	return results
-}
-
-func (c *Catalog) processFields(fields []*structs.Field, processor func(string)) {
-	for _, f := range fields {
-		if f.IsEmbedded() && f.IsExported() && f.Kind() == reflect.Struct {
-			c.processFields(f.Fields(), processor)
-		}
-
-		if f.IsEmbedded() {
-			continue
-		}
-
-		property := f.Tag("property")
-
-		if property != "" {
-			items := strings.Split(property, ",")
-			processor(items[0])
-		}
-	}
 }
 
 type Finder interface {

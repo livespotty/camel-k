@@ -20,102 +20,45 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
-	"path"
-	"path/filepath"
 	"reflect"
 	"strings"
-	"time"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/cmd/source"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/resource"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/resource"
 	"github.com/magiconair/properties"
 	"github.com/spf13/cobra"
-	corev1 "k8s.io/api/core/v1"
 )
 
 func addDependency(cmd *cobra.Command, it *v1.Integration, dependency string, catalog *camel.RuntimeCatalog) {
 	normalized := camel.NormalizeDependency(dependency)
-	camel.ValidateDependency(catalog, normalized, cmd)
+	camel.ValidateDependency(catalog, normalized, cmd.ErrOrStderr())
 	it.Spec.AddDependency(normalized)
 }
 
-func parseConfigAndGenCm(ctx context.Context, cmd *cobra.Command, c client.Client, config *resource.Config, integration *v1.Integration, enableCompression bool) (*corev1.ConfigMap, error) {
+func parseConfig(ctx context.Context, cmd *cobra.Command, c client.Client, config *resource.Config, integration *v1.Integration) error {
 	switch config.StorageType() {
 	case resource.StorageTypeConfigmap:
 		cm := kubernetes.LookupConfigmap(ctx, c, integration.Namespace, config.Name())
 		if cm == nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), "Warn:", config.Name(), "Configmap not found in", integration.Namespace, "namespace, make sure to provide it before the Integration can run")
 		} else if config.ContentType() != resource.ContentTypeData && cm.BinaryData != nil {
-			return nil, fmt.Errorf("you cannot provide a binary config, use a text file instead")
+			return fmt.Errorf("you cannot provide a binary config, use a text file instead")
 		}
 	case resource.StorageTypeSecret:
 		secret := kubernetes.LookupSecret(ctx, c, integration.Namespace, config.Name())
 		if secret == nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), "Warn:", config.Name(), "Secret not found in", integration.Namespace, "namespace, make sure to provide it before the Integration can run")
 		}
-	case resource.StorageTypeFile:
-		// Don't allow a binary non compressed resource
-		rawData, contentType, err := source.LoadRawContent(ctx, config.Name())
-		if err != nil {
-			return nil, err
-		}
-		if config.ContentType() != resource.ContentTypeData && !enableCompression && source.IsBinary(contentType) {
-			return nil, fmt.Errorf("you cannot provide a binary config, use a text file or check --resource flag instead")
-		}
-		resourceType := v1.ResourceTypeData
-		if config.ContentType() == resource.ContentTypeText {
-			resourceType = v1.ResourceTypeConfig
-		}
-		resourceSpec, err := binaryOrTextResource(path.Base(config.Name()), rawData, contentType, enableCompression, resourceType, config.DestinationPath())
-		if err != nil {
-			return nil, err
-		}
-
-		return resource.ConvertFileToConfigmap(ctx, c, config, integration.Namespace, integration.Name, resourceSpec.Content, resourceSpec.RawContent)
 	default:
 		// Should never reach this
-		return nil, fmt.Errorf("invalid option type %s", config.StorageType())
+		return fmt.Errorf("invalid option type %s", config.StorageType())
 	}
 
-	return nil, nil
-}
-
-func binaryOrTextResource(fileName string, data []byte, contentType string, base64Compression bool, resourceType v1.ResourceType, destinationPath string) (v1.ResourceSpec, error) {
-	resourceSpec := v1.ResourceSpec{
-		DataSpec: v1.DataSpec{
-			Name:        fileName,
-			Path:        destinationPath,
-			ContentKey:  fileName,
-			ContentType: contentType,
-			Compression: false,
-		},
-		Type: resourceType,
-	}
-
-	if !base64Compression && source.IsBinary(contentType) {
-		resourceSpec.RawContent = data
-		return resourceSpec, nil
-	}
-	// either is a text resource or base64 compression is enabled
-	if base64Compression {
-		content, err := source.CompressToString(data)
-		if err != nil {
-			return resourceSpec, err
-		}
-		resourceSpec.Content = content
-		resourceSpec.Compression = true
-	} else {
-		resourceSpec.Content = string(data)
-	}
-	return resourceSpec, nil
+	return nil
 }
 
 func filterFileLocation(maybeFileLocations []string) []string {
@@ -133,7 +76,11 @@ func keyValueProps(value string) (*properties.Properties, error) {
 	return properties.Load([]byte(value), properties.UTF8)
 }
 
+// Deprecated: won't be supported in future releases.
 func loadPropertiesFromSecret(ctx context.Context, c client.Client, ns string, name string) (*properties.Properties, error) {
+	if c == nil {
+		return nil, fmt.Errorf("cannot inspect Secrets in offline mode")
+	}
 	secret := kubernetes.LookupSecret(ctx, c, ns, name)
 	if secret == nil {
 		return nil, fmt.Errorf("%s secret not found in %s namespace, make sure to provide it before the Integration can run", name, ns)
@@ -145,7 +92,11 @@ func loadPropertiesFromSecret(ctx context.Context, c client.Client, ns string, n
 		})
 }
 
+// Deprecated: won't be supported in future releases.
 func loadPropertiesFromConfigMap(ctx context.Context, c client.Client, ns string, name string) (*properties.Properties, error) {
+	if c == nil {
+		return nil, fmt.Errorf("cannot inspect Configmaps in offline mode")
+	}
 	cm := kubernetes.LookupConfigmap(ctx, c, ns, name)
 	if cm == nil {
 		return nil, fmt.Errorf("%s configmap not found in %s namespace, make sure to provide it before the Integration can run", name, ns)
@@ -155,6 +106,7 @@ func loadPropertiesFromConfigMap(ctx context.Context, c client.Client, ns string
 		func(v reflect.Value) (*properties.Properties, error) { return keyValueProps(v.String()) })
 }
 
+// Deprecated: func supporting other deprecated funcs.
 func fromMapToProperties(data interface{}, toString func(reflect.Value) string, loadProperties func(reflect.Value) (*properties.Properties, error)) (*properties.Properties, error) {
 	result := properties.NewProperties()
 	m := reflect.ValueOf(data)
@@ -175,35 +127,45 @@ func fromMapToProperties(data interface{}, toString func(reflect.Value) string, 
 	return result, nil
 }
 
-// downloadDependency downloads the file located at the given URL into a temporary folder and returns the local path to the generated temporary file.
-func downloadDependency(ctx context.Context, url url.URL) (string, error) {
-	tctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(tctx, http.MethodGet, url.String(), nil)
-	if err != nil {
-		return "", err
-	}
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-	base := path.Base(url.Path)
-	if base == "." || base == "/" || filepath.Ext(base) == "" {
-		base = path.Base(url.String())
-		if base == "." || base == "/" {
-			base = "tmp"
+func validatePropertyFiles(propertyFiles []string) error {
+	for _, fileName := range propertyFiles {
+		if err := validatePropertyFile(fileName); err != nil {
+			return err
 		}
 	}
-	out, err := os.CreateTemp("", fmt.Sprintf("*.%s", base))
-	if err != nil {
-		return "", err
+
+	return nil
+}
+
+func validatePropertyFile(fileName string) error {
+	if !strings.HasSuffix(fileName, ".properties") {
+		return fmt.Errorf("supported property files must have a .properties extension: %s", fileName)
 	}
-	defer out.Close()
-	_, err = io.Copy(out, res.Body)
-	if err != nil {
-		return "", err
+
+	if file, err := os.Stat(fileName); err != nil {
+		return fmt.Errorf("unable to access property file %s", fileName)
+	} else if file.IsDir() {
+		return fmt.Errorf("property file %s is a directory", fileName)
 	}
-	return out.Name(), nil
+
+	return nil
+}
+
+func createCamelCatalog() (*camel.RuntimeCatalog, error) {
+	// Attempt to reuse existing Camel catalog if one is present
+	catalog, err := camel.DefaultCatalog()
+	if err != nil {
+		return nil, err
+	}
+
+	return catalog, nil
+}
+
+func extractTraitNames(traitProps []string) []string {
+	traitNameProps := make([]string, len(traitProps))
+	for i, tp := range traitProps {
+		splits := strings.Split(tp, ".")
+		traitNameProps[i] = splits[0]
+	}
+	return traitNameProps
 }

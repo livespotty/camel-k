@@ -19,54 +19,47 @@ package v1
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
-	"github.com/apache/camel-k/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestTraitsMerge(t *testing.T) {
 	t1 := Traits{
 		Container: &trait.ContainerTrait{
-			Trait: trait.Trait{
-				Configuration: configurationFromMap(t, map[string]interface{}{
-					"name": "test-container",
-				}),
-			},
-			Auto:        pointer.Bool(false),
+			Name:        "test-container",
+			Auto:        ptr.To(false),
 			ServicePort: 81,
 		},
 		Logging: &trait.LoggingTrait{
-			Color: pointer.Bool(false),
+			Color: ptr.To(false),
 			Level: "INFO",
 		},
 		Addons: map[string]AddonTrait{
 			"master": toAddonTrait(t, map[string]interface{}{
 				"resourceName": "test-lock",
 			}),
-			"tracing": toAddonTrait(t, map[string]interface{}{
+			"telemetry": toAddonTrait(t, map[string]interface{}{
 				"enabled": true,
 			}),
 		},
 	}
 	t2 := Traits{
 		Container: &trait.ContainerTrait{
-			Trait: trait.Trait{
-				Configuration: configurationFromMap(t, map[string]interface{}{
-					"port": 8081,
-				}),
-			},
+			Port:     8081,
 			PortName: "http-8081",
 		},
 		Logging: &trait.LoggingTrait{
-			Color: pointer.Bool(true),
+			Color: ptr.To(true),
 			Level: "DEBUG",
 		},
 		Addons: map[string]AddonTrait{
-			"tracing": toAddonTrait(t, map[string]interface{}{
+			"telemetry": toAddonTrait(t, map[string]interface{}{
 				"serviceName": "test-integration",
 			}),
 		},
@@ -77,19 +70,13 @@ func TestTraitsMerge(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotNil(t, t1.Container)
-	assert.False(t, pointer.BoolDeref(t1.Container.Auto, true))
+	assert.False(t, ptr.Deref(t1.Container.Auto, true))
 	assert.Equal(t, "http-8081", t1.Container.PortName)
-	assert.Equal(t, 81, t1.Container.ServicePort)
-	assert.Equal(t,
-		configurationFromMap(t, map[string]interface{}{
-			"name": "test-container",
-			"port": 8081,
-		}),
-		t1.Container.Configuration)
+	assert.Equal(t, int32(81), t1.Container.ServicePort)
 
 	// values from merged trait take precedence over the original ones
 	assert.NotNil(t, t1.Logging)
-	assert.True(t, pointer.BoolDeref(t1.Logging.Color, false))
+	assert.True(t, ptr.Deref(t1.Logging.Color, false))
 	assert.Equal(t, "DEBUG", t1.Logging.Level)
 
 	assert.NotNil(t, t1.Addons)
@@ -103,18 +90,158 @@ func TestTraitsMerge(t *testing.T) {
 			"enabled":     true,
 			"serviceName": "test-integration",
 		}),
-		t1.Addons["tracing"])
+		t1.Addons["telemetry"])
 }
 
-func configurationFromMap(t *testing.T, configMap map[string]interface{}) *trait.Configuration {
-	t.Helper()
+func TestIntegrationKitTraitsMerge(t *testing.T) {
+	t1 := IntegrationKitTraits{
+		Builder: &trait.BuilderTrait{
+			Properties: []string{
+				"b1=value_b1",
+			},
+		},
+		Camel: &trait.CamelTrait{
+			RuntimeVersion: "0.99.0",
+			Properties: []string{
+				"c1=value_c1",
+			},
+		},
+		Addons: map[string]AddonTrait{
+			"master": toAddonTrait(t, map[string]interface{}{
+				"resourceName": "test-lock",
+			}),
+			"telemetry": toAddonTrait(t, map[string]interface{}{
+				"enabled": true,
+			}),
+		},
+	}
+	t2 := IntegrationKitTraits{
+		Builder: &trait.BuilderTrait{
+			Properties: []string{
+				"b2=value_b2",
+			},
+		},
+		Quarkus: &trait.QuarkusTrait{
+			NativeBaseImage: "quay.io/quarkus/quarkus-micro-image:2.0",
+		},
+		Addons: map[string]AddonTrait{
+			"telemetry": toAddonTrait(t, map[string]interface{}{
+				"serviceName": "test-integration",
+			}),
+		},
+	}
 
-	data, err := json.Marshal(configMap)
+	err := t1.Merge(t2)
+
 	require.NoError(t, err)
 
-	return &trait.Configuration{
-		RawMessage: data,
+	assert.NotNil(t, t1.Builder)
+	assert.Equal(t, 1, len(t1.Builder.Properties))
+	assert.Equal(t, "b2=value_b2", t1.Builder.Properties[0])
+
+	assert.NotNil(t, t1.Camel)
+	assert.Equal(t, "0.99.0", t1.Camel.RuntimeVersion)
+	assert.Equal(t, 1, len(t1.Camel.Properties))
+	assert.Equal(t, "c1=value_c1", t1.Camel.Properties[0])
+
+	assert.NotNil(t, t1.Quarkus)
+	assert.Equal(t, "quay.io/quarkus/quarkus-micro-image:2.0", t1.Quarkus.NativeBaseImage)
+
+	assert.NotNil(t, t1.Addons)
+	assert.Equal(t,
+		toAddonTrait(t, map[string]interface{}{
+			"resourceName": "test-lock",
+		}),
+		t1.Addons["master"])
+	assert.Equal(t,
+		toAddonTrait(t, map[string]interface{}{
+			"enabled":     true,
+			"serviceName": "test-integration",
+		}),
+		t1.Addons["telemetry"])
+}
+
+func TestDecodeValueSourceValid(t *testing.T) {
+	res, err := DecodeValueSource("configmap:my-configmap", "defaultkey")
+	require.NoError(t, err)
+
+	assert.NotNil(t, res)
+	assert.Nil(t, res.SecretKeyRef)
+	assert.NotNil(t, res.ConfigMapKeyRef)
+	assert.Equal(t, "defaultkey", res.ConfigMapKeyRef.Key)
+
+	res, err = DecodeValueSource("configmap:my-configmap/my-key", "defaultkey")
+	require.NoError(t, err)
+
+	assert.NotNil(t, res)
+	assert.Nil(t, res.SecretKeyRef)
+	assert.NotNil(t, res.ConfigMapKeyRef)
+	assert.Equal(t, "my-key", res.ConfigMapKeyRef.Key)
+
+	res, err = DecodeValueSource("secret:my-secret/mykey", "defaultkey")
+	require.NoError(t, err)
+
+	assert.NotNil(t, res)
+	assert.Nil(t, res.ConfigMapKeyRef)
+	assert.NotNil(t, res.SecretKeyRef)
+	assert.Equal(t, "mykey", res.SecretKeyRef.Key)
+
+	res, err = DecodeValueSource("secret:my-secret", "defaultkey")
+	require.NoError(t, err)
+
+	assert.NotNil(t, res)
+	assert.Nil(t, res.ConfigMapKeyRef)
+	assert.NotNil(t, res.SecretKeyRef)
+	assert.Equal(t, "defaultkey", res.SecretKeyRef.Key)
+}
+
+func TestDecodeValueSourceInvalid(t *testing.T) {
+	testcases := []struct {
+		name         string
+		input        string
+		defaultKey   string
+		errorMessage string
+	}{
+		{
+			name:         "invalidResource",
+			input:        "invalid:my-resource",
+			defaultKey:   "defaultKey",
+			errorMessage: "invalidResource",
+		},
+		{
+			name:         "noResourceName",
+			input:        "secret:",
+			defaultKey:   "defaultKey",
+			errorMessage: "noResourceName",
+		},
+		{
+			name:         "invalidResourceName",
+			input:        "configmap:***",
+			defaultKey:   "defaultKey",
+			errorMessage: "errorMessage",
+		},
+		{
+			name:         "invalidResourceKey",
+			input:        "configmap:my-cm/-",
+			defaultKey:   "defaultKey",
+			errorMessage: "invalidResourceKey",
+		},
+		{
+			name:         "invalidResourceNameWithKey",
+			input:        "configmap:/my-key",
+			defaultKey:   "defaultKey",
+			errorMessage: "invalidResourceNameWithKey",
+		}}
+
+	for i, tc := range testcases {
+		t.Run(fmt.Sprintf("test-%d-%s", i, tc.name), func(t *testing.T) {
+			res, err := DecodeValueSource(tc.input, tc.defaultKey)
+			require.Error(t, err)
+			assert.Equal(t, ValueSource{}, res)
+			assert.Equal(t, err.Error(), "could not decode "+tc.input)
+		})
 	}
+
 }
 
 func toAddonTrait(t *testing.T, config map[string]interface{}) AddonTrait {

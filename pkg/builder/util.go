@@ -18,7 +18,7 @@ limitations under the License.
 package builder
 
 import (
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
 func artifactIDs(artifacts []v1.Artifact) []string {
@@ -29,4 +29,21 @@ func artifactIDs(artifacts []v1.Artifact) []string {
 	}
 
 	return result
+}
+
+// initializeStatusFrom helps creating a BuildStatus from scratch filling with base and root images.
+func initializeStatusFrom(buildStatus v1.BuildStatus, taskBaseImage string) *v1.BuildStatus {
+	status := v1.BuildStatus{}
+	baseImage := buildStatus.BaseImage
+	if baseImage == "" {
+		baseImage = taskBaseImage
+	}
+	status.BaseImage = baseImage
+	rootImage := buildStatus.RootImage
+	if rootImage == "" {
+		rootImage = taskBaseImage
+	}
+	status.RootImage = rootImage
+
+	return &status
 }

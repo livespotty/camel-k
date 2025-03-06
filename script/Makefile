@@ -13,23 +13,50 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-VERSIONFILE := pkg/util/defaults/defaults.go
-VERSION ?= 1.11.0-SNAPSHOT
-LAST_RELEASED_IMAGE_NAME := camel-k-operator
-LAST_RELEASED_VERSION ?= 1.10.1
-RUNTIME_VERSION := 1.14.0
-BUILDAH_VERSION := 1.23.3
-KANIKO_VERSION := 0.17.1
-INSTALL_DEFAULT_KAMELETS := true
-CONTROLLER_GEN_VERSION := v0.6.1
-CODEGEN_VERSION := v0.23.5
-OPERATOR_SDK_VERSION := v1.16.0
-KUSTOMIZE_VERSION := v4.1.2
-OPM_VERSION := v1.24.0
-BASE_IMAGE := docker.io/adoptopenjdk/openjdk11:slim
-LOCAL_REPOSITORY := /tmp/artifacts/m2
-IMAGE_NAME ?= docker.io/apache/camel-k
+#
+# Use bash explicitly in this Makefile to avoid unexpected platform
+# incompatibilities among Linux distros.
+#
+SHELL := /bin/bash
 
+MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
+PROJECT_PATH := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
+LOCALBIN := $(PROJECT_PATH)/bin
+
+VERSIONFILE := pkg/util/defaults/defaults.go
+VERSION ?= 2.7.0-SNAPSHOT
+LAST_RELEASED_IMAGE_NAME := camel-k-operator
+LAST_RELEASED_VERSION ?= 2.6.0
+DEFAULT_RUNTIME_VERSION := 3.15.2
+# Kubernetes tooling
+CONTROLLER_GEN_VERSION := v0.15.0
+CONTROLLER_GEN=$(GOBIN)/controller-gen
+CODEGEN_VERSION := v0.30.6
+OPERATOR_SDK_VERSION := v1.30.0
+KUSTOMIZE_VERSION := v4.5.4
+OPM_VERSION := v1.24.0
+# Golang tooling
+LINTER ?= $(LOCALBIN)/golangci-lint
+DEADCODE ?= $(LOCALBIN)/deadcode
+GOVULNCHECK ?= $(LOCALBIN)/govulncheck
+GOIMPORT ?= $(LOCALBIN)/goimports
+LINTER_VERSION ?= v1.64.5
+GOVULNCHECK_VERSION ?= latest
+LINT_GOGC ?= 20
+LINT_DEADLINE ?= 10m
+DEBUG_MODE ?= false
+
+# Operator building configuration
+BASE_IMAGE_NAME := eclipse-temurin
+BASE_IMAGE_VERSION := 17-jdk
+OFFICIAL_IMAGE_VERSION := 17-jdk
+BASE_IMAGE := $(BASE_IMAGE_NAME):$(BASE_IMAGE_VERSION)
+LOCAL_REPOSITORY := /etc/maven/m2
+OPENSHIFT_REGISTRY := image-registry.openshift-image-registry.svc:5000
+IMAGE_NAME ?= docker.io/apache/camel-k
+# Test for arm64, fall back to amd64
+IMAGE_ARCH ?= $(if $(filter arm64 aarch64,$(shell uname -m)),arm64,amd64)
+OFFICIAL_IMAGE_ARCH := amd64
 #
 # Situations when user wants to override
 # the image name and version
@@ -45,15 +72,12 @@ METADATA_IMAGE_NAME := $(CUSTOM_IMAGE)-metadata
 BUNDLE_IMAGE_NAME ?= $(CUSTOM_IMAGE)-bundle
 RELEASE_GIT_REMOTE := origin
 GIT_COMMIT := $(shell if [ -d .git ]; then git rev-list -1 HEAD; else echo "$(CUSTOM_VERSION)"; fi)
-LINT_GOGC := 10
-LINT_DEADLINE := 10m
-
 
 # olm bundle vars
-MANAGER := config/manager
-MANIFESTS := config/manifests
-CHANNELS ?= $(shell v=$(OPERATOR_VERSION) && echo "stable-$${v%\.[0-9]}"),candidate,latest
-DEFAULT_CHANNEL ?= $(shell v=$(OPERATOR_VERSION) && echo "stable-$${v%\.[0-9]}")
+MANAGER := pkg/resources/config/manager
+MANIFESTS := pkg/resources/config/manifests
+DEFAULT_CHANNEL ?= $(shell echo "stable-v$(word 1,$(subst ., ,$(lastword $(OPERATOR_VERSION))))")
+CHANNELS ?= $(DEFAULT_CHANNEL),latest
 PACKAGE := camel-k
 CSV_VERSION := $(OPERATOR_VERSION)
 CSV_NAME := $(PACKAGE).v$(CSV_VERSION)
@@ -73,14 +97,8 @@ INDEX_DIR := index
 OPM := opm
 
 # Used to push pre-release artifacts
-STAGING_IMAGE_NAME := docker.io/camelk/camel-k
-
-STAGING_RUNTIME_REPO :=
-
-# Define here the repo containing the default Kamelet catalog (if any)
-KAMELET_CATALOG_REPO := https://github.com/apache/camel-kamelets.git
-# Optional branch for the default Kamelet catalog (change this to a tag before release)
-KAMELET_CATALOG_REPO_BRANCH := v0.9.0
+STAGING_IMAGE := docker.io/camelk/camel-k
+INSTALL_DEFAULT_KAMELETS ?= true
 
 # When performing integration tests, it is not necessary to always execute build, especially
 # in e2e tests when lots of tests are being executed sequentially & the build has already taken place.
@@ -88,15 +106,19 @@ KAMELET_CATALOG_REPO_BRANCH := v0.9.0
 # and those rules with a dependency on the build rule will no longer call it (see do-build)
 DO_TEST_PREBUILD ?= true
 TEST_PREBUILD = build
+# Tests may run in parallel to each other. This count sets the amount of tests run in parallel.
+# (default value would be otherwise GOMAXPROCS)
+TEST_COMMON_PARALLEL_COUNT ?= 2
+TEST_ADVANCED_PARALLEL_COUNT ?= 2
 
 # OLM (Operator Lifecycle Manager and Operator Hub): uncomment to override operator settings at build time
-#GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/olm.DefaultOperatorName=camel-k-operator
-#GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/olm.DefaultPackage=camel-k
-#GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/olm.DefaultChannel=alpha
-#GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/olm.DefaultSource=community-operators
-#GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/olm.DefaultSourceNamespace=openshift-marketplace
-#GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/olm.DefaultStartingCSV=
-#GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/olm.DefaultGlobalNamespace=openshift-operators
+#GOLDFLAGS += -X github.com/apache/camel-k/v2/pkg/util/olm.DefaultOperatorName=camel-k-operator
+#GOLDFLAGS += -X github.com/apache/camel-k/v2/pkg/util/olm.DefaultPackage=camel-k
+#GOLDFLAGS += -X github.com/apache/camel-k/v2/pkg/util/olm.DefaultChannel=alpha
+#GOLDFLAGS += -X github.com/apache/camel-k/v2/pkg/util/olm.DefaultSource=community-operators
+#GOLDFLAGS += -X github.com/apache/camel-k/v2/pkg/util/olm.DefaultSourceNamespace=openshift-marketplace
+#GOLDFLAGS += -X github.com/apache/camel-k/v2/pkg/util/olm.DefaultStartingCSV=
+#GOLDFLAGS += -X github.com/apache/camel-k/v2/pkg/util/olm.DefaultGlobalNamespace=openshift-operators
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -107,12 +129,16 @@ endif
 
 # Build
 ifdef GIT_COMMIT
-GOLDFLAGS += -X github.com/apache/camel-k/pkg/util/defaults.GitCommit=$(GIT_COMMIT)
+GOLDFLAGS += -X github.com/apache/camel-k/v2/pkg/util/defaults.GitCommit=$(GIT_COMMIT)
 else
 $(warning Could not retrieve a valid Git Commit)
 endif
 
 GOFLAGS = -ldflags "$(GOLDFLAGS)" -trimpath
+
+ifeq ($(DEBUG_MODE),true)
+GOFLAGS += -gcflags="all=-N -l"
+endif
 
 define LICENSE_HEADER
 Licensed to the Apache Software Foundation (ASF) under one or more
@@ -133,6 +159,12 @@ endef
 
 export LICENSE_HEADER
 default: build
+
+update-docs: build-resources
+	./script/update_docs.sh
+
+update-default-camel:
+	./script/update_default_camel.sh
 
 bump-replace:
 	@# Bump version and replace with the variables provided by the user
@@ -159,13 +191,7 @@ codegen:
 	@echo "  Version = \"$(CUSTOM_VERSION)\"" >> $(VERSIONFILE)
 	@echo "" >> $(VERSIONFILE)
 	@echo "  // DefaultRuntimeVersion -- " >> $(VERSIONFILE)
-	@echo "  DefaultRuntimeVersion = \"$(RUNTIME_VERSION)\"" >> $(VERSIONFILE)
-	@echo "" >> $(VERSIONFILE)
-	@echo "  // BuildahVersion -- " >> $(VERSIONFILE)
-	@echo "  BuildahVersion = \"$(BUILDAH_VERSION)\"" >> $(VERSIONFILE)
-	@echo "" >> $(VERSIONFILE)
-	@echo "  // KanikoVersion -- " >> $(VERSIONFILE)
-	@echo "  KanikoVersion = \"$(KANIKO_VERSION)\"" >> $(VERSIONFILE)
+	@echo "  DefaultRuntimeVersion = \"$(DEFAULT_RUNTIME_VERSION)\"" >> $(VERSIONFILE)
 	@echo "" >> $(VERSIONFILE)
 	@echo "  // baseImage -- " >> $(VERSIONFILE)
 	@echo "  baseImage = \"$(BASE_IMAGE)\"" >> $(VERSIONFILE)
@@ -176,11 +202,14 @@ codegen:
 	@echo "  // ImageName -- " >> $(VERSIONFILE)
 	@echo "  ImageName = \"$(CUSTOM_IMAGE)\"" >> $(VERSIONFILE)
 	@echo "" >> $(VERSIONFILE)
+	@echo "  // OpenShiftRegistryAddress -- " >> $(VERSIONFILE)
+	@echo "  OpenShiftRegistryAddress = \"$(OPENSHIFT_REGISTRY)\"" >> $(VERSIONFILE)
+	@echo "" >> $(VERSIONFILE)
 	@echo "  // installDefaultKamelets -- " >> $(VERSIONFILE)
 	@echo "  installDefaultKamelets = $(INSTALL_DEFAULT_KAMELETS)" >> $(VERSIONFILE)
 	@echo ")" >> $(VERSIONFILE)
 	@echo "" >> $(VERSIONFILE)
-	@echo "//GitCommit must be provided during application build" >> $(VERSIONFILE)
+	@echo "// GitCommit must be provided during application build" >> $(VERSIONFILE)
 	@echo "var GitCommit string" >> $(VERSIONFILE)
 	@echo "" >> $(VERSIONFILE)
 
@@ -194,22 +223,28 @@ generate: codegen-tools-install
 	./script/gen_doc.sh
 	cd pkg/apis/camel && $(CONTROLLER_GEN) paths="./..." object
 	cd addons/keda/duck && $(CONTROLLER_GEN) paths="./..." object
-	cd addons/strimzi/duck && $(CONTROLLER_GEN) paths="./..." object
-	./script/gen_client_strimzi.sh
+	./script/gen_helm.sh
 
-codegen-tools-install: controller-gen
+codegen-tools-install:
 	@# We must force the installation to make sure we are using the correct version
 	@# Note: as there is no --version in the tools, we cannot rely on cached local versions
 	@echo "Installing k8s.io/code-generator tools with version $(CODEGEN_VERSION)"
+	go install k8s.io/code-generator/cmd/applyconfiguration-gen@$(CODEGEN_VERSION)
 	go install k8s.io/code-generator/cmd/client-gen@$(CODEGEN_VERSION)
 	go install k8s.io/code-generator/cmd/lister-gen@$(CODEGEN_VERSION)
 	go install k8s.io/code-generator/cmd/informer-gen@$(CODEGEN_VERSION)
+	go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
-build: build-resources test build-kamel build-compile-integration-tests build-submodules
+build: codegen build-resources test build-kamel build-compile-integration-tests
 
-ci-build: clean codegen set-module-version set-version check-licenses dir-licenses build-kamel cross-compile
+build-platform: build build-kamel-platform
 
-do-build: gotestfmt-install
+ci-build: clean codegen set-version check-licenses dir-licenses build-kamel cross-compile
+
+check_jdk_version:
+	@go run ./cmd/util/check_jdk_version
+
+do-build: gotestfmt-install check_jdk_version
 ifeq ($(DO_TEST_PREBUILD),true)
 TEST_PREBUILD = build
 else
@@ -221,125 +256,117 @@ ifeq (, $(shell command -v gotestfmt 2> /dev/null))
 	go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
 endif
 
+# Build images without running unit tests
+# NOTEST=1 make images
 test: do-build
+ifndef NOTEST
 	@echo "####### Running unit test..."
-	go test ./...
-	cd pkg/apis/camel && go test ./...
-	cd pkg/client/camel && go test ./...
-	cd pkg/kamelet/repository && go test ./...
-
-test-fmt: do-build
-	@echo "####### Running unit test..."
-	go test -v ./... -json 2>&1 | gotestfmt
-	cd pkg/apis/camel && go test -v ./... -json 2>&1 | gotestfmt
-	cd pkg/client/camel && go test -v ./... -json 2>&1 | gotestfmt
-	cd pkg/kamelet/repository && go test -v ./... -json 2>&1 | gotestfmt
+	go test ./... $(COVERAGE_OPTS)
+else
+	@echo "####### Skipping unit test..."
+endif
 
 #
-# Integration tests are located either as global or namespace
-# global:    tests can be executed using a pre-installed global operator
-#            with only the platform installed is a namespace
+# Common tests that do not require any customized operator setting. They can leverage a unique namespaced operator installation to reduce
+# the time to complete (they are used also as smoke test for nightly release)
 #
-# namespace: tests must be executed using a namespace installed operator
-#            usually due to the test requiring specific parameters on the
-#            operator configuration
-#
-
-
-###############################
-#
-# GLOBAL INSTALL TESTS
-#
-###############################
-
-#
-# Note
-# This should execute all tests and not exit if one of the suites fail
-#
-test-integration: do-build
-	FAILED=0; STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)"; \
-	go test -timeout 90m -v ./e2e/global/common -tags=integration $(TEST_INTEGRATION_COMMON_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
-	go test -timeout 90m -v ./e2e/global/common/build -tags=integration $(TEST_INTEGRATION_COMMON_BUILD_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
-	go test -timeout 90m -v ./e2e/global/common/config -tags=integration $(TEST_INTEGRATION_COMMON_CONFIG_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
-	go test -timeout 90m -v ./e2e/global/common/languages -tags=integration $(TEST_INTEGRATION_COMMON_LANG_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
-	go test -timeout 90m -v ./e2e/global/common/traits -tags=integration $(TEST_INTEGRATION_COMMON_TRAITS_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+test-common:
+	FAILED=0; \
+	go test -p $(TEST_COMMON_PARALLEL_COUNT) -timeout 90m -v ./e2e/common/... --parallel 1 -tags=integration $(GOTESTFMT) || ((FAILED++)); \
 	exit $${FAILED}
 
-test-knative: do-build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 90m -v ./e2e/global/knative -tags=integration $(TEST_KNATIVE_RUN) -json 2>&1 | gotestfmt
-
-test-builder: do-build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 90m -v ./e2e/global/builder -tags=integration $(TEST_BUILDER_RUN) -json 2>&1 | gotestfmt
-
-test-service-binding: do-build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 90m -v ./e2e/global/service-binding -tags=integration $(TEST_SERVICE_RUN) -json 2>&1 | gotestfmt
-
-test-local: do-build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 30m -v ./e2e/local -tags=integration $(TEST_LOCAL_RUN) -json 2>&1 | gotestfmt
-
-test-registry-maven-wagon: do-build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 90m -v ./e2e/global/registry -tags=integration $(TEST_REGISTRY_MAVEN_WAGON_RUN) -json 2>&1 | gotestfmt
-
-###############################
 #
-# NAMESPACED INSTALL TESTS
+# Smoke tests are a subset of common tests used to quickly verify the operator
 #
-###############################
-
-test-install: do-build
-	FAILED=0; STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)"; \
-	go test -timeout 90m -v ./e2e/namespace/install/ -tags=integration $(TEST_INSTALL_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
-	go test -timeout 90m -v ./e2e/namespace/install/cli -tags=integration $(TEST_INSTALL_CLI_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
-	go test -timeout 90m -v ./e2e/namespace/install/kustomize -tags=integration $(TEST_INSTALL_KUSTOMIZE_RUN) -json 2>&1 | gotestfmt || FAILED=1; \
+test-smoke:
+	FAILED=0; \
+	go test -p $(TEST_COMMON_PARALLEL_COUNT) -timeout 45m -v \
+		./e2e/common/languages \
+		./e2e/common/traits \
+		--parallel 1 \
+	  -tags=integration $(GOTESTFMT) || ((FAILED++)); \
 	exit $${FAILED}
 
-test-quarkus-native: do-build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 90m -v ./e2e/namespace/native -tags=integration $(TEST_QUARKUS_RUN) -json 2>&1 | gotestfmt
+#
+# Common tests that require some particular operator setting or need to be installed in multiple namespaces
+#
+test-advanced:
+	FAILED=0; \
+	go test -p 1 -timeout 90m -v ./e2e/advanced --parallel $(TEST_ADVANCED_PARALLEL_COUNT) -tags=integration $(GOTESTFMT) || ((FAILED++)); \
+	exit $${FAILED}
 
-test-upgrade: do-build
-	STAGING_RUNTIME_REPO="$(STAGING_RUNTIME_REPO)" \
-	go test -timeout 90m -v ./e2e/namespace/upgrade -tags=integration $(TEST_UPGRADE_RUN) -json 2>&1 | gotestfmt
+#
+# Installation and upgrade procedure test using
+#
+test-install:
+	FAILED=0; \
+	go test -timeout 20m -v ./e2e/install/kustomize -tags=integration $(GOTESTFMT) || ((FAILED++)); \
+	go test -timeout 20m -v ./e2e/install/helm -tags=integration $(GOTESTFMT) || ((FAILED++)); \
+	go test -timeout 60m -v ./e2e/install/upgrade -tags=integration $(GOTESTFMT) || ((FAILED++)); \
+	exit $${FAILED}
+
+#
+# Installation procedure test via OLM
+#
+test-install-olm:
+	FAILED=0; \
+	go test -timeout 20m -v ./e2e/install/olm -tags=integration $(GOTESTFMT) || ((FAILED++)); \
+	exit $${FAILED}
+
+#
+# Knative tests that require the presence of Knative configuration
+#
+test-knative:
+	FAILED=0; \
+	go test -timeout 60m -v ./e2e/knative -tags=integration $(GOTESTFMT) || ((FAILED++)); \
+	exit $${FAILED}
+
+#
+# Kafka tests that require the presence of Strimzi operator configuration
+#
+test-kafka:
+	FAILED=0; \
+	go test -timeout 20m -v ./e2e/kafka -tags=integration $(GOTESTFMT) || ((FAILED++)); \
+	exit $${FAILED}
+
+#
+# Telemetry tests that require the configuration of telemetry endpoints
+#
+test-telemetry:
+	go test -timeout 30m -v ./e2e/telemetry -tags=integration $(GOTESTFMT)
+
+#
+# Quarkus native test (requires certain CPU and memory conditions)
+#
+test-quarkus-native:
+	go test -timeout 180m -v ./e2e/native -tags=integration $(GOTESTFMT)
 
 build-kamel:
-	@echo "####### Building kamel CLI..."
-	@# Ensure the binary is statically linked when building on Linux due to ABI changes in newer glibc 2.32, otherwise
-	@# it would not run on older versions. See https://github.com/apache/camel-k/pull/2141#issuecomment-800990117
-ifeq ($(shell uname -s 2>/dev/null || echo Unknown),Linux)
-	CGO_ENABLED=0 go build $(GOFLAGS) -o kamel ./cmd/kamel/*.go
-else
-	go build $(GOFLAGS) -o kamel ./cmd/kamel/*.go
-endif
-ifeq ($(shell uname -m), arm64)
-	GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -o kamel.linux.arm ./cmd/kamel/*.go
+	@echo "####### Building kamel CLI for linux/$(IMAGE_ARCH) architecture..."
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(IMAGE_ARCH) go build $(GOFLAGS) -o build/_output/bin/kamel-$(IMAGE_ARCH) ./cmd/kamel/*.go
+	# Symbolic link to a local CLI
+	ln -sf build/_output/bin/kamel-$(IMAGE_ARCH) ./kamel
+
+build-kamel-platform:
+# Perform only when running on OS other than linux
+ifneq ($(shell uname -s 2>/dev/null || echo Unknown),Linux)
+	@echo "####### Building platform specific kamel CLI for $(IMAGE_ARCH) architecture..."
+	CGO_ENABLED=0 GOARCH=$(IMAGE_ARCH) go build $(GOFLAGS) -o build/_output/bin/kamel-$(IMAGE_ARCH) ./cmd/kamel/*.go
+	# Symbolic link to a local CLI
+	ln -sf build/_output/bin/kamel-$(IMAGE_ARCH) ./kamel
 endif
 
 build-resources:
-	./script/get_catalog.sh $(RUNTIME_VERSION) $(STAGING_RUNTIME_REPO)
-	go generate ./pkg/...
-
-bundle-kamelets:
-	@echo "Preparing Kamelets bundle resource..."
-ifneq (,$(findstring release,$(MAKECMDGOALS)))
-ifneq (,$(findstring $(KAMELET_CATALOG_REPO_BRANCH), main))
-	@echo "You cannot set KAMELET_CATALOG_REPO_BRANCH=$(KAMELET_CATALOG_REPO_BRANCH) when doing a release"
-	@exit 1
-endif
-endif
-	./script/bundle_kamelets.sh $(KAMELET_CATALOG_REPO) $(KAMELET_CATALOG_REPO_BRANCH)
-
-build-submodules:
-	./script/build_submodules.sh
+	./script/get_catalog.sh $(DEFAULT_RUNTIME_VERSION)
 
 build-compile-integration-tests:
-	go test -run nope -tags="integration" ./e2e/global/... > /dev/null
-	go test -run nope -tags="integration" ./e2e/local/... > /dev/null
-	go test -run nope -tags="integration" ./e2e/namespace/... > /dev/null
+ifndef NOTEST
+	@echo "####### Compiling integration tests..."
+	export CAMEL_K_E2E_JUST_COMPILE="true"; \
+	go test -run nope -tags="integration" ./e2e/...
+else
+	@echo "####### Skipping integration tests compilation..."
+endif
 
 clean:
 	# disable gomodules when executing go clean:
@@ -350,8 +377,8 @@ clean:
 	rm -f camel-k
 	rm -f kamel
 	rm -f *.test
+	rm -rf $(LOCALBIN)
 	rm -rf build/_maven_output
-	rm -rf build/_maven_overlay
 	rm -rf build/_output
 	rm -rf camel-k-client-*.tar.gz
 	rm -rf camel-k-examples-*.tar.gz
@@ -361,9 +388,6 @@ clean:
 dep:
 	@echo "Cleaning dependencies..."
 	go mod tidy
-	cd pkg/apis/camel && go mod tidy
-	cd pkg/client/camel && go mod tidy
-	cd pkg/kamelet/repository && go mod tidy
 
 detect-os:
 ifeq '$(findstring ;,$(PATH))' ';'
@@ -377,11 +401,29 @@ OS := $(patsubst MINGW%,MSYS,$(OS))
 OS_LOWER := $(shell echo $(OS) | tr '[:upper:]' '[:lower:]')
 endif
 
-lint:
-	GOGC=$(LINT_GOGC) golangci-lint run --config .golangci.yml --out-format tab --deadline $(LINT_DEADLINE) --verbose
+check: lint vuln
 
-lint-fix:
-	GOGC=$(LINT_GOGC) golangci-lint run --config .golangci.yml --out-format tab --deadline $(LINT_DEADLINE) --fix
+.PHONY: lint
+lint: golangci-lint
+	GOGC=$(LINT_GOGC) $(LINTER) run --config .golangci.yml --out-format colored-tab --timeout $(LINT_DEADLINE) --verbose
+
+.PHONY: lint-fix
+lint-fix: golangci-lint
+	GOGC=$(LINT_GOGC) $(LINTER) run --config .golangci.yml --out-format colored-tab --timeout $(LINT_DEADLINE) --fix
+
+.PHONY: vuln
+vuln: govulncheck
+	@$(GOVULNCHECK) ./...
+
+.PHONY: fmt
+fmt: goimport
+	$(GOIMPORT) -l -w .
+	go fmt ./...
+
+dead-code:
+	GOBIN=$(LOCALBIN) go install golang.org/x/tools/cmd/deadcode@latest
+	GOGC=$(LINT_GOGC) $(DEADCODE) ./...
+
 
 dir-licenses:
 	./script/vendor-license-directory.sh
@@ -389,65 +431,110 @@ dir-licenses:
 check-licenses:
 	./script/check_licenses.sh
 
-check-platform:
-	./script/check_platform.sh
+TARGET_STAGE := base
+ifeq ($(DEBUG_MODE),true)
+	TARGET_STAGE := debug
+	CUSTOM_IMAGE := $(CUSTOM_IMAGE)-debug
+endif
 
-# The below are dependencies needed for maven structured logs. We must bundle into the final container image.
-maven-overlay:
-	@echo "####### Preparing maven dependencies bundle..."
-	mkdir -p build/_maven_overlay
-	./script/maven_overlay.sh -s "$(STAGING_RUNTIME_REPO)" -d "$(CAMEL_K_RUNTIME_DIR)" $(RUNTIME_VERSION) build/_maven_overlay
+DOCKER_TAG := $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-$(BASE_IMAGE_VERSION)-$(IMAGE_ARCH)
 
-kamel-overlay:
-	@echo "####### Copying kamel CLI to output build directory..."
-	mkdir -p build/_output/bin
-	cp kamel build/_output/bin
+images: build image-build build-kamel-platform
 
-images: build kamel-overlay maven-overlay bundle-kamelets
-	@echo "####### Building Camel K operator container image..."
+image-build:
+ifneq (,$(findstring SNAPSHOT,$(DEFAULT_RUNTIME_VERSION)))
+	./script/package_maven_artifacts.sh -d "$(CAMEL_K_RUNTIME_DIR)" $(DEFAULT_RUNTIME_VERSION)
+endif
+	@echo "####### Building Camel K operator jdk $(BASE_IMAGE_VERSION) arch $(IMAGE_ARCH) container image..."
 	mkdir -p build/_maven_output
-	docker build -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile .
-
-images-arch: build kamel-overlay maven-overlay bundle-kamelets
-	@echo "####### Building Camel K operator container image for multi architectures..."
-	mkdir -p build/_maven_output
-	docker buildx rm --all-inactive --force
-	docker buildx create --append --name builder
-ifeq ($(shell uname -m), x86_x64)
-    	docker buildx build --platform=linux/amd64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
+	docker buildx build --target $(TARGET_STAGE) \
+		--platform=linux/$(IMAGE_ARCH) \
+		--build-arg CK_BASE_IMAGE=$(BASE_IMAGE) \
+		--build-arg IMAGE_ARCH=$(IMAGE_ARCH) \
+		--load -t $(DOCKER_TAG) -f build/Dockerfile .
+ifeq ($(BASE_IMAGE_VERSION),$(OFFICIAL_IMAGE_VERSION))
+ifeq ($(IMAGE_ARCH),$(OFFICIAL_IMAGE_ARCH))
+	docker tag $(DOCKER_TAG) $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-$(BASE_IMAGE_VERSION)
+	docker tag $(DOCKER_TAG) $(CUSTOM_IMAGE):$(CUSTOM_VERSION)
 endif
-ifeq ($(shell uname -m), aarch64)
-	docker buildx build --platform=linux/arm64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
+	docker tag $(DOCKER_TAG) $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-$(IMAGE_ARCH)
+else
+ifeq ($(IMAGE_ARCH),$(OFFICIAL_IMAGE_ARCH))
+	docker tag $(DOCKER_TAG) $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-$(BASE_IMAGE_VERSION)
 endif
-ifeq ($(shell uname -m), arm64)
-	docker buildx build --platform=linux/amd64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
-endif
-
-images-dev: build kamel-overlay maven-overlay bundle-kamelets package-artifacts
-	@echo "####### Building Camel K operator container development image..."
-	docker build -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile .
-
-images-arch-dev:  build kamel-overlay maven-overlay bundle-kamelets package-artifacts
-	@echo "####### Building Camel K operator container development image for multi architectures..."
-	docker buildx rm --all-inactive --force
-	docker buildx create --append --name builder
-ifeq ($(shell uname -m), x86_x64)
-	docker buildx build --platform=linux/amd64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
-endif
-ifeq ($(shell uname -m), aarch64)
-	docker buildx build --platform=linux/arm64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
-endif
-ifeq ($(shell uname -m), arm64)
-	mv kamel.linux.arm build/_output/bin/kamel
-	docker buildx build --platform=linux/amd64 -t $(CUSTOM_IMAGE):$(CUSTOM_VERSION) -f build/Dockerfile.arch .
 endif
 
-images-push:
+# Mainly used for internal CI purposes
+image-push:
 	docker push $(CUSTOM_IMAGE):$(CUSTOM_VERSION)
 
+# Make sure the current docker builder must supports the wanted platform list, which may not be the case for the default builder
+#
+# docker buildx inspect
+# ...
+# Platforms: linux/amd64*, linux/arm64*
+#
+#
+# docker buildx create --name mybuilder --platform linux/amd64,linux/arm64
+# docker buildx use mybuilder
+
+JDK_VERSIONS = 17-jdk 21-jdk
+ARCH_VERSIONS = amd64 arm64
+images-all:
+	for i in $(JDK_VERSIONS); do \
+		for j in $(ARCH_VERSIONS); do \
+			make IMAGE_ARCH=$$j BASE_IMAGE_VERSION=$$i images; \
+		done \
+	done
+
+IMAGE_PUSH = $(CUSTOM_IMAGE):$(CUSTOM_VERSION)
+images-push-all:
+	make IMAGE_PUSH=$(CUSTOM_IMAGE):$(CUSTOM_VERSION) images-push
+	for i in $(JDK_VERSIONS); do \
+		make IMAGE_PUSH=$(CUSTOM_IMAGE):$(CUSTOM_VERSION)-$$i images-push ; \
+	done
+
+images-push-staging-all:
+	make IMAGE_PUSH=$(STAGING_IMAGE):$(CUSTOM_VERSION) images-push
+	for i in $(JDK_VERSIONS); do \
+		make IMAGE_PUSH=$(STAGING_IMAGE):$(CUSTOM_VERSION)-$$i images-push ; \
+	done
+
+images-push:
+	docker push $(IMAGE_PUSH)
+	docker manifest create $(IMAGE_PUSH) $(IMAGE_PUSH)
+	for i in $(ARCH_VERSIONS); do \
+		docker push $(IMAGE_PUSH)-$$i ; \
+		docker manifest create $(IMAGE_PUSH) -a $(IMAGE_PUSH)-$$i; \
+	done
+	docker manifest push $(IMAGE_PUSH) --purge
+
+images-tag-staging-all:
+	docker tag $(CUSTOM_IMAGE):$(CUSTOM_VERSION) $(STAGING_IMAGE):$(CUSTOM_VERSION)
+	for j in $(ARCH_VERSIONS); do \
+		docker tag $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-$$j $(STAGING_IMAGE):$(CUSTOM_VERSION)-$$j; \
+	done; \
+	for i in $(JDK_VERSIONS); do \
+		docker tag $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-$$i $(STAGING_IMAGE):$(CUSTOM_VERSION)-$$i; \
+		for j in $(ARCH_VERSIONS); do \
+			docker tag $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-$$i-$$j $(STAGING_IMAGE):$(CUSTOM_VERSION)-$$i-$$j; \
+		done \
+	done
+
 images-push-staging:
-	docker tag $(CUSTOM_IMAGE):$(CUSTOM_VERSION) $(STAGING_IMAGE_NAME):$(CUSTOM_VERSION)
-	docker push $(STAGING_IMAGE_NAME):$(CUSTOM_VERSION)
+	docker tag $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-amd64 $(STAGING_IMAGE):$(CUSTOM_VERSION)-amd64
+	docker tag $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-amd64 $(STAGING_IMAGE):$(CUSTOM_VERSION)
+	docker push $(STAGING_IMAGE):$(CUSTOM_VERSION)-amd64
+	docker push $(STAGING_IMAGE):$(CUSTOM_VERSION)
+	@if docker inspect $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-arm64 &> /dev/null; then \
+		echo "Image $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-arm64 exists, building the multiarch manifest"; \
+		docker tag $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-arm64 $(STAGING_IMAGE):$(CUSTOM_VERSION)-arm64; \
+		docker push $(STAGING_IMAGE):$(CUSTOM_VERSION)-arm64; \
+		docker manifest create $(STAGING_IMAGE):$(CUSTOM_VERSION) --amend $(STAGING_IMAGE):$(CUSTOM_VERSION)-amd64 --amend $(STAGING_IMAGE):$(CUSTOM_VERSION)-arm64; \
+		docker manifest push --purge $(STAGING_IMAGE):$(CUSTOM_VERSION); \
+	else \
+		echo "Image $(CUSTOM_IMAGE):$(CUSTOM_VERSION)-arm64 does not exist"; \
+	fi
 
 get-image:
 	@echo $(CUSTOM_IMAGE)
@@ -470,9 +557,6 @@ get-bundle-image:
 set-version:
 	./script/set_version.sh $(CUSTOM_VERSION) $(CUSTOM_IMAGE)
 
-set-module-version:
-	./script/set_go_modules_version.sh $(CUSTOM_VERSION)
-
 git-tag:
 	./script/git_tag.sh $(CUSTOM_VERSION) $(RELEASE_GIT_REMOTE)
 
@@ -481,53 +565,23 @@ cross-compile:
 	# be processed as a single argument by the cross compile script
 	./script/cross_compile.sh $(CUSTOM_VERSION) $(subst ","\",$(GOFLAGS))
 
-package-examples:
-	./script/package_examples.sh $(CUSTOM_VERSION)
+release-staging: clean codegen set-version check-licenses build-resources images-all images-tag-staging-all images-push-staging-all cross-compile release-helm bundle-push-staging git-tag sbomgen
 
-package-artifacts:
-	# useful for development purpose only in order to include any local development runtime dependency
-	./script/package_maven_artifacts.sh -s "$(STAGING_RUNTIME_REPO)" -d "$(CAMEL_K_RUNTIME_DIR)" $(RUNTIME_VERSION)
+sbomgen:
+	cyclonedx-gomod mod -licenses -json -output sbom.json
 
-release: clean codegen set-module-version set-version build-resources check-licenses build images images-push cross-compile package-examples git-tag
+# Build images
+images-nightly: clean codegen set-version build-resources images-all
 
-release-staging: clean codegen set-module-version set-version build-resources check-licenses build images images-push-staging cross-compile package-examples git-tag
-
-release-nightly: clean codegen set-module-version set-version build-resources build images images-push cross-compile package-examples
+# Release artifacts
+release-nightly: cross-compile images-push-all
 
 release-helm:
-	./script/release_helm.sh
+	./script/set_version.sh ${VERSION}
+	./script/release_helm.sh ${VERSION}
 
-release-kustomize:
-	RELEASE_VERSION=$(CUSTOM_VERSION) \
-	RELEASE_NAME=$(PACKAGE) \
-	./script/release_kustomize.sh
-
-install-crc:
-	./script/install_crc.sh $(CUSTOM_VERSION)
-install-minikube:
-	./script/install_minikube.sh
-
-get-staging-repo:
-	@echo $(or ${STAGING_RUNTIME_REPO},https://repository.apache.org/content/repositories/snapshots@id=apache-snapshots@snapshots)
-
-.PHONY: do-build build build-kamel build-resources dep codegen images images-dev images-push images-push-staging test check test-integration clean release cross-compile package-examples set-version git-tag release-notes check-licenses generate-deepcopy generate-client generate-doc build-resources release-helm release-staging release-nightly get-staging-repo get-version build-submodules set-module-version bundle-kamelets generate-keda generate-strimzi
-.PHONY: controller-gen kubectl kustomize operator-sdk opm
-
-# find or download controller-gen if necessary
-controller-gen:
-ifeq (, $(shell command -v controller-gen 2> /dev/null))
-	@{ \
-	set -e ;\
-	CONTROLLER_GEN_TMP_DIR=$$(mktemp -d) ;\
-	cd $$CONTROLLER_GEN_TMP_DIR ;\
-	go mod init tmp ;\
-	go get sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) ;\
-	rm -rf $$CONTROLLER_GEN_TMP_DIR ;\
-	}
-CONTROLLER_GEN=$(GOBIN)/controller-gen
-else
-CONTROLLER_GEN=$(shell command -v controller-gen 2> /dev/null)
-endif
+.PHONY: do-build build build-kamel build-kamel-platform build-resources dep codegen images images-push image-build test check clean release cross-compile package-examples set-version git-tag check-licenses build-resources release-helm release-staging release-nightly get-staging-repo get-version
+.PHONY: kubectl kustomize operator-sdk opm
 
 kubectl:
 ifeq (, $(shell command -v kubectl 2> /dev/null))
@@ -535,46 +589,37 @@ ifeq (, $(shell command -v kubectl 2> /dev/null))
 endif
 
 kustomize:
-ifeq (, $(shell command -v kustomize 2> /dev/null))
-	@{ \
-	set -e ;\
-	KUSTOMIZE_GEN_TMP_DIR=$$(mktemp -d) ;\
-	cd $$KUSTOMIZE_GEN_TMP_DIR ;\
-	go mod init tmp ;\
-	go get sigs.k8s.io/kustomize/kustomize/v4@$(KUSTOMIZE_VERSION) ;\
-	rm -rf $$KUSTOMIZE_GEN_TMP_DIR ;\
-	}
+	go install sigs.k8s.io/kustomize/kustomize/v4@$(KUSTOMIZE_VERSION)
 KUSTOMIZE=$(GOBIN)/kustomize
-else
-KUSTOMIZE=$(shell command -v kustomize 2> /dev/null)
-endif
 
 operator-sdk: detect-os
-ifeq (, $(shell command -v operator-sdk 2> /dev/null))
-	@{ \
-	set -e ;\
+	@echo "####### Installing operator-sdk version $(OPERATOR_SDK_VERSION)..."
 	curl \
-		-L https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$(OS_LOWER)_amd64 \
+		-s -L https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$(OS_LOWER)_amd64 \
 		-o operator-sdk ; \
 	chmod +x operator-sdk ;\
 	mkdir -p $(GOBIN) ;\
-	mv operator-sdk $(GOBIN)/ ;\
-	}
+	mv operator-sdk $(GOBIN)/ ;
 OPERATOR_SDK=$(GOBIN)/operator-sdk
-else
-	@{ \
-	echo -n "operator-sdk already installed: "; \
-  operator-sdk version | sed -n 's/.*"v\([^"]*\)".*/\1/p'; \
-	echo " If this is less than $(OPERATOR_SDK_VERSION) then please consider moving it aside and allowing the approved version to be downloaded."; \
-	}
-OPERATOR_SDK=$(shell command -v operator-sdk 2> /dev/null)
-endif
 
-opm:
+opm: detect-os
 ifeq (, $(shell command -v opm 2> /dev/null))
-	@OPM_VERSION=$(OPM_VERSION) ./script/build_install_opm.sh
+	@{ \
+	set -e ;\
+	curl \
+		-L https://github.com/operator-framework/operator-registry/releases/download/$(OPM_VERSION)/$(OS_LOWER)-amd64-opm \
+		-o opm; \
+	chmod +x opm;\
+	mkdir -p $(GOBIN) ;\
+	mv opm $(GOBIN)/ ;\
+	}
 OPM=$(GOBIN)/opm
 else
+	@{ \
+	echo -n "opm already installed: "; \
+  opm version | sed -n 's/.*"v\([^"]*\)".*/\1/p'; \
+	echo " If this is less than $(OPM_VERSION) then please consider moving it aside and allowing the approved version to be downloaded."; \
+	}
 OPM=$(shell command -v opm 2> /dev/null)
 endif
 
@@ -586,13 +631,11 @@ else
 YQ=$(shell command -v yq 2> /dev/null)
 endif
 
-.PHONY: generate-crd $(BUNDLE_CAMEL_APIS) pre-bundle bundle bundle-build
+.PHONY: $(BUNDLE_CAMEL_APIS) pre-bundle bundle bundle-build
 
 # - Have to copy pkg/apis since it is a module in its own right
-# - The dependency of v1alpha1 api on v1 results in duplication
-#   of the v1 schema in those CRDs so need to split them up
 # - No way to add a licence header to the CRD other then post-script
-BUNDLE_CAMEL_APIS = v1 v1alpha1
+BUNDLE_CAMEL_APIS = v1
 
 $(BUNDLE_CAMEL_APIS): operator-sdk
 	@# Clean up api directory, copy over fresh version
@@ -600,10 +643,10 @@ $(BUNDLE_CAMEL_APIS): operator-sdk
 	@# Remove the camel directory and re-copy only the required api
 	rm -rf api_$@/camel/* && cp -rf pkg/apis/camel/$@ api_$@/camel/
 	@# operator-sdk generate ... cannot execute across separate modules so need to temporarily move api
-	$(OPERATOR_SDK) generate kustomize manifests --apis-dir $(addprefix api_, $@) -q
+	$(OPERATOR_SDK) generate kustomize manifests --apis-dir $(addprefix api_, $@) -q --input-dir $(MANIFESTS) --output-dir $(MANIFESTS)
 	@# Adds the licence header to the csv file.
-	./script/add_license.sh config/manifests/bases ./script/headers/yaml.txt
-	./script/add_createdAt.sh config/manifests/bases
+	./script/add_license.sh $(MANIFESTS)/bases ./script/headers/yaml.txt
+	./script/add_createdAt.sh $(MANIFESTS)/bases
 	@# Clean up temporary working api directories
 	rm -rf api_*
 
@@ -618,6 +661,9 @@ ifneq ($(origin PACKAGE), undefined)
 BUNDLE_PACKAGE := --package=$(PACKAGE)
 endif
 BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL) $(BUNDLE_PACKAGE)
+# TODO automate these configuration retrieving the content from go.mod
+BUNDLE_METADATA_OPENSHIFT_VERSION ?= "v4.14"
+MIN_KUBE_VERSION ?= "1.24.0"
 
 #
 # Tailor the manifest according to default values for this project
@@ -631,21 +677,22 @@ pre-bundle:
 	@sed -i 's/^  name: .*.\(v.*\)/  name: $(CSV_NAME)/' $(CSV_PATH)
 	@sed -i 's/^  displayName: .*/  displayName: $(CSV_DISPLAY_NAME)/' $(CSV_PATH)
 	@sed -i 's/^  version: .*/  version: $(CSV_VERSION)/' $(CSV_PATH)
+	@sed -i 's/^  minKubeVersion: .*/  minKubeVersion: $(MIN_KUBE_VERSION)/' $(CSV_PATH)
 	@if grep -q replaces $(CSV_PATH); \
 		then sed -i 's/^  replaces: .*/  replaces: $(CSV_REPLACES)/' $(CSV_PATH); \
 		else sed -i '/  version: ${CSV_VERSION}/a \ \ replaces: $(CSV_REPLACES)' $(CSV_PATH); \
 	fi
 
-bundle: set-version generate-crd kustomize operator-sdk pre-bundle $(BUNDLE_CAMEL_APIS)
+bundle: set-version kustomize operator-sdk pre-bundle $(BUNDLE_CAMEL_APIS)
 	@# Display BUNDLE_METADATA_OPTS for debugging
 	$(info BUNDLE_METADATA_OPTS=$(BUNDLE_METADATA_OPTS))
 	@# Sets the operator image to the preferred image:tag
-	@cd config/manifests && $(KUSTOMIZE) edit set image $(IMAGE_NAME)=$(CUSTOM_IMAGE):$(CUSTOM_VERSION)
+	@cd pkg/resources/config/manifests && $(KUSTOMIZE) edit set image $(IMAGE_NAME)=$(CUSTOM_IMAGE):$(CUSTOM_VERSION)
 	@# Build kustomize manifests
-	@$(KUSTOMIZE) build config/manifests | \
+	@$(KUSTOMIZE) build pkg/resources/config/manifests | \
 		$(OPERATOR_SDK) generate bundle \
 			-q --overwrite --version $(OPERATOR_VERSION) \
-			--kustomize-dir config/manifests $(BUNDLE_METADATA_OPTS)
+			--kustomize-dir pkg/resources/config/manifests $(BUNDLE_METADATA_OPTS)
 	@# Move the dockerfile into the bundle directory
 	@mv bundle.Dockerfile bundle/Dockerfile && sed -i 's/bundle\///g' bundle/Dockerfile
 	@# Adds the licence headers to the csv file
@@ -653,6 +700,7 @@ bundle: set-version generate-crd kustomize operator-sdk pre-bundle $(BUNDLE_CAME
 # Rename the CSV name to conform with the existing released operator versions
 # This cannot happen in pre-bundle as the operator-sdk generation expects a CSV name the same as PACKAGE
 	@sed -i "s/^  name: $(CSV_NAME)/  name: $(CSV_PRODUCTION_NAME)/" $(CSV_PRODUCTION_PATH)
+	@echo "  com.redhat.openshift.versions: $(BUNDLE_METADATA_OPENSHIFT_VERSION)" >> ./bundle/metadata/annotations.yaml
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 # Build the bundle image.
@@ -664,6 +712,17 @@ bundle-build: bundle
 bundle-push: bundle-build
 	docker push $(BUNDLE_IMAGE_NAME):$(CUSTOM_VERSION)
 
+bundle-push-staging: BUNDLE_IMAGE_NAME="$(STAGING_IMAGE)-bundle"
+bundle-push-staging: bundle-build
+	docker push $(BUNDLE_IMAGE_NAME):$(CUSTOM_VERSION)
+
+bundle-test: operator-sdk
+ifndef NAMESPACE
+	@echo "WARN: no namespace specified, using default namespace $(DEFAULT_NS)"
+	$(eval NAMESPACE=$(DEFAULT_NS))
+endif
+	$(OPERATOR_SDK) run bundle $(BUNDLE_IMAGE_NAME):$(CUSTOM_VERSION) -n $(NAMESPACE)
+
 #
 # Builds a test catalog index for installing the operator via an OLM
 #
@@ -672,3 +731,113 @@ bundle-index: opm yq
 	OPM=$(OPM) BUNDLE_IMAGE=$(BUNDLE_IMAGE_NAME):$(CUSTOM_VERSION) CSV_NAME=$(CSV_PRODUCTION_NAME) \
 	CSV_SKIPS=$(CSV_SKIP_RANGE) CSV_REPLACES=$(CSV_REPLACES) CHANNELS="$(CHANNELS)" \
 	./script/build_bundle_index.sh
+
+
+## Location to install dependencies to
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+.PHONY: golangci-lint
+golangci-lint:
+	GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(LINTER_VERSION)
+
+.PHONY: govulncheck
+govulncheck:
+	GOBIN=$(LOCALBIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+.PHONY: goimport
+goimport:
+	GOBIN=$(LOCALBIN) go install golang.org/x/tools/cmd/goimports@latest
+
+#####
+# START Local installation procedure. Handy for development purpose
+#####
+
+KUSTOMIZE_DIR = "install/overlays/kubernetes/descoped"
+DEFAULT_NS = "camel-k"
+
+.PHONY: install install-k8s-global install-k8s-ns install-openshift-global install-openshift-ns
+
+clone-kustomize-dir:
+	$(eval KUST_TMP=$(shell mktemp -d))
+	@echo "... cloning installation files to $(KUST_TMP)"
+	cp -Lr install $(KUST_TMP)/.
+
+# the set-operator targets are mostly thought as an utility for the e2e which require certain operator settings
+set-operator-id:
+ifdef OPERATOR_ID
+	@echo "INFO: setting operator ID to $(OPERATOR_ID)"
+	@sed -i 's/name: .*/name: $(OPERATOR_ID)/' $(KUST_TMP)/install/overlays/platform/integration-platform.yaml
+	cd $(KUST_TMP)/install/overlays/platform/ && kustomize edit add annotation camel.apache.org/operator.id:$(OPERATOR_ID)
+	@sed -i 's/value: .*/value: $(OPERATOR_ID)/' $(KUST_TMP)/$(KUSTOMIZE_DIR)/patch-operator-id.yaml
+	@echo "INFO: adding a suffix for ClusterRoleBindings $(OPERATOR_ID)"
+	cd $(KUST_TMP)/install/base/config/rbac/descoped && kustomize edit set namesuffix -- -$(OPERATOR_ID)
+else
+	@echo "INFO: no operator ID variable \"OPERATOR_ID\" provided. Keeping default."
+endif
+
+# ENV is expected to be in the formal ENV="myvar1=v1 myvar2=v2 ..."
+set-operator-env:
+ifdef ENV
+	@for n in $(ENV); do \
+		k=$${n%=*}; \
+		v=$${n#*=}; \
+		echo "INFO: setting operator env var $${k}=$${v}"; \
+		cd $(KUST_TMP)/$(KUSTOMIZE_DIR) && kustomize edit add patch --kind Deployment --patch \
+		 	"[{\"op\": \"add\", \"path\": \"/spec/template/spec/containers/0/env/-\", \"value\": {\"name\": \"$${k}\", \"value\": \"$${v}\"}}]"; \
+    done
+endif
+
+install-operator:
+	@echo "####### Installing operator..."
+ifndef NAMESPACE
+	@echo "WARN: no namespace specified, using default namespace $(DEFAULT_NS)"
+	$(eval NAMESPACE=$(DEFAULT_NS))
+endif
+	cd $(KUST_TMP)/$(KUSTOMIZE_DIR) && kustomize edit set namespace $(NAMESPACE)
+	cd $(KUST_TMP)/install/overlays/platform && kustomize edit set namespace $(NAMESPACE)
+	kubectl apply -k $(KUST_TMP)/$(KUSTOMIZE_DIR) --server-side --force-conflicts
+
+install-registry:
+	@echo "####### Installing container registry..."
+ifdef REGISTRY
+	@echo "INFO: Setting IntegrationPlatform container registry to $(REGISTRY)"
+	@sed -i 's/address: .*/address: $(REGISTRY)/' $(KUST_TMP)/install/overlays/platform/integration-platform.yaml
+	kubectl apply -k $(KUST_TMP)/install/overlays/platform --server-side -n $(NAMESPACE) --force-conflicts
+else
+	$(eval MINIKUBE_REGISTRY=$(shell kubectl -n kube-system get service registry -o jsonpath='{.spec.clusterIP}' 2> /dev/null))
+ifneq ($(MINIKUBE_REGISTRY),"")
+	@echo "INFO: Looks like you're on Minikube. Setting IntegrationPlatform container registry to $(MINIKUBE_REGISTRY)"
+	@sed -i 's/address: .*/address: $(MINIKUBE_REGISTRY)/' $(KUST_TMP)/install/overlays/platform/integration-platform.yaml
+	kubectl apply -k $(KUST_TMP)/install/overlays/platform --server-side -n $(NAMESPACE) --force-conflicts
+endif
+endif
+
+install-k8s-global: DEFAULT_NS="camel-k"
+install-k8s-global: KUSTOMIZE_DIR="install/overlays/kubernetes/descoped"
+install-k8s-global: clone-kustomize-dir set-operator-id set-operator-env install-operator install-registry
+
+install-k8s-ns: DEFAULT_NS="default"
+install-k8s-ns: KUSTOMIZE_DIR="install/overlays/kubernetes/namespaced"
+install-k8s-ns: clone-kustomize-dir set-operator-id set-operator-env install-operator install-registry
+
+uninstall:
+ifdef NAMESPACE
+	kubectl delete deploy -l app=camel-k -n $(NAMESPACE)
+	kubectl delete configmap,secret,sa,rolebindings,clusterrolebindings,roles,clusterroles,integrationplatform -l app=camel-k -n $(NAMESPACE)
+else
+	kubectl delete deploy -l app=camel-k
+	kubectl delete configmap,secret,sa,rolebindings,clusterrolebindings,roles,clusterroles,integrationplatform -l app=camel-k
+endif
+
+install-crds:
+	kubectl apply -k install/base/config/crd --server-side --force-conflicts
+
+uninstall-crds:
+	kubectl delete crd -l app=camel-k
+
+uninstall-all: uninstall uninstall-crds
+
+#####
+# END Local installation procedure. Handy for development purpose
+#####

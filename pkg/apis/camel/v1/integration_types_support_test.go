@@ -18,10 +18,14 @@ limitations under the License.
 package v1
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"testing"
 
+	"github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAllLanguages(t *testing.T) {
@@ -63,10 +67,10 @@ func TestLanguageAlreadySet(t *testing.T) {
 func TestAddDependency(t *testing.T) {
 	integration := IntegrationSpec{}
 	integration.AddDependency("camel:file")
-	assert.Equal(t, integration.Dependencies, []string{"camel:file"})
+	assert.Equal(t, []string{"camel:file"}, integration.Dependencies)
 	// adding the same dependency twice won't duplicate it in the list
 	integration.AddDependency("camel:file")
-	assert.Equal(t, integration.Dependencies, []string{"camel:file"})
+	assert.Equal(t, []string{"camel:file"}, integration.Dependencies)
 
 	integration = IntegrationSpec{}
 	integration.AddDependency("mvn:com.my:company")
@@ -100,4 +104,56 @@ func TestGetConfigurationProperty(t *testing.T) {
 	assert.Equal(t, "", v5)
 	v6 := integration.GetConfigurationProperty("key6")
 	assert.Equal(t, "", v6)
+}
+
+func TestManagedBuild(t *testing.T) {
+	integration := Integration{
+		Spec: IntegrationSpec{},
+	}
+	assert.True(t, integration.IsManagedBuild())
+	integration.Spec.Traits = Traits{
+		Container: &trait.ContainerTrait{},
+	}
+	assert.True(t, integration.IsManagedBuild())
+	integration.Spec.Traits = Traits{
+		Container: &trait.ContainerTrait{
+			Image: "registry.io/my-org/my-image",
+		},
+	}
+	assert.False(t, integration.IsManagedBuild())
+	integration.Spec.Traits = Traits{
+		Container: &trait.ContainerTrait{
+			Image: "10.100.107.57/camel-k/camel-k-kit-cr82ehho23os73cgua70@sha256:13e5a67d37665710c0bdd89701c7ae10aee393b00f5e4e09dc8ecc234763e7c2",
+		},
+	}
+	assert.True(t, integration.IsManagedBuild())
+}
+
+func TestReadWriteYaml(t *testing.T) {
+	// yaml in conventional form as marshalled by the go runtime
+	yaml := `- from:
+    parameters:
+      period: 3600001
+    steps:
+    - to: log:info
+    uri: timer:tick
+`
+
+	yamlReader := bytes.NewReader([]byte(yaml))
+	flows, err := FromYamlDSL(yamlReader)
+	require.NoError(t, err)
+	assert.NotNil(t, flows)
+	assert.Len(t, flows, 1)
+
+	flow := map[string]interface{}{}
+	err = json.Unmarshal(flows[0].RawMessage, &flow)
+	require.NoError(t, err)
+
+	assert.NotNil(t, flow["from"])
+	assert.Nil(t, flow["xx"])
+
+	data, err := ToYamlDSL(flows)
+	require.NoError(t, err)
+	assert.NotNil(t, data)
+	assert.Equal(t, yaml, string(data))
 }

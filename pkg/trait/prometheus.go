@@ -22,13 +22,18 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/util"
+)
+
+const (
+	prometheusTraitID    = "prometheus"
+	prometheusTraitOrder = 1900
 )
 
 type prometheusTrait struct {
@@ -38,26 +43,21 @@ type prometheusTrait struct {
 
 func newPrometheusTrait() Trait {
 	return &prometheusTrait{
-		BaseTrait: NewBaseTrait("prometheus", 1900),
-		PrometheusTrait: traitv1.PrometheusTrait{
-			PodMonitor: pointer.Bool(true),
-		},
+		BaseTrait: NewBaseTrait(prometheusTraitID, prometheusTraitOrder),
 	}
 }
 
-func (t *prometheusTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, false) {
-		return false, nil
+func (t *prometheusTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil || !ptr.Deref(t.Enabled, false) {
+		return false, nil, nil
 	}
 
-	return e.IntegrationInPhase(v1.IntegrationPhaseInitialization) || e.IntegrationInRunningPhases(), nil
+	return e.IntegrationInPhase(v1.IntegrationPhaseInitialization) || e.IntegrationInRunningPhases(), nil, nil
 }
 
 func (t *prometheusTrait) Apply(e *Environment) error {
 	if e.IntegrationInPhase(v1.IntegrationPhaseInitialization) {
-		// Add the Camel Quarkus MP Metrics extension
-		util.StringSliceUniqueAdd(&e.Integration.Status.Dependencies, "mvn:org.apache.camel.quarkus:camel-quarkus-microprofile-metrics")
-		return nil
+		util.StringSliceUniqueAdd(&e.Integration.Status.Capabilities, v1.CapabilityPrometheus)
 	}
 
 	container := e.GetIntegrationContainer()
@@ -66,7 +66,7 @@ func (t *prometheusTrait) Apply(e *Environment) error {
 			v1.IntegrationConditionPrometheusAvailable,
 			corev1.ConditionFalse,
 			v1.IntegrationConditionContainerNotAvailableReason,
-			"",
+			"integration container not available",
 		)
 		return nil
 	}
@@ -77,30 +77,17 @@ func (t *prometheusTrait) Apply(e *Environment) error {
 		Reason: v1.IntegrationConditionPrometheusAvailableReason,
 	}
 
-	controller, err := e.DetermineControllerStrategy()
-	if err != nil {
-		return err
-	}
-
 	containerPort := e.getIntegrationContainerPort()
 	if containerPort == nil {
-		containerPort = t.getContainerPort(e, controller)
+		containerPort = e.createContainerPort()
 		container.Ports = append(container.Ports, *containerPort)
 	}
 
 	condition.Message = fmt.Sprintf("%s(%d)", container.Name, containerPort.ContainerPort)
 
 	// Add the PodMonitor resource
-	if pointer.BoolDeref(t.PodMonitor, false) {
-		portName := containerPort.Name
-		// Knative defaults to naming the userland container port "user-port".
-		// Let's rely on that default, granted it is not officially part of the Knative
-		// runtime contract.
-		// See https://github.com/knative/specs/blob/main/specs/serving/runtime-contract.md
-		if portName == "" && controller == ControllerStrategyKnativeService {
-			portName = "user-port"
-		}
-
+	if ptr.Deref(t.PodMonitor, true) {
+		portName := getPortName(containerPort.Name)
 		podMonitor, err := t.getPodMonitorFor(e, portName)
 		if err != nil {
 			return err
@@ -116,27 +103,13 @@ func (t *prometheusTrait) Apply(e *Environment) error {
 	return nil
 }
 
-func (t *prometheusTrait) getContainerPort(e *Environment, controller ControllerStrategy) *corev1.ContainerPort {
-	var name string
-	var port int
-
-	if t := e.Catalog.GetTrait(containerTraitID); t != nil {
-		if ct, ok := t.(*containerTrait); ok {
-			name = ct.PortName
-			port = ct.Port
-		}
+func getPortName(portName string) string {
+	// This is a workaround to fix Knative behavior
+	// as described in https://github.com/apache/camel-k/issues/6014
+	if portName == defaultKnativeContainerPortName {
+		return "user-port"
 	}
-
-	// Let's rely on Knative default HTTP negotiation
-	if name == "" && controller != ControllerStrategyKnativeService {
-		name = defaultContainerPortName
-	}
-
-	return &corev1.ContainerPort{
-		Name:          name,
-		ContainerPort: int32(port),
-		Protocol:      corev1.ProtocolTCP,
-	}
+	return portName
 }
 
 func (t *prometheusTrait) getPodMonitorFor(e *Environment, portName string) (*monitoringv1.PodMonitor, error) {

@@ -18,62 +18,62 @@ limitations under the License.
 package trait
 
 import (
-	"fmt"
-
+	"github.com/apache/camel-k/v2/pkg/install"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/install"
-	"github.com/apache/camel-k/pkg/platform"
-	"github.com/apache/camel-k/pkg/util/defaults"
-	"github.com/apache/camel-k/pkg/util/openshift"
-	image "github.com/apache/camel-k/pkg/util/registry"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/util/boolean"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
+	"github.com/apache/camel-k/v2/pkg/util/openshift"
+)
+
+const (
+	platformTraitID    = "platform"
+	platformTraitOrder = 100
 )
 
 type platformTrait struct {
-	BaseTrait
+	BasePlatformTrait
 	traitv1.PlatformTrait `property:",squash"`
+	// Parameters to be used internally
+	createDefault *bool
+	global        *bool
 }
 
 func newPlatformTrait() Trait {
 	return &platformTrait{
-		BaseTrait: NewBaseTrait("platform", 100),
+		BasePlatformTrait: NewBasePlatformTrait(platformTraitID, platformTraitOrder),
 	}
 }
 
-func (t *platformTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, true) {
-		return false, nil
+func (t *platformTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil || e.Integration.IsSynthetic() {
+		// Don't run this trait for a synthetic integration
+		return false, nil, nil
 	}
 
 	if !e.IntegrationInPhase(v1.IntegrationPhaseNone, v1.IntegrationPhaseWaitingForPlatform) {
-		return false, nil
+		return false, nil, nil
 	}
 
-	if !pointer.BoolDeref(t.Auto, false) {
-		if e.Platform == nil {
-			if t.CreateDefault == nil {
-				// Calculate if the platform should be automatically created when missing.
-				if ocp, err := openshift.IsOpenShift(t.Client); err != nil {
-					return false, err
-				} else if ocp {
-					t.CreateDefault = &ocp
-				} else if addr, err := image.GetRegistryAddress(e.Ctx, t.Client); err != nil {
-					return false, err
-				} else if addr != nil {
-					t.CreateDefault = pointer.Bool(true)
-				}
-			}
-			if t.Global == nil {
-				globalOperator := platform.IsCurrentOperatorGlobal()
-				t.Global = &globalOperator
-			}
+	if t.CreateDefault == nil && ptr.Deref(t.Auto, false) && e.Platform == nil {
+		// Calculate if the platform should be automatically created when missing.
+		if ocp, err := openshift.IsOpenShift(t.Client); err != nil {
+			return false, nil, err
+		} else if ocp {
+			t.createDefault = ptr.To(true)
 		}
 	}
 
-	return true, nil
+	if t.Global == nil {
+		globalOperator := platform.IsCurrentOperatorGlobal()
+		t.global = &globalOperator
+	}
+
+	return true, nil, nil
 }
 
 func (t *platformTrait) Apply(e *Environment) error {
@@ -111,52 +111,81 @@ func (t *platformTrait) Apply(e *Environment) error {
 }
 
 func (t *platformTrait) getOrCreatePlatform(e *Environment) (*v1.IntegrationPlatform, error) {
-	pl, err := platform.GetOrFindForResource(e.Ctx, t.Client, e.Integration, false)
-	if err != nil && apierrors.IsNotFound(err) && pointer.BoolDeref(t.CreateDefault, false) {
-		platformName := e.Integration.Status.Platform
-		if platformName == "" {
-			platformName = defaults.OperatorID()
-		}
-
-		if platformName == "" {
-			platformName = platform.DefaultPlatformName
-		}
-		namespace := e.Integration.Namespace
-		if pointer.BoolDeref(t.Global, false) {
-			operatorNamespace := platform.GetOperatorNamespace()
-			if operatorNamespace != "" {
-				namespace = operatorNamespace
-			}
-		}
-		defaultPlatform := v1.NewIntegrationPlatform(namespace, platformName)
-		if defaultPlatform.Labels == nil {
-			defaultPlatform.Labels = make(map[string]string)
-		}
-		defaultPlatform.Labels["camel.apache.org/platform.generated"] = True
-		// Cascade the operator id in charge to reconcile the Integration
-		if v1.GetOperatorIDAnnotation(e.Integration) != "" {
-			defaultPlatform.SetOperatorID(v1.GetOperatorIDAnnotation(e.Integration))
-		}
-		pl = &defaultPlatform
+	pl, err := platform.GetForResource(e.Ctx, t.Client, e.Integration)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	if apierrors.IsNotFound(err) && ptr.Deref(t.getCreateDefault(), false) {
+		pl = t.createDefaultPlatform(e)
 		e.Resources.Add(pl)
 
-		// Make sure that IntegrationPlatform installed in operator namespace can be seen by others
-		if err := install.IntegrationPlatformViewerRole(e.Ctx, t.Client, namespace); err != nil && !apierrors.IsAlreadyExists(err) {
-			t.L.Info(fmt.Sprintf("Cannot install global IntegrationPlatform viewer role in namespace '%s': skipping.", namespace))
-		}
-
-		return pl, nil
+		t.installViewerRole(e, pl)
 	}
 
-	return pl, err
-}
+	if err != nil {
+		return nil, err
+	}
 
-// IsPlatformTrait overrides base class method.
-func (t *platformTrait) IsPlatformTrait() bool {
-	return true
+	return pl, nil
 }
 
 // RequiresIntegrationPlatform overrides base class method.
 func (t *platformTrait) RequiresIntegrationPlatform() bool {
 	return false
+}
+
+func (t *platformTrait) createDefaultPlatform(e *Environment) *v1.IntegrationPlatform {
+	platformName := e.Integration.Status.Platform
+	if platformName == "" {
+		platformName = defaults.OperatorID()
+	}
+
+	if platformName == "" {
+		platformName = platform.DefaultPlatformName
+	}
+	namespace := e.Integration.Namespace
+	if ptr.Deref(t.getGlobal(), false) {
+		operatorNamespace := platform.GetOperatorNamespace()
+		if operatorNamespace != "" {
+			namespace = operatorNamespace
+		}
+	}
+
+	defaultPlatform := v1.NewIntegrationPlatform(namespace, platformName)
+	if defaultPlatform.Labels == nil {
+		defaultPlatform.Labels = make(map[string]string)
+	}
+	defaultPlatform.Labels["app"] = "camel-k"
+	defaultPlatform.Labels["camel.apache.org/platform.generated"] = boolean.TrueString
+
+	// Cascade the operator id in charge to reconcile the Integration
+	if v1.GetOperatorIDAnnotation(e.Integration) != "" {
+		defaultPlatform.SetOperatorID(v1.GetOperatorIDAnnotation(e.Integration))
+	}
+
+	return &defaultPlatform
+}
+
+func (t *platformTrait) installViewerRole(e *Environment, itp *v1.IntegrationPlatform) {
+	// Make sure that IntegrationPlatform installed in operator namespace can be seen by others
+	err := install.IntegrationPlatformViewerRole(e.Ctx, t.Client, itp.Namespace)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		t.L.Infof("Cannot install global IntegrationPlatform viewer role in namespace '%s': skipping.", itp.Namespace)
+	}
+}
+
+func (t *platformTrait) getCreateDefault() *bool {
+	if t.CreateDefault == nil {
+		return t.createDefault
+	}
+
+	return t.CreateDefault
+}
+
+func (t *platformTrait) getGlobal() *bool {
+	if t.Global == nil {
+		return t.global
+	}
+
+	return t.Global
 }

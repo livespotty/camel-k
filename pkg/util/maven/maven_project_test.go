@@ -20,10 +20,11 @@ package maven
 import (
 	"testing"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const expectedPom = `<?xml version="1.0" encoding="UTF-8"?>
@@ -80,6 +81,7 @@ const expectedPom = `<?xml version="1.0" encoding="UTF-8"?>
       </releases>
     </pluginRepository>
   </pluginRepositories>
+  <profiles><profile><id>custom</id></profile></profiles>
 </project>`
 
 func TestPomGeneration(t *testing.T) {
@@ -129,59 +131,86 @@ func TestPomGeneration(t *testing.T) {
 		},
 	}
 
+	project.Profiles = ProfilesContent{InnerXML: `<profile><id>custom</id></profile>`}
+
 	pom, err := util.EncodeXML(project)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, pom)
 
 	assert.Equal(t, expectedPom, string(pom))
 }
 
-func TestParseSimpleGAV(t *testing.T) {
+func TestParseGAV(t *testing.T) {
 	dep, err := ParseGAV("org.apache.camel:camel-core:2.21.1")
+	require.NoError(t, err)
+	assert.Equal(t, "org.apache.camel", dep.GroupID)
+	assert.Equal(t, "camel-core", dep.ArtifactID)
+	assert.Empty(t, dep.Type)
+	assert.Equal(t, "2.21.1", dep.Version)
+	assert.Empty(t, dep.Classifier)
 
-	assert.Nil(t, err)
+	dep, err = ParseGAV("org.apache.camel:camel-core:war:2.21.1")
+	require.NoError(t, err)
 	assert.Equal(t, dep.GroupID, "org.apache.camel")
 	assert.Equal(t, dep.ArtifactID, "camel-core")
-	assert.Equal(t, dep.Version, "2.21.1")
-	assert.Equal(t, dep.Type, "")
-	assert.Equal(t, dep.Classifier, "")
-}
-
-func TestParseGAVWithType(t *testing.T) {
-	dep, err := ParseGAV("org.apache.camel:camel-core:war:2.21.1")
-
-	assert.Nil(t, err)
-	assert.Equal(t, dep.GroupID, "org.apache.camel")
-	assert.Equal(t, dep.ArtifactID, "camel-core")
-	assert.Equal(t, dep.Version, "2.21.1")
 	assert.Equal(t, dep.Type, "war")
-	assert.Equal(t, dep.Classifier, "")
-}
+	assert.Equal(t, dep.Version, "2.21.1")
+	assert.Empty(t, dep.Classifier)
 
-func TestParseGAVWithClassifierAndType(t *testing.T) {
-	dep, err := ParseGAV("org.apache.camel:camel-core:war:test:2.21.1")
-
-	assert.Nil(t, err)
+	dep, err = ParseGAV("org.apache.camel:camel-core:war:2.21.1:test")
+	require.NoError(t, err)
 	assert.Equal(t, dep.GroupID, "org.apache.camel")
 	assert.Equal(t, dep.ArtifactID, "camel-core")
-	assert.Equal(t, dep.Version, "2.21.1")
 	assert.Equal(t, dep.Type, "war")
+	assert.Equal(t, dep.Version, "2.21.1")
 	assert.Equal(t, dep.Classifier, "test")
-}
 
-func TestParseGAVMvnNoVersion(t *testing.T) {
-	dep, err := ParseGAV("org.apache.camel:camel-core")
-
-	assert.Nil(t, err)
+	dep, err = ParseGAV("org.apache.camel:camel-core")
+	require.NoError(t, err)
 	assert.Equal(t, dep.GroupID, "org.apache.camel")
 	assert.Equal(t, dep.ArtifactID, "camel-core")
+	assert.Empty(t, dep.Type)
+	assert.Empty(t, dep.Version)
+	assert.Empty(t, dep.Classifier)
+
+	dep, err = ParseGAV("org.apache.camel:camel-k-core:jar::custom")
+	require.NoError(t, err)
+	assert.Equal(t, dep.GroupID, "org.apache.camel")
+	assert.Equal(t, dep.ArtifactID, "camel-k-core")
+	assert.Equal(t, dep.Type, "jar")
+	assert.Empty(t, dep.Version)
+	assert.Equal(t, dep.Classifier, "custom")
+	//
+	dep, err = ParseGAV("org.apache.camel:camel-k-core::1.2.3:foo")
+	require.NoError(t, err)
+	assert.Equal(t, dep.GroupID, "org.apache.camel")
+	assert.Equal(t, dep.ArtifactID, "camel-k-core")
+	assert.Empty(t, dep.Type)
+	assert.Equal(t, dep.Version, "1.2.3")
+	assert.Equal(t, dep.Classifier, "foo")
+
+	dep, err = ParseGAV("org.apache.camel:camel-k-core:::custom")
+	require.NoError(t, err)
+	assert.Equal(t, dep.GroupID, "org.apache.camel")
+	assert.Equal(t, dep.ArtifactID, "camel-k-core")
+	assert.Empty(t, dep.Type)
+	assert.Empty(t, dep.Version)
+	assert.Equal(t, dep.Classifier, "custom")
+
+	dep, err = ParseGAV("org.apache.camel:camel-k-core:jar")
+	require.NoError(t, err)
+	assert.Equal(t, dep.GroupID, "org.apache.camel")
+	assert.Equal(t, dep.ArtifactID, "camel-k-core")
+	assert.Equal(t, dep.Type, "jar")
+	assert.Empty(t, dep.Version)
+	assert.Empty(t, dep.Classifier)
 }
 
 func TestParseGAVErrorNoColumn(t *testing.T) {
 	dep, err := ParseGAV("org.apache.camel.k.camel-k-runtime-noop-0.2.1-SNAPSHOT.jar")
 
-	assert.EqualError(t, err, "GAV must match <groupId>:<artifactId>[:<packagingType>[:<classifier>]]:(<version>|'?')")
+	require.EqualError(t, err, "GAV must match <groupId>:<artifactId>[:<packagingType>]:(<version>)[:<classifier>]")
 	assert.Equal(t, Dependency{}, dep)
 }
 

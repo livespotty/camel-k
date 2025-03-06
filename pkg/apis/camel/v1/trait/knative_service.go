@@ -26,6 +26,10 @@ package trait
 // +camel-k:trait=knative-service.
 type KnativeServiceTrait struct {
 	Trait `property:",squash" json:",inline"`
+	// The annotations added to route.
+	// This can be used to set knative service specific annotations
+	// CLI usage example: -t "knative-service.annotations.'haproxy.router.openshift.io/balance'=true"
+	Annotations map[string]string `property:"annotations" json:"annotations,omitempty"`
 	// Configures the Knative autoscaling class property (e.g. to set `hpa.autoscaling.knative.dev` or `kpa.autoscaling.knative.dev` autoscaling).
 	//
 	// Refer to the Knative documentation for more information.
@@ -64,4 +68,9 @@ type KnativeServiceTrait struct {
 	// * Integration is using the Knative profile
 	// * All routes are either starting from an HTTP based consumer or a passive consumer (e.g. `direct` is a passive consumer)
 	Auto *bool `property:"auto" json:"auto,omitempty"`
+	// The maximum duration in seconds that the request instance is allowed to respond to a request.
+	// This field propagates to the integration pod's terminationGracePeriodSeconds
+	//
+	// Refer to the Knative documentation for more information.
+	TimeoutSeconds *int64 `property:"timeout-seconds" json:"timeoutSeconds,omitempty"`
 }

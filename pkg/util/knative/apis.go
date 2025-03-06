@@ -18,8 +18,8 @@ limitations under the License.
 package knative
 
 import (
-	knativev1 "github.com/apache/camel-k/pkg/apis/camel/v1/knative"
-	"github.com/apache/camel-k/pkg/util"
+	knativev1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/knative"
+	"github.com/apache/camel-k/v2/pkg/util"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -130,19 +130,6 @@ var (
 				Version: "v1beta1",
 			},
 			Resource: "brokers",
-		},
-	}
-
-	// RequiredKinds are Knative kinds used by Camel K for materializing integrations.
-	// They must be present on the cluster.
-	RequiredKinds = []GroupVersionKindResource{
-		{
-			GroupVersionKind: schema.GroupVersionKind{
-				Kind:    "Service",
-				Group:   "serving.knative.dev",
-				Version: "v1",
-			},
-			Resource: "services",
 		},
 	}
 )

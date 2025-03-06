@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -33,10 +33,11 @@ func newKameletRemoveRepoCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *k
 	}
 
 	cmd := cobra.Command{
-		Use:     "remove-repo github:owner/repo[/path_to_kamelets_folder][@version] ...",
-		Short:   "Remove a Kamelet repository",
-		Long:    `Remove a Kamelet repository.`,
-		PreRunE: decode(&options),
+		Use:        "remove-repo github:owner/repo[/path_to_kamelets_folder][@version] ...",
+		Short:      "Remove a Kamelet repository",
+		Long:       `Remove a Kamelet repository.`,
+		Deprecated: "consider using kubectl (or oc) command instead.",
+		PreRunE:    decode(&options, options.Flags),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(args); err != nil {
 				return err
@@ -45,7 +46,7 @@ func newKameletRemoveRepoCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *k
 		},
 	}
 
-	cmd.Flags().StringP("operator-id", "x", "", "Id of the Operator to update. If not set, the active primary Integration Platform is updated.")
+	cmd.Flags().StringP("operator-id", "x", "", "Id of the Operator to update. If not set, the default active Integration Platform is updated.")
 
 	return &cmd, &options
 }
@@ -88,7 +89,7 @@ func (o *kameletRemoveRepoCommandOptions) run(cmd *cobra.Command, args []string)
 	return c.Update(o.Context, platform)
 }
 
-func getURIIndex(uri string, repositories []v1.IntegrationPlatformKameletRepositorySpec) (int, error) {
+func getURIIndex(uri string, repositories []v1.KameletRepositorySpec) (int, error) {
 	for i, repo := range repositories {
 		if repo.URI == uri {
 			return i, nil

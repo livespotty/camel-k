@@ -19,8 +19,6 @@ package cmd
 
 import (
 	"testing"
-
-	"github.com/apache/camel-k/pkg/util/test"
 )
 
 func TestLogsAlias(t *testing.T) {
@@ -28,9 +26,9 @@ func TestLogsAlias(t *testing.T) {
 	logCommand, _ := newCmdLog(options)
 	rootCommand.AddCommand(logCommand)
 
-	kamelTestPostAddCommandInit(t, rootCommand)
+	kamelTestPostAddCommandInit(t, rootCommand, options)
 
-	_, err := test.ExecuteCommand(rootCommand, "logs")
+	_, err := ExecuteCommand(rootCommand, "logs")
 
 	// in case of error we expect this to be the log default message
 	if err != nil && err.Error() != "log expects an integration name argument" {

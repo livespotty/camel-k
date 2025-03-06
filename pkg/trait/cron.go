@@ -26,15 +26,27 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/metadata"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/label"
-	"github.com/apache/camel-k/pkg/util/uri"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/metadata"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/source"
+	"github.com/apache/camel-k/v2/pkg/util/uri"
+)
+
+const (
+	cronTraitID               = "cron"
+	cronTraitOrder            = 1000
+	cronStrategySelectorOrder = 1000
+
+	defaultCronActiveDeadlineSeconds   = int64(60)
+	defaultCronBackoffLimit            = int32(2)
+	genericCronComponent               = "cron"
+	genericCronComponentFallbackScheme = "quartz"
+
+	overriddenFromURI = "timer:camel-k-overridden-cron?delay=0&period=1&repeatCount=1"
 )
 
 type cronTrait struct {
@@ -53,11 +65,6 @@ type cronInfo struct {
 // cronExtractor extracts cron information from a Camel URI.
 type cronExtractor func(string) *cronInfo
 
-const (
-	genericCronComponent               = "cron"
-	genericCronComponentFallbackScheme = "quartz"
-)
-
 var (
 	camelTimerPeriodMillis = regexp.MustCompile(`^[0-9]+$`)
 
@@ -70,141 +77,139 @@ var (
 
 func newCronTrait() Trait {
 	return &cronTrait{
-		BaseTrait: NewBaseTrait("cron", 1000),
+		BaseTrait: NewBaseTrait(cronTraitID, cronTraitOrder),
 	}
 }
 
-func (t *cronTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, true) {
-		if e.Integration != nil {
-			e.Integration.Status.SetCondition(
-				v1.IntegrationConditionCronJobAvailable,
-				corev1.ConditionFalse,
-				v1.IntegrationConditionCronJobNotAvailableReason,
-				"explicitly disabled",
-			)
-		}
-
-		return false, nil
+func (t *cronTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil {
+		return false, nil, nil
 	}
-
+	if !ptr.Deref(t.Enabled, true) {
+		return false, NewIntegrationConditionUserDisabled("Cron"), nil
+	}
 	if !e.IntegrationInPhase(v1.IntegrationPhaseInitialization) && !e.IntegrationInRunningPhases() {
-		return false, nil
+		return false, nil, nil
 	}
 
-	if _, ok := e.CamelCatalog.Runtime.Capabilities[v1.CapabilityCron]; !ok {
-		e.Integration.Status.SetCondition(
-			v1.IntegrationConditionCronJobAvailable,
-			corev1.ConditionFalse,
-			v1.IntegrationConditionCronJobNotAvailableReason,
-			"the runtime provider %s does not declare 'cron' capability",
-		)
-
-		return false, nil
-	}
-
-	if pointer.BoolDeref(t.Auto, true) {
-		globalCron, err := t.getGlobalCron(e)
+	if ptr.Deref(t.Auto, true) {
+		err := t.autoConfigure(e)
 		if err != nil {
-			e.Integration.Status.SetErrorCondition(
-				v1.IntegrationConditionCronJobAvailable,
-				v1.IntegrationConditionCronJobNotAvailableReason,
-				err,
-			)
-			return false, err
-		}
-
-		if t.Schedule == "" && globalCron != nil {
-			t.Schedule = globalCron.schedule
-		}
-
-		if globalCron != nil {
-			configuredComponents := strings.FieldsFunc(t.Components, func(c rune) bool { return c == ',' })
-			for _, c := range globalCron.components {
-				util.StringSliceUniqueAdd(&configuredComponents, c)
-			}
-			t.Components = strings.Join(configuredComponents, ",")
-		}
-
-		if t.ConcurrencyPolicy == "" {
-			t.ConcurrencyPolicy = string(batchv1.ForbidConcurrent)
-		}
-
-		if (t.Schedule == "" && t.Components == "") && t.Fallback == nil {
-			// If there's at least a `cron` endpoint, add a fallback implementation
-			fromURIs, err := t.getSourcesFromURIs(e)
-			if err != nil {
-				return false, err
-			}
-			for _, fromURI := range fromURIs {
-				if uri.GetComponent(fromURI) == genericCronComponent {
-					t.Fallback = pointer.Bool(true)
-					break
-				}
-			}
+			return false,
+				NewIntegrationCondition(
+					"Cron",
+					v1.IntegrationConditionCronJobAvailable,
+					corev1.ConditionFalse,
+					v1.IntegrationConditionCronJobNotAvailableReason,
+					err.Error(),
+				),
+				err
 		}
 	}
 
 	// Fallback strategy can be implemented in any other controller
-	if pointer.BoolDeref(t.Fallback, false) {
+	if ptr.Deref(t.Fallback, false) {
+		var condition *TraitCondition
 		if e.IntegrationInPhase(v1.IntegrationPhaseDeploying) {
-			e.Integration.Status.SetCondition(
+			condition = NewIntegrationCondition(
+				"Cron",
 				v1.IntegrationConditionCronJobAvailable,
 				corev1.ConditionFalse,
 				v1.IntegrationConditionCronJobNotAvailableReason,
 				"fallback strategy selected",
 			)
 		}
-		return true, nil
+		return true, condition, nil
 	}
 
 	// CronJob strategy requires common schedule
 	strategy, err := e.DetermineControllerStrategy()
 	if err != nil {
-		e.Integration.Status.SetErrorCondition(
+		return false, NewIntegrationCondition(
+			"Cron",
 			v1.IntegrationConditionCronJobAvailable,
+			corev1.ConditionFalse,
 			v1.IntegrationConditionCronJobNotAvailableReason,
-			err,
-		)
-		return false, err
+			err.Error(),
+		), err
 	}
 	if strategy != ControllerStrategyCronJob {
-		if e.IntegrationInPhase(v1.IntegrationPhaseDeploying) {
-			e.Integration.Status.SetCondition(
-				v1.IntegrationConditionCronJobAvailable,
-				corev1.ConditionFalse,
-				v1.IntegrationConditionCronJobNotAvailableReason,
-				fmt.Sprintf("different controller strategy used (%s)", string(strategy)),
-			)
-		}
-		return false, nil
+		return false, nil, nil
 	}
 
-	return t.Schedule != "", nil
+	if t.Schedule != "" {
+		t.Enabled = ptr.To(true)
+	}
+
+	return ptr.Deref(t.Enabled, false), nil, nil
+}
+
+func (t *cronTrait) autoConfigure(e *Environment) error {
+	globalCron, err := t.getGlobalCron(e)
+	if err != nil {
+		return err
+	}
+
+	if t.Schedule == "" && globalCron != nil {
+		t.Schedule = globalCron.schedule
+	}
+
+	if globalCron != nil {
+		configuredComponents := strings.FieldsFunc(t.Components, func(c rune) bool { return c == ',' })
+		for _, c := range globalCron.components {
+			util.StringSliceUniqueAdd(&configuredComponents, c)
+		}
+		t.Components = strings.Join(configuredComponents, ",")
+	}
+
+	if (t.Schedule == "" && t.Components == "") && t.Fallback == nil {
+		// If there's at least a `cron` endpoint, add a fallback implementation
+		fromURIs, err := t.getSourcesFromURIs(e)
+		if err != nil {
+			return err
+		}
+		for _, fromURI := range fromURIs {
+			if uri.GetComponent(fromURI) == genericCronComponent {
+				t.Fallback = ptr.To(true)
+				break
+			}
+		}
+	}
+
+	return nil
 }
 
 func (t *cronTrait) Apply(e *Environment) error {
+	//nolint: nestif
 	if e.IntegrationInPhase(v1.IntegrationPhaseInitialization) {
 		util.StringSliceUniqueAdd(&e.Integration.Status.Capabilities, v1.CapabilityCron)
-
-		if pointer.BoolDeref(t.Fallback, false) {
+		if ptr.Deref(t.Fallback, false) {
 			fallbackArtifact := e.CamelCatalog.GetArtifactByScheme(genericCronComponentFallbackScheme)
 			if fallbackArtifact == nil {
 				return fmt.Errorf("no fallback artifact for scheme %q has been found in camel catalog", genericCronComponentFallbackScheme)
 			}
 			util.StringSliceUniqueAdd(&e.Integration.Status.Dependencies, fallbackArtifact.GetDependencyID())
 			util.StringSliceUniqueConcat(&e.Integration.Status.Dependencies, fallbackArtifact.GetConsumerDependencyIDs(genericCronComponentFallbackScheme))
+
+			return nil
 		}
+		// Will change the "from" URI in order to execute the task just once
+		if err := t.changeSourcesCronURI(e); err != nil {
+			return err
+		}
+		cronComponentArtifact := e.CamelCatalog.GetArtifactByScheme("timer")
+		if cronComponentArtifact == nil {
+			return fmt.Errorf("no timer artifact has been found in camel catalog")
+		}
+		util.StringSliceUniqueAdd(&e.Integration.Status.Dependencies, cronComponentArtifact.GetDependencyID())
 	}
 
-	if !pointer.BoolDeref(t.Fallback, false) && e.IntegrationInRunningPhases() {
+	if e.IntegrationInRunningPhases() && !ptr.Deref(t.Fallback, false) {
 		if e.ApplicationProperties == nil {
 			e.ApplicationProperties = make(map[string]string)
 		}
-
-		e.ApplicationProperties["camel.main.duration-max-idle-seconds"] = "5"
-		e.ApplicationProperties["loader.interceptor.cron.overridable-components"] = t.Components
-		e.Interceptors = append(e.Interceptors, "cron")
+		// Will instruct the context to stop as soon as the first message is done
+		e.ApplicationProperties["camel.main.durationMaxMessages"] = "1"
 
 		cronJob := t.getCronJobFor(e)
 		e.Resources.Add(cronJob)
@@ -213,7 +218,12 @@ func (t *cronTrait) Apply(e *Environment) error {
 			v1.IntegrationConditionCronJobAvailable,
 			corev1.ConditionTrue,
 			v1.IntegrationConditionCronJobAvailableReason,
-			fmt.Sprintf("CronJob name is %s", cronJob.Name))
+			fmt.Sprintf(
+				"CronJob name is %s. Notice that the routes \"from\" parameter was changed to "+
+					"\"%s\" in order to be able to trigger the Camel application as a CronJob.",
+				cronJob.Name,
+				overriddenFromURI,
+			))
 	}
 
 	return nil
@@ -227,16 +237,15 @@ func (t *cronTrait) getCronJobFor(e *Environment) *batchv1.CronJob {
 		}
 	}
 
-	activeDeadline := int64(60)
+	activeDeadline := defaultCronActiveDeadlineSeconds
 	if t.ActiveDeadlineSeconds != nil {
 		activeDeadline = *t.ActiveDeadlineSeconds
 	}
 
-	backoffLimit := int32(2)
+	backoffLimit := defaultCronBackoffLimit
 	if t.BackoffLimit != nil {
 		backoffLimit = *t.BackoffLimit
 	}
-
 	cronjob := batchv1.CronJob{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "CronJob",
@@ -252,7 +261,8 @@ func (t *cronTrait) getCronJobFor(e *Environment) *batchv1.CronJob {
 		},
 		Spec: batchv1.CronJobSpec{
 			Schedule:                t.Schedule,
-			ConcurrencyPolicy:       batchv1.ConcurrencyPolicy(t.ConcurrencyPolicy),
+			TimeZone:                t.TimeZone,
+			ConcurrencyPolicy:       t.getConcurrentPolicy(),
 			StartingDeadlineSeconds: t.StartingDeadlineSeconds,
 			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
@@ -260,7 +270,9 @@ func (t *cronTrait) getCronJobFor(e *Environment) *batchv1.CronJob {
 					BackoffLimit:          &backoffLimit,
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels:      label.AddLabels(e.Integration.Name),
+							Labels: map[string]string{
+								v1.IntegrationLabel: e.Integration.Name,
+							},
 							Annotations: annotations,
 						},
 						Spec: corev1.PodSpec{
@@ -279,16 +291,13 @@ func (t *cronTrait) getCronJobFor(e *Environment) *batchv1.CronJob {
 // SelectControllerStrategy can be used to check if a CronJob can be generated given the integration and trait settings.
 func (t *cronTrait) SelectControllerStrategy(e *Environment) (*ControllerStrategy, error) {
 	cronStrategy := ControllerStrategyCronJob
-	if !pointer.BoolDeref(t.Enabled, true) {
-		return nil, nil
-	}
-	if pointer.BoolDeref(t.Fallback, false) {
+	if ptr.Deref(t.Fallback, false) {
 		return nil, nil
 	}
 	if t.Schedule != "" {
 		return &cronStrategy, nil
 	}
-	if pointer.BoolDeref(t.Auto, true) {
+	if ptr.Deref(t.Auto, true) {
 		globalCron, err := t.getGlobalCron(e)
 		if err == nil && globalCron != nil {
 			return &cronStrategy, nil
@@ -298,7 +307,7 @@ func (t *cronTrait) SelectControllerStrategy(e *Environment) (*ControllerStrateg
 }
 
 func (t *cronTrait) ControllerStrategySelectorOrder() int {
-	return 1000
+	return cronStrategySelectorOrder
 }
 
 // Gathering cron information
@@ -348,17 +357,24 @@ func (t *cronTrait) getGlobalCron(e *Environment) (*cronInfo, error) {
 }
 
 func (t *cronTrait) getSourcesFromURIs(e *Environment) ([]string, error) {
-	var sources []v1.SourceSpec
-	var err error
-	if sources, err = kubernetes.ResolveIntegrationSources(e.Ctx, t.Client, e.Integration, e.Resources); err != nil {
-		return nil, err
-	}
-	meta, err := metadata.ExtractAll(e.CamelCatalog, sources)
+	var fromUris []string
+	_, err := e.ConsumeMeta(true, func(meta metadata.IntegrationMetadata) bool {
+		fromUris = meta.FromURIs
+		return true
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	return meta.FromURIs, nil
+	return fromUris, nil
+}
+
+func (t *cronTrait) getConcurrentPolicy() batchv1.ConcurrencyPolicy {
+	if t.ConcurrencyPolicy == "" {
+		return batchv1.ForbidConcurrent
+	}
+
+	return batchv1.ConcurrencyPolicy(t.ConcurrencyPolicy)
 }
 
 func getCronForURIs(camelURIs []string) *cronInfo {
@@ -390,6 +406,7 @@ func getCronForURI(camelURI string) *cronInfo {
 
 // timerToCronInfo converts a timer endpoint to a Kubernetes cron schedule
 
+//nolint:mnd
 func timerToCronInfo(camelURI string) *cronInfo {
 	if uri.GetQueryParameter(camelURI, "delay") != "" ||
 		uri.GetQueryParameter(camelURI, "repeatCount") != "" ||
@@ -492,4 +509,21 @@ func checkedStringToUint64(str string) uint64 {
 		panic(err)
 	}
 	return res
+}
+
+// changeSourcesCronURI is in charge to change the value of the from route with a component that executes
+// the workload just once.
+func (t *cronTrait) changeSourcesCronURI(e *Environment) error {
+	for _, src := range e.Integration.AllSources() {
+		dslInspector := source.InspectorForLanguage(e.CamelCatalog, src.InferLanguage())
+		replaced, err := dslInspector.ReplaceFromURI(&src, overriddenFromURI)
+		if replaced {
+			// replace generated source
+			e.Integration.Status.AddOrReplaceGeneratedSources(src)
+		} else if err != nil {
+			return fmt.Errorf("wasn't able to replace cron uri trigger in source %s", src.Name)
+		}
+	}
+
+	return nil
 }

@@ -22,27 +22,26 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
-	camel "github.com/apache/camel-k/pkg/client/camel/clientset/versioned"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	camel "github.com/apache/camel-k/v2/pkg/client/camel/clientset/versioned"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
-	// NoneRepository is a marker used to indicate that no repository should be used
+	// NoneRepository is a marker used to indicate that no repository should be used.
 	NoneRepository = "none"
 )
 
 var DefaultRemoteRepository = NoneRepository
 
-// KameletRepository can be used to obtain a Kamelet definition, looking it up in one or more physical locations
+// KameletRepository can be used to obtain a Kamelet definition, looking it up in one or more physical locations.
 type KameletRepository interface {
 
 	// List the kamelets available in the repository
 	List(ctx context.Context) ([]string, error)
 
 	// Get the Kamelet corresponding to the given name, or nil if not found
-	Get(ctx context.Context, name string) (*v1alpha1.Kamelet, error)
+	Get(ctx context.Context, name string) (*v1.Kamelet, error)
 
 	// String information about the repository
 	String() string
@@ -74,7 +73,7 @@ func NewForPlatform(ctx context.Context, client camel.Interface, platform *v1.In
 	if platform != nil {
 		repos := getRepositoriesFromPlatform(platform)
 		for _, repoURI := range repos {
-			repoImpl, err := newFromURI(repoURI)
+			repoImpl, err := newFromURI(ctx, repoURI)
 			if err != nil {
 				return nil, err
 			}
@@ -82,39 +81,13 @@ func NewForPlatform(ctx context.Context, client camel.Interface, platform *v1.In
 		}
 	} else {
 		// Add default repo
-		defaultRepoImpl, err := newFromURI(DefaultRemoteRepository)
+		defaultRepoImpl, err := newFromURI(ctx, DefaultRemoteRepository)
 		if err != nil {
 			return nil, err
 		}
 		repoImpls = append(repoImpls, defaultRepoImpl)
 	}
 
-	return newCompositeKameletRepository(repoImpls...), nil
-}
-
-// NewStandalone creates a KameletRepository that can be used in cases where there's no connection to a Kubernetes cluster.
-// The given uris are used to construct the repositories.
-// If the uris parameter is nil, then only the DefaultRemoteRepository will be included.
-func NewStandalone(uris ...string) (KameletRepository, error) {
-	repoImpls := make([]KameletRepository, 0, len(uris)+1)
-	for _, repoURI := range uris {
-		repoImpl, err := newFromURI(repoURI)
-		if err != nil {
-			return nil, err
-		}
-		if repoImpl != nil {
-			repoImpls = append(repoImpls, repoImpl)
-		}
-	}
-	if len(repoImpls) == 0 {
-		defaultRepoImpl, err := newFromURI(DefaultRemoteRepository)
-		if err != nil {
-			return nil, err
-		}
-		if defaultRepoImpl != nil {
-			repoImpls = append(repoImpls, defaultRepoImpl)
-		}
-	}
 	return newCompositeKameletRepository(repoImpls...), nil
 }
 
@@ -153,7 +126,7 @@ func getRepositoriesFromPlatform(platform *v1.IntegrationPlatform) []string {
 	return res
 }
 
-func newFromURI(uri string) (KameletRepository, error) {
+func newFromURI(ctx context.Context, uri string) (KameletRepository, error) {
 	if uri == NoneRepository {
 		return newEmptyKameletRepository(), nil
 	} else if strings.HasPrefix(uri, "github:") {
@@ -171,10 +144,11 @@ func newFromURI(uri string) (KameletRepository, error) {
 		owner := parts[0]
 		repo := parts[1]
 		var path string
+
 		if len(parts) >= 3 {
 			path = strings.Join(parts[2:], "/")
 		}
-		return newGithubKameletRepository(owner, repo, path, version), nil
+		return newGithubKameletRepository(ctx, owner, repo, path, version), nil
 	}
 	return nil, fmt.Errorf("invalid uri: %s", uri)
 }

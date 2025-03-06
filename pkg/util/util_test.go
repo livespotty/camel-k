@@ -18,15 +18,19 @@ limitations under the License.
 package util
 
 import (
+	"math"
+	"strings"
 	"testing"
 
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStringContainsPrefix(t *testing.T) {
-	args := []string{"install", "--operator-image=xxx/yyy:zzz", "--registry", "image-registry.openshift-image-registry.svc:5000"}
-	assert.True(t, StringContainsPrefix(args, "--operator-image="))
-	assert.False(t, StringContainsPrefix(args, "--olm"))
+	args := []string{"install", "--operator-image=xxx/yyy:zzz", "--registry", defaults.OpenShiftRegistryAddress}
+	assert.True(t, stringContainsPrefix(args, "--operator-image="))
+	assert.False(t, stringContainsPrefix(args, "--olm"))
 }
 
 func TestRandomString(t *testing.T) {
@@ -34,13 +38,48 @@ func TestRandomString(t *testing.T) {
 	assert.NotEqual(t, RandomString(10), RandomString(10))
 }
 
-func TestSubstringFrom(t *testing.T) {
-	assert.Equal(t, "/bbb/ccc", SubstringFrom("aaa/bbb/ccc", "/"))
-	assert.Empty(t, SubstringFrom("aaa/bbb/ccc", "?"))
-}
-
 func TestSubstringBefore(t *testing.T) {
 	assert.Equal(t, "aaa/bbb", SubstringBefore("aaa/bbb/ccc", "/"))
 	assert.Equal(t, "aaa/bbb", SubstringBefore("aaa/bbb?ccc=ddd", "?"))
 	assert.Empty(t, SubstringBefore("aaa/bbb/ccc", "?"))
+}
+
+func TestIToInt32(t *testing.T) {
+	x := 6000
+	converted, err := IToInt32(x)
+	require.NoError(t, err)
+	assert.Equal(t, int32(6000), *converted)
+	x = math.MaxInt32 + 1
+	converted, err = IToInt32(x)
+	require.Error(t, err)
+	assert.Equal(t, "integer overflow casting to int32 type", err.Error())
+	x = math.MinInt32 - 1
+	converted, err = IToInt32(x)
+	require.Error(t, err)
+	assert.Equal(t, "integer overflow casting to int32 type", err.Error())
+}
+
+func TestIToInt8(t *testing.T) {
+	x := 2
+	converted, err := IToInt8(x)
+	require.NoError(t, err)
+	assert.Equal(t, int8(2), *converted)
+	x = math.MaxInt8 + 1
+	converted, err = IToInt8(x)
+	require.Error(t, err)
+	assert.Equal(t, "integer overflow casting to int8 type", err.Error())
+	x = math.MinInt8 - 1
+	converted, err = IToInt8(x)
+	require.Error(t, err)
+	assert.Equal(t, "integer overflow casting to int8 type", err.Error())
+}
+
+func stringContainsPrefix(slice []string, prefix string) bool {
+	for i := range slice {
+		if strings.HasPrefix(slice[i], prefix) {
+			return true
+		}
+	}
+
+	return false
 }

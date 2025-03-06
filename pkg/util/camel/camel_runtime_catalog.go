@@ -20,13 +20,14 @@ package camel
 import (
 	"strings"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
-// NewRuntimeCatalog creates a runtime catalog with the given catalog spec.
-func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
+// NewRuntimeCatalog creates a runtime catalog with the given catalog.
+func NewRuntimeCatalog(cat v1.CamelCatalog) *RuntimeCatalog {
 	catalog := RuntimeCatalog{}
-	catalog.CamelCatalogSpec = spec
+	catalog.CamelCatalogSpec = cat.Spec
+	catalog.CamelCatalogStatus = cat.Status
 	catalog.artifactByScheme = make(map[string]string)
 	catalog.artifactByDataFormat = make(map[string]string)
 	catalog.schemesByID = make(map[string]v1.CamelScheme)
@@ -36,10 +37,8 @@ func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
 
 	for id, artifact := range catalog.Artifacts {
 		for _, scheme := range artifact.Schemes {
-			scheme := scheme
-
 			// In case of duplicate only, choose the "org.apache.camel.quarkus" artifact (if present).
-			// Workaround for https://github.com/apache/camel-k-runtime/issues/592
+			// Workaround for https://github.com/apache/camel-k/v2-runtime/issues/592
 			if _, duplicate := catalog.artifactByScheme[scheme.ID]; duplicate {
 				if artifact.GroupID != "org.apache.camel.quarkus" {
 					continue
@@ -50,7 +49,6 @@ func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
 			catalog.schemesByID[scheme.ID] = scheme
 		}
 		for _, dataFormat := range artifact.DataFormats {
-			dataFormat := dataFormat
 			catalog.artifactByDataFormat[dataFormat] = id
 		}
 		for _, language := range artifact.Languages {
@@ -77,6 +75,7 @@ func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
 // RuntimeCatalog represents the data structure for a runtime catalog.
 type RuntimeCatalog struct {
 	v1.CamelCatalogSpec
+	v1.CamelCatalogStatus
 
 	artifactByScheme     map[string]string
 	artifactByDataFormat map[string]string
@@ -90,7 +89,7 @@ type RuntimeCatalog struct {
 func (c *RuntimeCatalog) HasArtifact(artifact string) bool {
 	a := artifact
 	if !strings.HasPrefix(a, "camel-") {
-		if c.Runtime.Provider == v1.RuntimeProviderQuarkus {
+		if c.Runtime.Provider.IsQuarkusBased() {
 			a = "camel-quarkus-" + a
 		} else {
 			a = "camel-" + a
@@ -106,7 +105,7 @@ func (c *RuntimeCatalog) HasArtifact(artifact string) bool {
 func (c *RuntimeCatalog) HasLoaderByArtifact(artifact string) bool {
 	a := artifact
 	if !strings.HasPrefix(a, "camel-") {
-		if c.Runtime.Provider == v1.RuntimeProviderQuarkus {
+		if c.Runtime.Provider.IsQuarkusBased() {
 			a = "camel-quarkus-" + a
 		} else {
 			a = "camel-" + a
@@ -179,17 +178,52 @@ func (c *RuntimeCatalog) VisitSchemes(visitor func(string, v1.CamelScheme) bool)
 	}
 }
 
-// DecodeComponent parses an URI and return a camel artifact and a scheme.
+// DecodeComponent parses the given URI and return a camel artifact and a scheme.
 func (c *RuntimeCatalog) DecodeComponent(uri string) (*v1.CamelArtifact, *v1.CamelScheme) {
-	uriSplit := strings.SplitN(uri, ":", 2)
-	if len(uriSplit) < 2 {
-		return nil, nil
+
+	var uriSplit []string
+
+	// Decode URI using formats http://my-site/test?param=value or log:info
+	switch {
+	case strings.Contains(uri, ":"):
+		uriSplit = strings.SplitN(uri, ":", 2)
+		if len(uriSplit) < 2 {
+			return nil, nil
+		}
+	case strings.Contains(uri, "?"):
+		uriSplit = strings.SplitN(uri, "?", 2)
+		if len(uriSplit) < 2 {
+			return nil, nil
+		}
+	default:
+		uriSplit = append(uriSplit, uri)
 	}
+
 	uriStart := uriSplit[0]
-	scheme, ok := c.GetScheme(uriStart)
 	var schemeRef *v1.CamelScheme
-	if ok {
+	if scheme, ok := c.GetScheme(uriStart); ok {
 		schemeRef = &scheme
 	}
 	return c.GetArtifactByScheme(uriStart), schemeRef
+}
+
+// IsResolvable checks given URI for proper Camel format (e.g. resolvable scheme).
+func (c *RuntimeCatalog) IsResolvable(uri string) bool {
+	uriSplit := strings.SplitN(uri, ":", 2)
+
+	if len(uriSplit) == 0 {
+		return false
+	}
+
+	scheme := uriSplit[0]
+	if strings.Contains(scheme, "?") {
+		scheme = strings.SplitN(scheme, "?", 2)[0]
+	}
+
+	if strings.HasPrefix(scheme, "{{") && strings.Contains(scheme, "}}") {
+		// scheme is a property placeholder (e.g. {{url}}) which is not resolvable
+		return false
+	}
+
+	return true
 }

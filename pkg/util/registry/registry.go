@@ -18,14 +18,24 @@ limitations under the License.
 package registry
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/apache/camel-k/v2/pkg/util/io"
+
+	"github.com/apache/camel-k/v2/pkg/client"
+	"go.uber.org/multierr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var knownServersByRegistry = map[string]string{
-	"docker.io": "https://index.docker.io/v1/",
+	"docker.io": "https://index.docker.io/v1/,docker.io",
 }
 
 // Auth contains basic information for authenticating against a container registry.
@@ -57,7 +67,8 @@ func (a Auth) IsSet() bool {
 
 // validate checks if all fields are populated correctly.
 func (a Auth) validate() error {
-	if a.getActualServer() == "" || a.Username == "" {
+	actualSevers := a.getActualServers()
+	if len(actualSevers) < 1 || a.Username == "" {
 		return errors.New("not enough information to generate a registry authentication file")
 	}
 
@@ -75,26 +86,61 @@ func (a Auth) GenerateDockerConfig() ([]byte, error) {
 }
 
 func (a Auth) generateDockerConfigObject() DockerConfigList {
-	return DockerConfigList{
-		map[string]DockerConfig{
-			a.getActualServer(): {
-				Auth: a.encodedCredentials(),
-			},
-		},
+	dockerConfigs := make(map[string]DockerConfig)
+	for _, server := range a.getActualServers() {
+		dockerConfigs[server] = DockerConfig{Auth: a.encodedCredentials()}
 	}
+	return DockerConfigList{Auths: dockerConfigs}
 }
 
-func (a Auth) getActualServer() string {
+func (a Auth) getActualServers() []string {
 	if a.Server != "" {
-		return a.Server
+		return []string{a.Server}
 	}
 	if p, ok := knownServersByRegistry[a.Registry]; ok {
-		return p
+		return strings.Split(p, ",")
 	}
 
-	return a.Registry
+	if a.Registry != "" {
+		return []string{a.Registry}
+	}
+
+	return nil
 }
 
 func (a Auth) encodedCredentials() string {
 	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", a.Username, a.Password)))
+}
+
+// MountSecretRegistryConfig write a file containing the secret registry config in a temporary folder.
+func MountSecretRegistryConfig(ctx context.Context, c client.Client, namespace, prefix, name string) (string, error) {
+	dir, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		return "", err
+	}
+
+	secret, err := c.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if removeErr := os.RemoveAll(dir); removeErr != nil {
+			err = multierr.Append(err, removeErr)
+		}
+		return "", err
+	}
+
+	for file, content := range secret.Data {
+		if err := os.WriteFile(filepath.Join(dir, remap(file)), content, io.FilePerm600); err != nil {
+			if removeErr := os.RemoveAll(dir); removeErr != nil {
+				err = multierr.Append(err, removeErr)
+			}
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func remap(name string) string {
+	if name == ".dockerconfigjson" {
+		return "config.json"
+	}
+	return name
 }

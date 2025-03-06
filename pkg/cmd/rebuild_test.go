@@ -20,9 +20,9 @@ package cmd
 import (
 	"testing"
 
-	"github.com/apache/camel-k/pkg/util/test"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const cmdRebuild = "rebuild"
@@ -33,7 +33,7 @@ func initializeRebuildCmdOptions(t *testing.T) (*rebuildCmdOptions, *cobra.Comma
 
 	options, rootCmd := kamelTestPreAddCommandInit()
 	rebuildCmdOptions := addTestRebuildCmd(*options, rootCmd)
-	kamelTestPostAddCommandInit(t, rootCmd)
+	kamelTestPostAddCommandInit(t, rootCmd, options)
 
 	return rebuildCmdOptions, rootCmd, *options
 }
@@ -47,20 +47,20 @@ func addTestRebuildCmd(options RootCmdOptions, rootCmd *cobra.Command) *rebuildC
 	rebuildCmd.PostRunE = func(c *cobra.Command, args []string) error {
 		return nil
 	}
-	rebuildCmd.Args = test.ArbitraryArgs
+	rebuildCmd.Args = ArbitraryArgs
 	rootCmd.AddCommand(rebuildCmd)
 	return rebuildOptions
 }
 
 func TestRebuildNonExistingFlag(t *testing.T) {
 	_, rootCmd, _ := initializeRebuildCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdRebuild, "--nonExistingFlag")
-	assert.NotNil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdRebuild, "--nonExistingFlag")
+	require.Error(t, err)
 }
 
 func TestRebuildAllFlag(t *testing.T) {
 	rebuildCmdOptions, rootCmd, _ := initializeRebuildCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdRebuild, "--all")
-	assert.Nil(t, err)
-	assert.Equal(t, true, rebuildCmdOptions.RebuildAll)
+	_, err := ExecuteCommand(rootCmd, cmdRebuild, "--all")
+	require.NoError(t, err)
+	assert.True(t, rebuildCmdOptions.RebuildAll)
 }

@@ -20,8 +20,8 @@ package integrationkit
 import (
 	"context"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/digest"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/digest"
 )
 
 // NewErrorAction creates a new error handling action for the kit.
@@ -42,6 +42,11 @@ func (action *errorAction) CanHandle(kit *v1.IntegrationKit) bool {
 }
 
 func (action *errorAction) Handle(ctx context.Context, kit *v1.IntegrationKit) (*v1.IntegrationKit, error) {
+	//nolint: staticcheck
+	if kit.IsExternal() || kit.IsSynthetic() {
+		// do nothing, it's not a managed kit
+		return nil, nil
+	}
 	hash, err := digest.ComputeForIntegrationKit(kit)
 	if err != nil {
 		return nil, err

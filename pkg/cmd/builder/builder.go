@@ -20,13 +20,12 @@ package builder
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
-	"math/rand"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
-	"time"
+
+	"github.com/apache/camel-k/v2/pkg/util/io"
 
 	"k8s.io/apimachinery/pkg/types"
 
@@ -34,12 +33,12 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/builder"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/util/defaults"
-	logger "github.com/apache/camel-k/pkg/util/log"
-	"github.com/apache/camel-k/pkg/util/patch"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/builder"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
+	logger "github.com/apache/camel-k/v2/pkg/util/log"
+	"github.com/apache/camel-k/v2/pkg/util/patch"
 )
 
 const terminationMessagePath = "/dev/termination-log"
@@ -58,7 +57,6 @@ func Run(namespace string, buildName string, taskName string) {
 		o.Development = false
 	}))
 
-	rand.Seed(time.Now().UTC().UnixNano())
 	printVersion()
 
 	c, err := client.NewClient(false)
@@ -108,7 +106,7 @@ func exitOnError(err error, msg string) {
 
 func writeTerminationMessage(message string) {
 	// #nosec G306
-	err := ioutil.WriteFile(terminationMessagePath, []byte(message), 0o644)
+	err := os.WriteFile(terminationMessagePath, []byte(message), io.FilePerm644)
 	if err != nil {
 		log.Error(err, "cannot write termination message")
 	}

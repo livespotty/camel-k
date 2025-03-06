@@ -22,96 +22,118 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rs/xid"
-
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/platform"
-	"github.com/apache/camel-k/pkg/util/log"
-	"github.com/apache/camel-k/pkg/util/test"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/internal"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
+	"github.com/apache/camel-k/v2/pkg/util/log"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestTimeouts_Default(t *testing.T) {
+func TestDefaultRuntimeSpec(t *testing.T) {
 	ip := v1.IntegrationPlatform{}
 	ip.Namespace = "ns"
-	ip.Name = xid.New().String()
-	ip.Spec.Cluster = v1.IntegrationPlatformClusterOpenShift
-	ip.Spec.Profile = v1.TraitProfileOpenShift
-
-	c, err := test.NewFakeClient(&ip)
-	assert.Nil(t, err)
-
-	assert.Nil(t, platform.ConfigureDefaults(context.TODO(), c, &ip, false))
+	ip.Name = "ck"
+	c, err := internal.NewFakeClient(&ip)
+	require.NoError(t, err)
 
 	h := NewInitializeAction()
 	h.InjectLogger(log.Log)
 	h.InjectClient(c)
 
 	answer, err := h.Handle(context.TODO(), &ip)
-	assert.Nil(t, err)
-	assert.NotNil(t, answer)
+	require.NoError(t, err)
+	assert.Equal(t, v1.IntegrationPlatformPhaseCreating, answer.Status.Phase)
+	assert.Equal(t, defaults.DefaultRuntimeVersion, answer.Status.Build.RuntimeVersion)
+	assert.Equal(t, v1.RuntimeProviderQuarkus, answer.Status.Build.RuntimeProvider)
+}
 
+func TestUserRuntimeSpec(t *testing.T) {
+	ip := v1.IntegrationPlatform{}
+	ip.Namespace = "ns"
+	ip.Name = "ck"
+	ip.Spec = v1.IntegrationPlatformSpec{
+		Build: v1.IntegrationPlatformBuildSpec{
+			RuntimeVersion:  "1.2.3",
+			RuntimeProvider: "MyProvider",
+		},
+	}
+	c, err := internal.NewFakeClient(&ip)
+	require.NoError(t, err)
+
+	h := NewInitializeAction()
+	h.InjectLogger(log.Log)
+	h.InjectClient(c)
+
+	answer, err := h.Handle(context.TODO(), &ip)
+	require.NoError(t, err)
+	assert.Equal(t, v1.IntegrationPlatformPhaseCreating, answer.Status.Phase)
+	assert.Equal(t, "1.2.3", answer.Status.Build.RuntimeVersion)
+	assert.Equal(t, v1.RuntimeProvider("MyProvider"), answer.Status.Build.RuntimeProvider)
+}
+
+func TestDefaultTimeouts(t *testing.T) {
+	ip := v1.IntegrationPlatform{}
+	ip.Namespace = "ns"
+	ip.Name = "ck"
+	c, err := internal.NewFakeClient(&ip)
+
+	require.NoError(t, err)
+	require.NoError(t, platform.ConfigureDefaults(context.TODO(), c, &ip, false))
+
+	h := NewInitializeAction()
+	h.InjectLogger(log.Log)
+	h.InjectClient(c)
+
+	answer, err := h.Handle(context.TODO(), &ip)
+	require.NoError(t, err)
+	assert.Equal(t, v1.IntegrationPlatformPhaseCreating, answer.Status.Phase)
 	assert.Equal(t, 5*time.Minute, answer.Status.Build.GetTimeout().Duration)
 }
 
-func TestTimeouts_MavenComputedFromBuild(t *testing.T) {
+func TestMavenComputedFromBuildTimeouts(t *testing.T) {
 	ip := v1.IntegrationPlatform{}
 	ip.Namespace = "ns"
-	ip.Name = xid.New().String()
-	ip.Spec.Cluster = v1.IntegrationPlatformClusterOpenShift
-	ip.Spec.Profile = v1.TraitProfileOpenShift
-
+	ip.Name = "ck"
 	timeout, err := time.ParseDuration("1m1ms")
-	assert.Nil(t, err)
-
+	require.NoError(t, err)
 	ip.Spec.Build.Timeout = &metav1.Duration{
 		Duration: timeout,
 	}
-
-	c, err := test.NewFakeClient(&ip)
-	assert.Nil(t, err)
-
-	assert.Nil(t, platform.ConfigureDefaults(context.TODO(), c, &ip, false))
+	c, err := internal.NewFakeClient(&ip)
+	require.NoError(t, err)
 
 	h := NewInitializeAction()
 	h.InjectLogger(log.Log)
 	h.InjectClient(c)
-
 	answer, err := h.Handle(context.TODO(), &ip)
-	assert.Nil(t, err)
-	assert.NotNil(t, answer)
 
+	require.NoError(t, err)
+	assert.NotNil(t, answer)
 	assert.Equal(t, 1*time.Minute, answer.Status.Build.GetTimeout().Duration)
 }
 
-func TestTimeouts_Truncated(t *testing.T) {
+func TestTruncatedTimeouts(t *testing.T) {
 	ip := v1.IntegrationPlatform{}
 	ip.Namespace = "ns"
-	ip.Name = xid.New().String()
-	ip.Spec.Cluster = v1.IntegrationPlatformClusterOpenShift
-	ip.Spec.Profile = v1.TraitProfileOpenShift
-
+	ip.Name = "ck"
 	bt, err := time.ParseDuration("5m1ms")
-	assert.Nil(t, err)
-
+	require.NoError(t, err)
 	ip.Spec.Build.Timeout = &metav1.Duration{
 		Duration: bt,
 	}
-
-	c, err := test.NewFakeClient(&ip)
-	assert.Nil(t, err)
-
-	assert.Nil(t, platform.ConfigureDefaults(context.TODO(), c, &ip, false))
+	c, err := internal.NewFakeClient(&ip)
+	require.NoError(t, err)
 
 	h := NewInitializeAction()
 	h.InjectLogger(log.Log)
 	h.InjectClient(c)
-
 	answer, err := h.Handle(context.TODO(), &ip)
-	assert.Nil(t, err)
-	assert.NotNil(t, answer)
 
+	require.NoError(t, err)
+	assert.NotNil(t, answer)
 	assert.Equal(t, 5*time.Minute, answer.Status.Build.GetTimeout().Duration)
 }

@@ -24,15 +24,15 @@ import (
 
 	"github.com/Masterminds/semver"
 
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	console "github.com/openshift/api/console/v1"
 
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/util/defaults"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 const (
@@ -52,7 +52,7 @@ var (
 		"You can run `kamel help` to list the available commands or go to the [Camel K Website](https://camel.apache.org/projects/camel-k/) for more information."
 
 	// KamelCLIDownloadURLTemplate is the download template with 3 missing parameters (version, version, os).
-	KamelCLIDownloadURLTemplate = "https://github.com/apache/camel-k/releases/download/v%s/camel-k-client-%s-%s-64bit.tar.gz"
+	KamelCLIDownloadURLTemplate = "https://github.com/apache/camel-k/v2/releases/download/v%s/camel-k-client-%s-%s-64bit.tar.gz"
 )
 
 // OpenShiftConsoleDownloadLink installs the download link for the OpenShift console.
@@ -80,7 +80,7 @@ func OpenShiftConsoleDownloadLink(ctx context.Context, c client.Client) error {
 	existing := &console.ConsoleCLIDownload{}
 	err = c.Get(ctx, types.NamespacedName{Name: KamelCLIDownloadName}, existing)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if k8serrors.IsNotFound(err) {
 			existing = nil
 		} else {
 			return err
@@ -104,7 +104,7 @@ func OpenShiftConsoleDownloadLink(ctx context.Context, c client.Client) error {
 			// Else delete the older version
 			err = c.Delete(ctx, existing)
 			if err != nil {
-				if errors.IsForbidden(err) {
+				if k8serrors.IsForbidden(err) {
 					// Let's just skip the ConsoleCLIDownload resource creation
 					return nil
 				}
@@ -124,7 +124,7 @@ func OpenShiftConsoleDownloadLink(ctx context.Context, c client.Client) error {
 		Spec: console.ConsoleCLIDownloadSpec{
 			DisplayName: KamelCLIDownloadDisplayName,
 			Description: KamelCLIDownloadDescription,
-			Links: []console.Link{
+			Links: []console.CLIDownloadLink{
 				{
 					Text: "Download the kamel binary for Linux",
 					Href: fmt.Sprintf(KamelCLIDownloadURLTemplate, defaults.Version, defaults.Version, "linux"),

@@ -20,10 +20,10 @@ package log
 import (
 	"fmt"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 // Log --.
@@ -35,9 +35,14 @@ func init() {
 	}
 }
 
+// InitForCmd is required to avoid nil pointer exceptions from command line.
+func InitForCmd() {
+	logf.SetLogger(zap.New(zap.UseDevMode(true)))
+}
+
 // Injectable identifies objects that can receive a Logger.
 type Injectable interface {
-	InjectLogger(Logger)
+	InjectLogger(logger Logger)
 }
 
 // Logger --.
@@ -129,8 +134,8 @@ func (l Logger) ForIntegrationPlatform(target *v1.IntegrationPlatform) Logger {
 	)
 }
 
-// ForKamelet --.
-func (l Logger) ForKamelet(target *v1alpha1.Kamelet) Logger {
+// ForIntegrationProfile --.
+func (l Logger) ForIntegrationProfile(target *v1.IntegrationProfile) Logger {
 	return l.WithValues(
 		"api-version", target.APIVersion,
 		"kind", target.Kind,
@@ -139,8 +144,28 @@ func (l Logger) ForKamelet(target *v1alpha1.Kamelet) Logger {
 	)
 }
 
-// ForKameletBinding --.
-func (l Logger) ForKameletBinding(target *v1alpha1.KameletBinding) Logger {
+// ForKamelet --.
+func (l Logger) ForKamelet(target *v1.Kamelet) Logger {
+	return l.WithValues(
+		"api-version", target.APIVersion,
+		"kind", target.Kind,
+		"ns", target.Namespace,
+		"name", target.Name,
+	)
+}
+
+// ForPipe --.
+func (l Logger) ForPipe(target *v1.Pipe) Logger {
+	return l.WithValues(
+		"api-version", target.APIVersion,
+		"kind", target.Kind,
+		"ns", target.Namespace,
+		"name", target.Name,
+	)
+}
+
+// ForCatalog --.
+func (l Logger) ForCatalog(target *v1.CamelCatalog) Logger {
 	return l.WithValues(
 		"api-version", target.APIVersion,
 		"kind", target.Kind,
@@ -178,11 +203,6 @@ func ForIntegration(target *v1.Integration) Logger {
 // ForIntegrationKit --.
 func ForIntegrationKit(target *v1.IntegrationKit) Logger {
 	return Log.ForIntegrationKit(target)
-}
-
-// ForIntegrationPlatform --.
-func ForIntegrationPlatform(target *v1.IntegrationPlatform) Logger {
-	return Log.ForIntegrationPlatform(target)
 }
 
 // ***********************************

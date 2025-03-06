@@ -21,34 +21,47 @@ import (
 	"fmt"
 	"testing"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	"github.com/apache/camel-k/pkg/util/camel"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
 )
 
-const GroovyKameletEip = `
+func newTestGroovyInspector(t *testing.T) GroovyInspector {
+	t.Helper()
+
+	catalog, err := camel.DefaultCatalog()
+	require.NoError(t, err)
+
+	return GroovyInspector{
+		baseInspector: baseInspector{
+			catalog: catalog,
+		},
+	}
+}
+
+const groovyKameletEip = `
 from("direct:start")
     .kamelet("foo/bar?baz=test")
 `
 
-const GroovyKameletEipSingleQuote = `
+const groovyKameletEipSingleQuote = `
 from("direct:start")
     .kamelet('foo/bar?baz=test')
 `
 
-const GroovyKameletEndpoint = `
+const groovyKameletEndpoint = `
 from("direct:start")
     .to("kamelet:foo/bar?baz=test")
 `
 
-const GroovyKameletEndpointSingleQuote = `
+const groovyKameletEndpointSingleQuote = `
 from("direct:start")
     .to('kamelet:foo/bar?baz=test')
 `
 
-const GroovyWireTapEipSingleQuote = `
+const groovyWireTapEipSingleQuote = `
 from("direct:start")
     .wireTap('kamelet:foo/bar?baz=test')
 `
@@ -59,53 +72,134 @@ func TestGroovyKamelet(t *testing.T) {
 		kamelets []string
 	}{
 		{
-			source:   GroovyKameletEip,
+			source:   groovyKameletEip,
 			kamelets: []string{"foo/bar"},
 		},
 		{
-			source:   GroovyKameletEndpoint,
+			source:   groovyKameletEndpoint,
 			kamelets: []string{"foo/bar"},
 		},
 		{
-			source:   GroovyKameletEipSingleQuote,
+			source:   groovyKameletEipSingleQuote,
 			kamelets: []string{"foo/bar"},
 		},
 		{
-			source:   GroovyKameletEndpointSingleQuote,
+			source:   groovyKameletEndpointSingleQuote,
 			kamelets: []string{"foo/bar"},
 		},
 		{
-			source:   GroovyWireTapEipSingleQuote,
+			source:   groovyWireTapEipSingleQuote,
 			kamelets: []string{"foo/bar"},
 		},
 	}
 
+	inspector := newTestGroovyInspector(t)
 	for i := range tc {
 		test := tc[i]
 		t.Run(fmt.Sprintf("TestGroovyKamelet-%d", i), func(t *testing.T) {
-			code := v1.SourceSpec{
-				DataSpec: v1.DataSpec{
-					Content: test.source,
-				},
-			}
-
-			catalog, err := camel.DefaultCatalog()
-			assert.Nil(t, err)
-
-			meta := NewMetadata()
-			inspector := GroovyInspector{
-				baseInspector: baseInspector{
-					catalog: catalog,
-				},
-			}
-
-			err = inspector.Extract(code, &meta)
-			assert.Nil(t, err)
-			assert.True(t, meta.RequiredCapabilities.IsEmpty())
-
-			for _, k := range test.kamelets {
-				assert.Contains(t, meta.Kamelets, k)
-			}
+			assertExtract(t, inspector, test.source, func(meta *Metadata) {
+				assert.True(t, meta.RequiredCapabilities.IsEmpty())
+				for _, k := range test.kamelets {
+					assert.Contains(t, meta.Kamelets, k)
+				}
+			})
 		})
 	}
+}
+
+const groovyJSONEip = `
+from("direct:start")
+    .unmarshal().json()
+`
+
+const groovyJSONJacksonEip = `
+from("direct:start")
+    .unmarshal().json(JsonLibrary.Jackson)
+`
+
+const groovyAvroEndpoint = `
+from("direct:start")
+    .to("dataformat:avro:marshal")
+`
+
+const groovyJacksonEndpoint = `
+from("direct:start")
+    .to("dataformat:jackson:marshal")
+`
+
+const groovyProtobufEndpoint = `
+from("direct:start")
+    .to("dataformat:protobuf:marshal")
+`
+
+func TestGroovyDataFormat(t *testing.T) {
+	tc := []struct {
+		source string
+		deps   []string
+	}{
+		{
+			source: groovyJSONEip,
+			deps:   []string{"camel:jackson"},
+		},
+		{
+			source: groovyJSONJacksonEip,
+			deps:   []string{"camel:jackson"},
+		},
+		{
+			source: groovyAvroEndpoint,
+			deps:   []string{"camel:dataformat", "camel:avro"},
+		},
+		{
+			source: groovyJacksonEndpoint,
+			deps:   []string{"camel:dataformat", "camel:jackson"},
+		},
+		{
+			source: groovyProtobufEndpoint,
+			deps:   []string{"camel:dataformat", "camel:protobuf"},
+		},
+	}
+
+	inspector := newTestGroovyInspector(t)
+	for i := range tc {
+		test := tc[i]
+		t.Run(fmt.Sprintf("TestGroovyDataFormat-%d", i), func(t *testing.T) {
+			assertExtract(t, inspector, test.source, func(meta *Metadata) {
+				for _, d := range test.deps {
+					assert.Contains(t, meta.Dependencies.List(), d)
+				}
+			})
+		})
+	}
+}
+
+func TestGroovyReplaceURI(t *testing.T) {
+	inspector := newTestGroovyInspector(t)
+
+	sourceSpec := &v1.SourceSpec{
+		DataSpec: v1.DataSpec{
+			Name:    "test.groovy",
+			Content: "from('quartz:trigger?cron=0 0/1 * * * ?').to('log:info')",
+		},
+	}
+	replaced, err := inspector.ReplaceFromURI(
+		sourceSpec,
+		"direct:newURI?hello=world",
+	)
+	assert.Nil(t, err)
+	assert.True(t, replaced)
+	assert.Equal(t, "from('direct:newURI?hello=world').to('log:info')", sourceSpec.Content)
+
+	sourceSpec = &v1.SourceSpec{
+		DataSpec: v1.DataSpec{
+			Name:    "test.groovy",
+			Content: "from(\"quartz:trigger?cron=0 0/1 * * * ?\").to(\"log:info\")",
+		},
+	}
+	replaced, err = inspector.ReplaceFromURI(
+		sourceSpec,
+		"direct:newURI?hello=world",
+	)
+	assert.True(t, replaced)
+	assert.Nil(t, err)
+	assert.Equal(t, "from(\"direct:newURI?hello=world\").to(\"log:info\")", sourceSpec.Content)
 }

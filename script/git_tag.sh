@@ -28,26 +28,15 @@ target_tag=v$target_version
 target_staging=staging-$target_tag
 target_remote=$2
 
+git add helm docs || true
+git commit -m "chore(release): Helm chart for $target_version"
+git push
+
 git branch -D ${target_staging} || true
 git checkout -b ${target_staging}
-git add * || true
-git commit -a -m "Release ${target_version}"
+git add pkg/resources pkg/util script || true
+git commit -m "chore(release): preparing for tag v$target_version" || true
 
 git tag --force ${target_tag} ${target_staging}
 git push --force ${target_remote} ${target_tag}
 echo "Tag ${target_tag} pushed to ${target_remote}"
-
-api_tag="pkg/apis/camel/$target_tag"
-git tag --force ${api_tag} ${target_staging}
-git push --force ${target_remote} ${api_tag}
-echo "Tag ${api_tag} pushed to ${target_remote}"
-
-client_tag="pkg/client/camel/$target_tag"
-git tag --force ${client_tag} ${target_staging}
-git push --force ${target_remote} ${client_tag}
-echo "Tag ${client_tag} pushed to ${target_remote}"
-
-kamelet_repo_tag="pkg/kamelet/repository/$target_tag"
-git tag --force ${kamelet_repo_tag} ${target_staging}
-git push --force ${target_remote} ${kamelet_repo_tag}
-echo "Tag ${kamelet_repo_tag} pushed to ${target_remote}"

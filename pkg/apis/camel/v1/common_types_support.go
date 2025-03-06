@@ -21,12 +21,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/imdario/mergo"
 )
+
+var PlainConfigSecretRegexp = regexp.MustCompile(`^(configmap|secret):([a-zA-Z0-9][a-zA-Z0-9-]*)(/([a-zA-Z0-9].*))?$`)
 
 func (in *Artifact) String() string {
 	return in.ID
@@ -99,6 +103,44 @@ func (t *Traits) Merge(other Traits) error {
 	return nil
 }
 
+// Merge merges the given IntegrationKitTraits into the receiver.
+func (t *IntegrationKitTraits) Merge(other IntegrationKitTraits) error {
+	// marshal both
+	data1, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	data2, err := json.Marshal(other)
+	if err != nil {
+		return err
+	}
+
+	// merge them
+	map1 := make(map[string]interface{})
+	if err := json.Unmarshal(data1, &map1); err != nil {
+		return err
+	}
+	map2 := make(map[string]interface{})
+	if err := json.Unmarshal(data2, &map2); err != nil {
+		return err
+	}
+	// values from merged trait take precedence over the original ones
+	if err := mergo.Merge(&map1, map2, mergo.WithOverride); err != nil {
+		return err
+	}
+
+	// unmarshal it
+	data, err := json.Marshal(map1)
+	if err != nil {
+		return err
+	}
+	if err = json.Unmarshal(data, &t); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // MarshalJSON returns m as the JSON encoding of m.
 func (m RawMessage) MarshalJSON() ([]byte, error) {
 	if m == nil {
@@ -116,14 +158,44 @@ func (m *RawMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// String returns a string representation of RawMessage.
+func (m *RawMessage) String() string {
+	if m == nil {
+		return ""
+	}
+	b, err := m.MarshalJSON()
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+var _ json.Marshaler = (*RawMessage)(nil)
+var _ json.Unmarshaler = (*RawMessage)(nil)
+
 // GetOperatorIDAnnotation to safely get the operator id annotation value.
 func GetOperatorIDAnnotation(obj metav1.Object) string {
+	return GetAnnotation(OperatorIDAnnotation, obj)
+}
+
+// GetIntegrationProfileAnnotation to safely get the integration profile annotation value.
+func GetIntegrationProfileAnnotation(obj metav1.Object) string {
+	return GetAnnotation(IntegrationProfileAnnotation, obj)
+}
+
+// GetIntegrationProfileNamespaceAnnotation to safely get the integration profile namespace annotation value.
+func GetIntegrationProfileNamespaceAnnotation(obj metav1.Object) string {
+	return GetAnnotation(IntegrationProfileNamespaceAnnotation, obj)
+}
+
+// GetAnnotation safely get the annotation value.
+func GetAnnotation(name string, obj metav1.Object) string {
 	if obj == nil || obj.GetAnnotations() == nil {
 		return ""
 	}
 
-	if operatorId, ok := obj.GetAnnotations()[OperatorIDAnnotation]; ok {
-		return operatorId
+	if annotation, ok := obj.GetAnnotations()[name]; ok {
+		return annotation
 	}
 
 	return ""
@@ -140,3 +212,73 @@ func SetAnnotation(obj *metav1.ObjectMeta, name string, value string) {
 
 var _ json.Marshaler = (*RawMessage)(nil)
 var _ json.Unmarshaler = (*RawMessage)(nil)
+
+// IsEmpty -- .
+func (bc *BuildConfiguration) IsEmpty() bool {
+	return bc.Strategy == "" &&
+		bc.OrderStrategy == "" &&
+		bc.RequestCPU == "" &&
+		bc.RequestMemory == "" &&
+		bc.LimitCPU == "" &&
+		bc.LimitMemory == ""
+}
+
+// DecodeValueSource returns a ValueSource object from an input that respects the format configmap|secret:resource-name[/path].
+func DecodeValueSource(input string, defaultKey string) (ValueSource, error) {
+	sub := make([]string, 0)
+	hits := PlainConfigSecretRegexp.FindAllStringSubmatch(input, -1)
+
+	for _, hit := range hits {
+		if len(hit) > 1 {
+			sub = append(sub, hit[1:]...)
+		}
+	}
+
+	if len(sub) >= 2 {
+		key := defaultKey
+		if len(sub) == 4 && sub[3] != "" {
+			key = sub[3]
+		}
+
+		if sub[0] == "configmap" {
+			return ValueSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: sub[1],
+					},
+					Key: key,
+				},
+			}, nil
+		}
+		if sub[0] == "secret" {
+			return ValueSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: sub[1],
+					},
+					Key: key,
+				},
+			}, nil
+		}
+	}
+
+	return ValueSource{}, fmt.Errorf("could not decode %s", input)
+}
+
+// IsGeneratedFromKamelet determines is a source spec is derived from a Kamelet.
+func (s *SourceSpec) IsGeneratedFromKamelet() bool {
+	return s.FromKamelet
+}
+
+// InferLanguage returns the language of the source or discovers it from file extension if not set.
+func (s *SourceSpec) InferLanguage() Language {
+	if s.Language != "" {
+		return s.Language
+	}
+	for _, l := range Languages {
+		if strings.HasSuffix(s.Name, "."+string(l)) {
+			return l
+		}
+	}
+	return ""
+}

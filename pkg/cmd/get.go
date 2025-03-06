@@ -27,7 +27,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
 type getCmdOptions struct {
@@ -42,7 +42,7 @@ func newCmdGet(rootCmdOptions *RootCmdOptions) (*cobra.Command, *getCmdOptions) 
 		Use:     "get [integration]",
 		Short:   "Get integrations deployed on Kubernetes",
 		Long:    `Get the status of integrations deployed on Kubernetes.`,
-		PreRunE: decode(&options),
+		PreRunE: decode(&options, options.Flags),
 		RunE:    options.run,
 	}
 

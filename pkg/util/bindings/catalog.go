@@ -19,13 +19,17 @@ package bindings
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"k8s.io/utils/ptr"
 )
 
 var bindingProviders []BindingProvider
 
+// RegisterBindingProvider --.
 func RegisterBindingProvider(bp BindingProvider) {
 	bindingProviders = append(bindingProviders, bp)
 	sort.Slice(bindingProviders, func(i, j int) bool {
@@ -37,28 +41,44 @@ func RegisterBindingProvider(bp BindingProvider) {
 }
 
 // Translate execute all chained binding providers, returning the first success or the first error.
-func Translate(ctx BindingContext, endpointCtx EndpointContext, endpoint v1alpha1.Endpoint) (*Binding, error) {
+func Translate(ctx BindingContext, endpointCtx EndpointContext, endpoint v1.Endpoint) (*Binding, error) {
+	availableBindings := make([]string, len(bindingProviders))
 	if err := validateEndpoint(ctx, endpoint); err != nil {
 		return nil, err
 	}
 
-	for _, bp := range bindingProviders {
+	for i, bp := range bindingProviders {
+		availableBindings[i] = bp.ID()
 		b, err := bp.Translate(ctx, endpointCtx, endpoint)
 		if b != nil || err != nil {
 			return b, err
 		}
 	}
-	return nil, nil
+
+	// If no success we return an error with the actual list of available binding providers
+	var errorMessage string
+	if endpoint.Ref != nil {
+		errorMessage = fmt.Sprintf("could not find any suitable binding provider for %s/%s %s in namespace %s. Bindings available: %q",
+			endpoint.Ref.APIVersion, endpoint.Ref.Kind, endpoint.Ref.Name, endpoint.Ref.Namespace, availableBindings)
+	} else if ptr.Deref(endpoint.URI, "") != "" {
+		errorMessage = fmt.Sprintf("could not find any suitable binding provider for %s", *endpoint.URI)
+	}
+	return nil, errors.New(errorMessage)
 }
 
-func validateEndpoint(ctx BindingContext, e v1alpha1.Endpoint) error {
+func validateEndpoint(ctx BindingContext, e v1.Endpoint) error {
 	if e.Ref == nil && e.URI == nil {
 		return errors.New("no ref or URI specified in endpoint")
 	} else if e.Ref != nil && e.URI != nil {
 		return errors.New("cannot use both ref and URI to specify an endpoint: only one of them should be used")
 	}
 	if e.Ref != nil && e.Ref.Namespace != "" && e.Ref.Namespace != ctx.Namespace {
-		return errors.New("cross-namespace references are not allowed in kamelet binding")
+		// referencing default Kamelets in operator namespace is allowed
+		if e.Ref.Kind == v1.KameletKind && e.Ref.Namespace == platform.GetOperatorNamespace() {
+			return nil
+		}
+
+		return errors.New("cross-namespace references are not allowed in Pipe")
 	}
 	return nil
 }

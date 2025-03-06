@@ -20,13 +20,11 @@ package camel
 import (
 	"fmt"
 	"io"
-	"path"
-	"path/filepath"
 	"strings"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/jitpack"
-	"github.com/apache/camel-k/pkg/util/maven"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/jitpack"
+	"github.com/apache/camel-k/v2/pkg/util/maven"
 	"github.com/rs/xid"
 )
 
@@ -50,53 +48,56 @@ func NormalizeDependency(dependency string) string {
 	return newDep
 }
 
-type Output interface {
-	OutOrStdout() io.Writer
-	ErrOrStderr() io.Writer
-}
-
-// ValidateDependencies validates dependencies against Camel catalog.
-// It only shows warning and does not throw error in case the Catalog is just not complete
-// and we don't want to let it stop the process.
-func ValidateDependencies(catalog *RuntimeCatalog, dependencies []string, out Output) {
-	for _, d := range dependencies {
-		ValidateDependency(catalog, d, out)
-	}
-}
-
 // ValidateDependency validates a dependency against Camel catalog.
-// It only shows warning and does not throw error in case the Catalog is just not complete
+// It only shows warning and does not throw error in case the Catalog is just not complete,
 // and we don't want to let it stop the process.
-func ValidateDependency(catalog *RuntimeCatalog, dependency string, out Output) {
+func ValidateDependency(catalog *RuntimeCatalog, dependency string, out io.Writer) {
+	if err := ValidateDependencyE(catalog, dependency); err != nil {
+		fmt.Fprintf(out, "Warning: %s\n", err.Error())
+	}
+
 	switch {
-	case strings.HasPrefix(dependency, "camel:"):
-		artifact := strings.TrimPrefix(dependency, "camel:")
-		if ok := catalog.IsValidArtifact(artifact); !ok {
-			fmt.Fprintf(out.ErrOrStderr(), "Warning: dependency %s not found in Camel catalog\n", dependency)
-		}
 	case strings.HasPrefix(dependency, "mvn:org.apache.camel:"):
 		component := strings.Split(dependency, ":")[2]
-		fmt.Fprintf(out.ErrOrStderr(), "Warning: do not use %s. Use %s instead\n",
+		fmt.Fprintf(out, "Warning: do not use %s. Use %s instead\n",
 			dependency, NormalizeDependency(component))
 	case strings.HasPrefix(dependency, "mvn:org.apache.camel.quarkus:"):
 		component := strings.Split(dependency, ":")[2]
-		fmt.Fprintf(out.ErrOrStderr(), "Warning: do not use %s. Use %s instead\n",
+		fmt.Fprintf(out, "Warning: do not use %s. Use %s instead\n",
 			dependency, NormalizeDependency(component))
 	}
+}
 
+// ValidateDependencyE validates a dependency against Camel catalog and throws error
+// in case it does not exist in the catalog.
+func ValidateDependencyE(catalog *RuntimeCatalog, dependency string) error {
+	var artifact string
+	switch {
+	case strings.HasPrefix(dependency, "camel:"):
+		artifact = strings.TrimPrefix(dependency, "camel:")
+	case strings.HasPrefix(dependency, "camel-quarkus:"):
+		artifact = strings.TrimPrefix(dependency, "camel-quarkus:")
+	case strings.HasPrefix(dependency, "camel-"):
+		artifact = dependency
+	}
+
+	if artifact == "" {
+		return nil
+	}
+
+	if ok := catalog.IsValidArtifact(artifact); !ok {
+		return fmt.Errorf("dependency %s not found in Camel catalog", dependency)
+	}
+
+	return nil
 }
 
 // ValidateDependenciesE validates dependencies against Camel catalog and throws error
-// if it doesn't exist in the catalog.
+// in case it does not exist in the catalog.
 func ValidateDependenciesE(catalog *RuntimeCatalog, dependencies []string) error {
 	for _, dependency := range dependencies {
-		if !strings.HasPrefix(dependency, "camel:") {
-			continue
-		}
-
-		artifact := strings.TrimPrefix(dependency, "camel:")
-		if ok := catalog.IsValidArtifact(artifact); !ok {
-			return fmt.Errorf("dependency %s not found in Camel catalog", dependency)
+		if err := ValidateDependencyE(catalog, dependency); err != nil {
+			return err
 		}
 	}
 
@@ -132,10 +133,6 @@ func addDependencies(project *maven.Project, dependencies []string, catalog *Run
 			addCamelQuarkusComponent(project, d)
 		case strings.HasPrefix(d, "mvn:"):
 			addMavenDependency(project, d)
-		case strings.HasPrefix(d, "registry-mvn:"):
-			if err := addRegistryMavenDependency(project, d); err != nil {
-				return err
-			}
 		default:
 			if err := addJitPack(project, d); err != nil {
 				return err
@@ -166,7 +163,7 @@ func addBOM(project *maven.Project, dependency string) error {
 
 func addCamelComponent(project *maven.Project, catalog *RuntimeCatalog, dependency string) {
 	artifactID := strings.TrimPrefix(dependency, "camel:")
-	if catalog != nil && catalog.Runtime.Provider == v1.RuntimeProviderQuarkus {
+	if catalog != nil && catalog.Runtime.Provider.IsQuarkusBased() {
 		if !strings.HasPrefix(artifactID, "camel-") {
 			artifactID = "camel-quarkus-" + artifactID
 		}
@@ -198,52 +195,6 @@ func addCamelQuarkusComponent(project *maven.Project, dependency string) {
 func addMavenDependency(project *maven.Project, dependency string) {
 	gav := strings.TrimPrefix(dependency, "mvn:")
 	project.AddEncodedDependencyGAV(gav)
-}
-
-func addRegistryMavenDependency(project *maven.Project, dependency string) error {
-	mapping := strings.Split(dependency, "@")
-	outputFileRelativePath := mapping[1]
-	gavString := strings.TrimPrefix(mapping[0], "registry-mvn:")
-	gav, err := maven.ParseGAV(gavString)
-	if err != nil {
-		return err
-	}
-	plugin := getOrCreateBuildPlugin(project, "com.googlecode.maven-download-plugin", "download-maven-plugin", "1.6.7")
-	exec := maven.Execution{
-		ID:    fmt.Sprint(len(plugin.Executions)),
-		Phase: "package",
-		Goals: []string{
-			"artifact",
-		},
-		Configuration: map[string]string{
-			"outputDirectory": path.Join("../context", filepath.Dir(outputFileRelativePath)),
-			"outputFileName":  filepath.Base(outputFileRelativePath),
-			"groupId":         gav.GroupID,
-			"artifactId":      gav.ArtifactID,
-			"version":         gav.Version,
-			"type":            gav.Type,
-		},
-	}
-	plugin.Executions = append(plugin.Executions, exec)
-
-	return nil
-}
-
-func getOrCreateBuildPlugin(project *maven.Project, groupID string, artifactID string, version string) *maven.Plugin {
-	for i, plugin := range project.Build.Plugins {
-		if plugin.GroupID == groupID && plugin.ArtifactID == artifactID && plugin.Version == version {
-			return &project.Build.Plugins[i]
-		}
-	}
-	plugin := maven.Plugin{
-		GroupID:    groupID,
-		ArtifactID: artifactID,
-		Version:    version,
-		Executions: []maven.Execution{},
-	}
-	project.Build.Plugins = append(project.Build.Plugins, plugin)
-
-	return &project.Build.Plugins[len(project.Build.Plugins)-1]
 }
 
 func addJitPack(project *maven.Project, dependency string) error {
@@ -289,6 +240,8 @@ func addDependenciesFromCatalog(project *maven.Project, catalog *RuntimeCatalog)
 				md := maven.Dependency{
 					GroupID:    dep.GroupID,
 					ArtifactID: dep.ArtifactID,
+					Type:       dep.Type,
+					Classifier: dep.Classifier,
 				}
 
 				project.AddDependency(md)
@@ -331,7 +284,7 @@ func postProcessDependencies(project *maven.Project, catalog *RuntimeCatalog) {
 
 // SanitizeIntegrationDependencies --.
 func SanitizeIntegrationDependencies(dependencies []maven.Dependency) error {
-	for i := 0; i < len(dependencies); i++ {
+	for i := range dependencies {
 		dep := dependencies[i]
 
 		// It may be externalized into runtime provider specific steps

@@ -18,14 +18,15 @@ limitations under the License.
 package log
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 	"github.com/spf13/cobra"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -39,9 +40,28 @@ func PrintUsingSelector(ctx context.Context, cmd *cobra.Command, client kubernet
 	scraper := NewSelectorScraper(client, namespace, defaultContainerName, selector, tailLines)
 	reader := scraper.Start(ctx)
 
-	if _, err := io.Copy(out, ioutil.NopCloser(reader)); err != nil {
+	if _, err := io.Copy(out, io.NopCloser(reader)); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err.Error())
 	}
 
 	return nil
+}
+
+// DumpLog extract the full log from a Pod. Recommended when the quantity of log expected is minimum.
+func DumpLog(ctx context.Context, client kubernetes.Interface, pod *corev1.Pod, podLogOpts corev1.PodLogOptions) (string, error) {
+	req := client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &podLogOpts)
+	podLogs, err := req.Stream(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer podLogs.Close()
+
+	buf := new(bytes.Buffer)
+	_, err = io.Copy(buf, podLogs)
+	if err != nil {
+		return "", err
+	}
+	str := buf.String()
+
+	return str, nil
 }

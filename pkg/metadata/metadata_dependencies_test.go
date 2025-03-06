@@ -23,8 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/camel"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
 )
 
 func TestDependenciesJavaSource(t *testing.T) {
@@ -32,7 +32,7 @@ func TestDependenciesJavaSource(t *testing.T) {
 		DataSpec: v1.DataSpec{
 			Name: "Request.java",
 			Content: `
-			    import org.apache.camel.component.activemq.ActiveMQComponent;
+			    import org.apache.camel.component.kafka.KafkaComponent;
 
 			    from("telegram:bots/cippa").to("log:stash");
 			    from("timer:tick").to("amqp:queue");
@@ -46,13 +46,13 @@ func TestDependenciesJavaSource(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
 		t,
 		[]string{
-			"camel:activemq",
+			"camel:kafka",
 			"camel:amqp",
 			"camel:log",
 			"camel:telegram",
@@ -67,7 +67,7 @@ func TestDependenciesJavaScript(t *testing.T) {
 		DataSpec: v1.DataSpec{
 			Name: "source.js",
 			Content: `
-			    var component = Java.type("org.apache.camel.component.activemq.ActiveMQComponent");
+			    var component = Java.type("org.apache.camel.component.kafka.KafkaComponent");
 
 			    from('telegram:bots/cippa').to("log:stash");
 			    from('timer:tick').to("amqp:queue");
@@ -80,13 +80,13 @@ func TestDependenciesJavaScript(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
 		t,
 		[]string{
-			"camel:activemq",
+			"camel:kafka",
 			"camel:amqp",
 			"camel:log",
 			"camel:telegram",
@@ -100,7 +100,7 @@ func TestDependenciesGroovy(t *testing.T) {
 		DataSpec: v1.DataSpec{
 			Name: "source.groovy",
 			Content: `
-			    import org.apache.camel.component.activemq.ActiveMQComponent;
+			    import org.apache.camel.component.kafka.KafkaComponent;
 
 			    from('telegram:bots/cippa').to("log:stash");
 			    from('timer:tick').to("amqp:queue");
@@ -115,13 +115,13 @@ func TestDependenciesGroovy(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
 		t,
 		[]string{
-			"camel:activemq",
+			"camel:kafka",
 			"camel:amqp",
 			"camel:log",
 			"camel:telegram",
@@ -147,7 +147,7 @@ func TestDependencies(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(t,
@@ -177,8 +177,8 @@ func TestDependencyInexistent(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	_, err = Extract(catalog, code)
-	assert.Error(t, err)
+	_, err = extract(catalog, code)
+	require.Error(t, err)
 }
 
 func TestDependenciesQuarkus(t *testing.T) {
@@ -202,7 +202,7 @@ func TestDependenciesQuarkus(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, catalog)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(t,
@@ -233,7 +233,7 @@ func TestJacksonDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -262,7 +262,7 @@ func TestJacksonImplicitDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -297,7 +297,7 @@ func TestLanguageDependencies(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 	assert.ElementsMatch(
 		t,
@@ -309,7 +309,7 @@ func TestLanguageDependencies(t *testing.T) {
 			"camel:jsonpath",
 			"camel:groovy",
 			"camel:saxon",
-			"camel:xml-jaxp",
+			"camel:stax",
 		},
 		meta.Dependencies.List())
 }
@@ -332,7 +332,7 @@ func TestLanguageDependenciesTransformExpression(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 	assert.ElementsMatch(
 		t,
@@ -363,7 +363,7 @@ func TestCircuitBreakerDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(t,
@@ -394,7 +394,7 @@ func TestRestDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -427,7 +427,7 @@ func TestRestWithPathDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -458,7 +458,7 @@ func TestRestConfigurationDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -488,7 +488,7 @@ func TestRestClosureDependencyGroovy(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -519,7 +519,7 @@ func TestRestClosureDependencyKotlin(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -554,7 +554,7 @@ func TestXMLCircuitBreakerDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -594,7 +594,7 @@ func TestXMLRestDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -652,7 +652,7 @@ func TestXMLLanguageDependencies(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 	assert.ElementsMatch(
 		t,
@@ -662,7 +662,7 @@ func TestXMLLanguageDependencies(t *testing.T) {
 			"camel:mvel",
 			"camel:ognl",
 			"camel:xpath",
-			"camel:xml-jaxp",
+			"camel:stax",
 			"camel:jsonpath",
 			"camel:saxon",
 			"camel:groovy",
@@ -686,11 +686,12 @@ const yamlWithCircuitBreaker = `
             todo: "not implemented"
 `
 
+//nolint:dupword
 const yamlWithLanguages = `
 - from:
     uri: "direct:start"
     steps:
-        - set-body:
+        - setBody:
             constant: "Hello Camel K"
         - transform:
             language:
@@ -723,7 +724,7 @@ func TestYAMLRestDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -750,7 +751,7 @@ func TestYAMLCircuitBreakerDependency(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -774,7 +775,7 @@ func TestYAMLLanguageDependencies(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.ElementsMatch(
@@ -787,7 +788,7 @@ func TestYAMLLanguageDependencies(t *testing.T) {
 			"camel:jsonpath",
 			"camel:groovy",
 			"camel:saxon",
-			"camel:xml-jaxp",
+			"camel:stax",
 		},
 		meta.Dependencies.List())
 }

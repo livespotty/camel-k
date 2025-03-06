@@ -21,15 +21,16 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util"
 )
 
 const expectedSettings = `<?xml version="1.0" encoding="UTF-8"?>
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ` +
 	`xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
-  <localRepository>/tmp/artifacts/m2</localRepository>
+  <localRepository>/etc/maven/m2</localRepository>
   <servers></servers>
   <profiles>
     <profile>
@@ -181,9 +182,9 @@ const expectedDefaultSettingsWithExtraRepo = `<?xml version="1.0" encoding="UTF-
 
 func TestSettingsGeneration(t *testing.T) {
 	settings, err := NewSettings()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
-	settings.LocalRepository = "/tmp/artifacts/m2"
+	settings.LocalRepository = "/etc/maven/m2"
 	settings.Profiles = []Profile{
 		{
 			ID: "my-profile",
@@ -210,7 +211,7 @@ func TestSettingsGeneration(t *testing.T) {
 
 	content, err := util.EncodeXML(settings)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, settings)
 
 	assert.Equal(t, expectedSettings, string(content))
@@ -218,11 +219,11 @@ func TestSettingsGeneration(t *testing.T) {
 
 func TestDefaultSettingsGeneration(t *testing.T) {
 	settings, err := NewSettings(DefaultRepositories)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	content, err := util.EncodeXML(settings)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, settings)
 
 	assert.Equal(t, expectedDefaultSettings, string(content))
@@ -235,11 +236,11 @@ func TestDefaultSettingsGenerationWithAdditionalRepo(t *testing.T) {
 		"https://foo.bar.org/repo@id=foo@mirrorOf=*",
 	}
 	settings, err := NewSettings(Repositories(repositories...))
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	content, err := util.EncodeXML(settings)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, settings)
 
 	assert.Equal(t, expectedDefaultSettingsWithExtraRepo, string(content))

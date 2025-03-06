@@ -23,15 +23,18 @@ apidir=$location/../pkg/apis/camel
 cd "$apidir"
 $(go env GOPATH)/bin/controller-gen crd \
   paths=./... \
-  output:crd:artifacts:config=../../../config/crd/bases \
-  output:crd:dir=../../../config/crd/bases \
-  crd:crdVersions=v1
+  output:crd:artifacts:config=../../../pkg/resources/config/crd/bases \
+  output:crd:dir=../../../pkg/resources/config/crd/bases
 
 # cleanup working directory in $apidir
 rm -rf ./config
 
 # to root
 cd ../../../
+
+# Importing helm CRDs
+cat ./script/headers/yaml.txt > ./helm/camel-k/crds/camel-k-crds.yaml
+kustomize build ./pkg/resources/config/crd/. >> ./helm/camel-k/crds/camel-k-crds.yaml
 
 deploy_crd_file() {
   source=$1
@@ -42,9 +45,7 @@ deploy_crd_file() {
   # Post-process source
   cat ./script/headers/yaml.txt > "$source"
   echo "" >> "$source"
-  sed -n '/^---/,/^status/p;/^status/q' "${source}.orig" \
-    | sed '1d;$d' \
-    | sed '/creationTimestamp:/a\  labels:\n    app: camel-k' >> "$source"
+  cat ${source}.orig >> "$source"
 
   for dest in "${@:2}"; do
     cp "$source" "$dest"
@@ -58,8 +59,7 @@ deploy_crd() {
   name=$1
   plural=$2
 
-  deploy_crd_file ./config/crd/bases/camel.apache.org_"$plural".yaml \
-    ./helm/camel-k/crds/crd-"$name".yaml
+  deploy_crd_file ./pkg/resources/config/crd/bases/camel.apache.org_"$plural".yaml
 }
 
 deploy_crd build builds
@@ -67,5 +67,6 @@ deploy_crd camel-catalog camelcatalogs
 deploy_crd integration integrations
 deploy_crd integration-kit integrationkits
 deploy_crd integration-platform integrationplatforms
+deploy_crd integration-profile integrationprofiles
 deploy_crd kamelet kamelets
-deploy_crd kamelet-binding kameletbindings
+deploy_crd pipe pipes

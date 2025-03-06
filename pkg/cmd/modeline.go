@@ -19,15 +19,15 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"path"
 	"path/filepath"
 	"strings"
 
-	"github.com/apache/camel-k/pkg/cmd/source"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/modeline"
-	"github.com/pkg/errors"
+	"github.com/apache/camel-k/v2/pkg/cmd/source"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/modeline"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -130,7 +130,7 @@ func createKamelWithModelineCommand(ctx context.Context, args []string) (*cobra.
 
 	opts, err := extractModelineOptions(ctx, files, rootCmd)
 	if err != nil {
-		return rootCmd, nil, errors.Wrap(err, "cannot read sources")
+		return rootCmd, nil, fmt.Errorf("cannot read sources: %w", err)
 	}
 
 	// Extract list of property/trait names already specified by the user.
@@ -197,7 +197,7 @@ func extractModelineOptions(ctx context.Context, sources []string, cmd *cobra.Co
 
 	resolvedSources, err := source.Resolve(ctx, sources, false, cmd)
 	if err != nil {
-		return opts, errors.Wrap(err, "failed to resolve sources")
+		return opts, fmt.Errorf("failed to resolve sources: %w", err)
 	}
 
 	for _, resolvedSource := range resolvedSources {
@@ -220,7 +220,7 @@ func extractModelineOptions(ctx context.Context, sources []string, cmd *cobra.Co
 func extractModelineOptionsFromSource(resolvedSource source.Source) ([]modeline.Option, error) {
 	ops, err := modeline.Parse(resolvedSource.Name, resolvedSource.Content)
 	if err != nil {
-		return ops, errors.Wrapf(err, "cannot process file %s", resolvedSource.Location)
+		return ops, fmt.Errorf("cannot process file %s: %w", resolvedSource.Location, err)
 	}
 	for i, o := range ops {
 		if disallowedOptions[o.Name] {
@@ -231,7 +231,7 @@ func extractModelineOptionsFromSource(resolvedSource source.Source) ([]modeline.
 			baseDir := filepath.Dir(resolvedSource.Origin)
 			refPath := o.Value
 			if !filepath.IsAbs(refPath) {
-				full := path.Join(baseDir, refPath)
+				full := filepath.Join(baseDir, refPath)
 				o.Value = full
 				ops[i] = o
 			}
@@ -239,7 +239,7 @@ func extractModelineOptionsFromSource(resolvedSource source.Source) ([]modeline.
 			baseDir := filepath.Dir(resolvedSource.Origin)
 			refPath := getRefPathOrProperty(o.Value)
 			if !filepath.IsAbs(refPath) {
-				full := getFullPathOrProperty(o.Value, path.Join(baseDir, refPath))
+				full := getFullPathOrProperty(o.Value, filepath.Join(baseDir, refPath))
 				o.Value = full
 				ops[i] = o
 			}

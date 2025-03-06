@@ -26,9 +26,9 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 type cronJobController struct {
@@ -42,41 +42,42 @@ var _ controller = &cronJobController{}
 
 func (c *cronJobController) checkReadyCondition(ctx context.Context) (bool, error) {
 	// Check latest job result
-	if lastScheduleTime := c.obj.Status.LastScheduleTime; lastScheduleTime != nil && len(c.obj.Status.Active) == 0 {
-		jobs := batchv1.JobList{}
-		if err := c.client.List(ctx, &jobs,
-			ctrl.InNamespace(c.integration.Namespace),
-			ctrl.MatchingLabels{v1.IntegrationLabel: c.integration.Name},
-		); err != nil {
-			return true, err
+	lastScheduleTime := c.obj.Status.LastScheduleTime
+
+	if lastScheduleTime == nil || len(c.obj.Status.Active) != 0 {
+		return false, nil
+	}
+
+	jobs := batchv1.JobList{}
+	if err := c.client.List(ctx, &jobs,
+		ctrl.InNamespace(c.integration.Namespace),
+		ctrl.MatchingLabels{v1.IntegrationLabel: c.integration.Name},
+	); err != nil {
+		return true, err
+	}
+	t := lastScheduleTime.Time
+	for i, job := range jobs.Items {
+		if job.Status.Active == 0 && job.CreationTimestamp.Time.Before(t) {
+			continue
 		}
-		t := lastScheduleTime.Time
-		for i, job := range jobs.Items {
-			if job.Status.Active == 0 && job.CreationTimestamp.Time.Before(t) {
-				continue
-			}
-			c.lastCompletedJob = &jobs.Items[i]
-			t = c.lastCompletedJob.CreationTimestamp.Time
-		}
-		if c.lastCompletedJob != nil {
-			if failed := kubernetes.GetJobCondition(*c.lastCompletedJob, batchv1.JobFailed); failed != nil && failed.Status == corev1.ConditionTrue {
-				c.integration.SetReadyCondition(corev1.ConditionFalse,
-					v1.IntegrationConditionLastJobFailedReason,
-					fmt.Sprintf("last job %s failed: %s", c.lastCompletedJob.Name, failed.Message))
-				c.integration.Status.Phase = v1.IntegrationPhaseError
-				return true, nil
-			}
+		c.lastCompletedJob = &jobs.Items[i]
+		t = c.lastCompletedJob.CreationTimestamp.Time
+	}
+	if c.lastCompletedJob != nil {
+		if failed := kubernetes.GetJobCondition(*c.lastCompletedJob, batchv1.JobFailed); failed != nil &&
+			failed.Status == corev1.ConditionTrue {
+			c.integration.SetReadyCondition(corev1.ConditionFalse,
+				v1.IntegrationConditionLastJobFailedReason,
+				fmt.Sprintf("last job %s failed: %s", c.lastCompletedJob.Name, failed.Message))
+			c.integration.Status.Phase = v1.IntegrationPhaseError
+			return true, nil
 		}
 	}
 
 	return false, nil
 }
 
-func (c *cronJobController) getPodSpec() corev1.PodSpec {
-	return c.obj.Spec.JobTemplate.Spec.Template.Spec
-}
-
-func (c *cronJobController) updateReadyCondition(readyPods []corev1.Pod) bool {
+func (c *cronJobController) updateReadyCondition(readyPods int32) bool {
 	switch {
 	case c.obj.Status.LastScheduleTime == nil:
 		c.integration.SetReadyCondition(corev1.ConditionTrue,
@@ -88,13 +89,15 @@ func (c *cronJobController) updateReadyCondition(readyPods []corev1.Pod) bool {
 			v1.IntegrationConditionCronJobActiveReason, "cronjob active")
 		return true
 
-	case c.obj.Spec.SuccessfulJobsHistoryLimit != nil && *c.obj.Spec.SuccessfulJobsHistoryLimit == 0 && c.obj.Spec.FailedJobsHistoryLimit != nil && *c.obj.Spec.FailedJobsHistoryLimit == 0:
+	case c.obj.Spec.SuccessfulJobsHistoryLimit != nil && *c.obj.Spec.SuccessfulJobsHistoryLimit == 0 &&
+		c.obj.Spec.FailedJobsHistoryLimit != nil && *c.obj.Spec.FailedJobsHistoryLimit == 0:
 		c.integration.SetReadyCondition(corev1.ConditionTrue,
 			v1.IntegrationConditionCronJobCreatedReason, "no jobs history available")
 		return true
 
 	case c.lastCompletedJob != nil:
-		if complete := kubernetes.GetJobCondition(*c.lastCompletedJob, batchv1.JobComplete); complete != nil && complete.Status == corev1.ConditionTrue {
+		if complete := kubernetes.GetJobCondition(*c.lastCompletedJob, batchv1.JobComplete); complete != nil &&
+			complete.Status == corev1.ConditionTrue {
 			c.integration.SetReadyCondition(corev1.ConditionTrue,
 				v1.IntegrationConditionLastJobSucceededReason,
 				fmt.Sprintf("last job %s completed successfully", c.lastCompletedJob.Name))
@@ -106,4 +109,12 @@ func (c *cronJobController) updateReadyCondition(readyPods []corev1.Pod) bool {
 	}
 
 	return false
+}
+
+func (c *cronJobController) hasTemplateIntegrationLabel() bool {
+	return c.obj.Spec.JobTemplate.Spec.Template.Labels[v1.IntegrationLabel] != ""
+}
+
+func (c *cronJobController) getControllerName() string {
+	return fmt.Sprintf("CronJob/%s", c.obj.Name)
 }

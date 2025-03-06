@@ -20,10 +20,10 @@ package cmd
 import (
 	"testing"
 
-	"github.com/apache/camel-k/pkg/util/test"
 	"github.com/spf13/cobra"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const cmdOperator = "operator"
@@ -34,7 +34,7 @@ func initializeOperatorCmdOptions(t *testing.T) (*operatorCmdOptions, *cobra.Com
 
 	options, rootCmd := kamelTestPreAddCommandInit()
 	operatorCmdOptions := addTestOperatorCmd(*options, rootCmd)
-	kamelTestPostAddCommandInit(t, rootCmd)
+	kamelTestPostAddCommandInit(t, rootCmd, options)
 
 	return operatorCmdOptions, rootCmd, *options
 }
@@ -42,22 +42,22 @@ func initializeOperatorCmdOptions(t *testing.T) (*operatorCmdOptions, *cobra.Com
 // nolint: unparam
 func addTestOperatorCmd(options RootCmdOptions, rootCmd *cobra.Command) *operatorCmdOptions {
 	// add a testing version of operator Command
-	operatorCmd, operatorOptions := newCmdOperator()
+	operatorCmd, operatorOptions := newCmdOperator(&options)
 	operatorCmd.RunE = func(c *cobra.Command, args []string) error {
 		return nil
 	}
 	operatorCmd.PostRunE = func(c *cobra.Command, args []string) error {
 		return nil
 	}
-	operatorCmd.Args = test.ArbitraryArgs
+	operatorCmd.Args = ArbitraryArgs
 	rootCmd.AddCommand(operatorCmd)
 	return operatorOptions
 }
 
 func TestOperatorNoFlag(t *testing.T) {
 	operatorCmdOptions, rootCmd, _ := initializeOperatorCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdOperator)
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdOperator)
+	require.NoError(t, err)
 	// Check default expected values
 	assert.Equal(t, int32(8081), operatorCmdOptions.HealthPort)
 	assert.Equal(t, int32(8080), operatorCmdOptions.MonitoringPort)
@@ -65,20 +65,20 @@ func TestOperatorNoFlag(t *testing.T) {
 
 func TestOperatorNonExistingFlag(t *testing.T) {
 	_, rootCmd, _ := initializeOperatorCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdOperator, "--nonExistingFlag")
-	assert.NotNil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdOperator, "--nonExistingFlag")
+	require.Error(t, err)
 }
 
 func TestOperatorHealthPortFlag(t *testing.T) {
 	operatorCmdOptions, rootCmd, _ := initializeOperatorCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdOperator, "--health-port", "7171")
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdOperator, "--health-port", "7171")
+	require.NoError(t, err)
 	assert.Equal(t, int32(7171), operatorCmdOptions.HealthPort)
 }
 
 func TestOperatorMonitoringPortFlag(t *testing.T) {
 	operatorCmdOptions, rootCmd, _ := initializeOperatorCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdOperator, "--monitoring-port", "7172")
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdOperator, "--monitoring-port", "7172")
+	require.NoError(t, err)
 	assert.Equal(t, int32(7172), operatorCmdOptions.MonitoringPort)
 }

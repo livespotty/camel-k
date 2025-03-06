@@ -20,12 +20,13 @@ package threescale
 import (
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/trait"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/trait"
 )
 
 // The 3scale trait can be used to automatically create annotations that allow
@@ -33,7 +34,10 @@ import (
 //
 // The 3scale trait is disabled by default.
 //
+// WARNING: The trait is **deprecated** and will removed in future release versions: configure directly the Camel properties as required by the component instead.
+//
 // +camel-k:trait=3scale.
+// +camel-k:deprecated=2.5.0.
 type Trait struct {
 	traitv1.Trait `property:",squash" json:",inline"`
 	// Enables automatic configuration of the trait.
@@ -87,17 +91,24 @@ func NewThreeScaleTrait() trait.Trait {
 	}
 }
 
-func (t *threeScaleTrait) Configure(e *trait.Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, false) {
-		// disabled by default
-		return false, nil
+func (t *threeScaleTrait) Configure(e *trait.Environment) (bool, *trait.TraitCondition, error) {
+	if e.Integration == nil || !ptr.Deref(t.Enabled, false) {
+		return false, nil, nil
 	}
-
 	if !e.IntegrationInRunningPhases() {
-		return false, nil
+		return false, nil, nil
 	}
 
-	if pointer.BoolDeref(t.Auto, true) {
+	condition := trait.NewIntegrationCondition(
+		"3Scale",
+		v1.IntegrationConditionTraitInfo,
+		corev1.ConditionTrue,
+		trait.TraitConfigurationReason,
+		"3Scale trait is deprecated and may be removed in future version: "+
+			"use service trait to add 3Scale labels and annotations instead",
+	)
+
+	if ptr.Deref(t.Auto, true) {
 		if t.Scheme == "" {
 			t.Scheme = ThreeScaleSchemeDefaultValue
 		}
@@ -113,7 +124,7 @@ func (t *threeScaleTrait) Configure(e *trait.Environment) (bool, error) {
 		}
 	}
 
-	return true, nil
+	return true, condition, nil
 }
 
 func (t *threeScaleTrait) Apply(e *trait.Environment) error {

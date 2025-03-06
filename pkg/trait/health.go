@@ -18,21 +18,25 @@ limitations under the License.
 package trait
 
 import (
-	"encoding/json"
+	"fmt"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/util"
 )
 
 const (
+	healthTraitID    = "health"
+	healthTraitOrder = 1700
+
 	defaultLivenessProbePath  = "/q/health/live"
 	defaultReadinessProbePath = "/q/health/ready"
+	defaultStartupProbePath   = "/q/health/started"
 )
 
 type healthTrait struct {
@@ -42,44 +46,54 @@ type healthTrait struct {
 
 func newHealthTrait() Trait {
 	return &healthTrait{
-		BaseTrait: NewBaseTrait("health", 1700),
-		HealthTrait: traitv1.HealthTrait{
-			LivenessScheme:  string(corev1.URISchemeHTTP),
-			ReadinessScheme: string(corev1.URISchemeHTTP),
-		},
+		BaseTrait: NewBaseTrait(healthTraitID, healthTraitOrder),
 	}
 }
 
-func (t *healthTrait) Configure(e *Environment) (bool, error) {
+func (t *healthTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
 	if e.Integration == nil ||
-		!e.IntegrationInPhase(v1.IntegrationPhaseInitialization) && !e.IntegrationInRunningPhases() {
-		return false, nil
+		(!e.IntegrationInPhase(v1.IntegrationPhaseInitialization) && !e.IntegrationInRunningPhases()) ||
+		!ptr.Deref(t.Enabled, false) {
+		return false, nil, nil
 	}
 
-	if !pointer.BoolDeref(t.Enabled, false) {
-		// Source the configuration from the container trait to maintain backward compatibility.
-		// This can be removed once the deprecated properties related to health probes are actually
-		// removed from the container trait.
-		if trait := e.Catalog.GetTrait(containerTraitID); trait != nil {
-			if container, ok := trait.(*containerTrait); ok && pointer.BoolDeref(container.Enabled, true) && pointer.BoolDeref(container.DeprecatedProbesEnabled, false) {
-				config, err := json.Marshal(container)
-				if err != nil {
-					return false, err
-				}
-				err = json.Unmarshal(config, t)
-				if err != nil {
-					return false, err
-				}
-				t.Enabled = pointer.Bool(true)
-				t.LivenessProbeEnabled = pointer.Bool(true)
-				t.ReadinessProbeEnabled = pointer.Bool(true)
-				return true, err
-			}
+	// The trait must be disabled if a debug operation is ongoing
+	if jt := e.Catalog.GetTrait(jvmTraitID); jt != nil {
+		if jvm, ok := jt.(*jvmTrait); ok && ptr.Deref(jvm.Debug, false) {
+			return false, NewIntegrationConditionPlatformDisabledWithMessage("Health", "debug operation ongoing: incompatible with health checks"), nil
 		}
-		return false, nil
 	}
 
-	return true, nil
+	t.setProbesValues(e)
+
+	return true, nil, nil
+}
+
+func (t *healthTrait) setProbesValues(e *Environment) {
+	if t.LivenessProbe == "" {
+		if e.CamelCatalog.Runtime.Capabilities["health"].Metadata != nil {
+			t.LivenessProbe = e.CamelCatalog.Runtime.Capabilities["health"].Metadata["defaultLivenessProbePath"]
+		} else {
+			// Deprecated: to be removed
+			t.LivenessProbe = defaultLivenessProbePath
+		}
+	}
+	if t.ReadinessProbe == "" {
+		if e.CamelCatalog.Runtime.Capabilities["health"].Metadata != nil {
+			t.ReadinessProbe = e.CamelCatalog.Runtime.Capabilities["health"].Metadata["defaultReadinessProbePath"]
+		} else {
+			// Deprecated: to be removed
+			t.ReadinessProbe = defaultReadinessProbePath
+		}
+	}
+	if t.StartupProbe == "" {
+		if e.CamelCatalog.Runtime.Capabilities["health"].Metadata != nil {
+			t.StartupProbe = e.CamelCatalog.Runtime.Capabilities["health"].Metadata["defaultStartupProbePath"]
+		} else {
+			// Deprecated: to be removed
+			t.StartupProbe = defaultStartupProbePath
+		}
+	}
 }
 
 func (t *healthTrait) Apply(e *Environment) error {
@@ -94,31 +108,71 @@ func (t *healthTrait) Apply(e *Environment) error {
 		return nil
 	}
 
-	if !pointer.BoolDeref(t.LivenessProbeEnabled, false) && !pointer.BoolDeref(t.ReadinessProbeEnabled, true) {
+	if !ptr.Deref(t.LivenessProbeEnabled, false) && !ptr.Deref(t.ReadinessProbeEnabled, true) && !ptr.Deref(t.StartupProbeEnabled, false) {
 		return nil
 	}
 
 	container := e.GetIntegrationContainer()
-	var port *intstr.IntOrString
-	// Use the default named HTTP container port if it exists.
-	// For Knative, the Serving webhook is responsible for setting the user-land port,
-	// and associating the probes with the corresponding port.
-	if containerPort := e.getIntegrationContainerPort(); containerPort != nil && containerPort.Name == defaultContainerPortName {
-		p := intstr.FromString(defaultContainerPortName)
-		port = &p
-	} else if e.GetTrait(knativeServiceTraitID) == nil {
-		p := intstr.FromInt(defaultContainerPort)
-		port = &p
+	if container == nil {
+		return fmt.Errorf("unable to find integration container: %s", e.Integration.Name)
 	}
 
-	if pointer.BoolDeref(t.LivenessProbeEnabled, false) {
-		container.LivenessProbe = t.newLivenessProbe(port, defaultLivenessProbePath)
+	var port *intstr.IntOrString
+	containerPort := e.getIntegrationContainerPort()
+	if containerPort == nil {
+		containerPort = e.createContainerPort()
 	}
-	if pointer.BoolDeref(t.ReadinessProbeEnabled, true) {
-		container.ReadinessProbe = t.newReadinessProbe(port, defaultReadinessProbePath)
+	p := intstr.FromInt32(containerPort.ContainerPort)
+	port = &p
+
+	return t.setProbes(container, port)
+}
+
+func (t *healthTrait) setProbes(container *corev1.Container, port *intstr.IntOrString) error {
+	if ptr.Deref(t.LivenessProbeEnabled, false) {
+		if t.LivenessProbe == "" {
+			return fmt.Errorf("you need to configure a liveness probe explicitly or in your catalog")
+		}
+		container.LivenessProbe = t.newLivenessProbe(port, t.LivenessProbe)
+	}
+	if ptr.Deref(t.ReadinessProbeEnabled, true) {
+		if t.ReadinessProbe == "" {
+			return fmt.Errorf("you need to configure a readiness probe explicitly or in your catalog")
+		}
+		container.ReadinessProbe = t.newReadinessProbe(port, t.ReadinessProbe)
+	}
+	if ptr.Deref(t.StartupProbeEnabled, false) {
+		if t.StartupProbe == "" {
+			return fmt.Errorf("you need to configure a startup probe explicitly or in your catalog")
+		}
+		container.StartupProbe = t.newStartupProbe(port, t.StartupProbe)
 	}
 
 	return nil
+}
+
+func (t *healthTrait) getLivenessScheme() corev1.URIScheme {
+	if t.LivenessScheme == "" {
+		return corev1.URISchemeHTTP
+	}
+
+	return corev1.URIScheme(t.LivenessScheme)
+}
+
+func (t *healthTrait) getReadinessScheme() corev1.URIScheme {
+	if t.ReadinessScheme == "" {
+		return corev1.URISchemeHTTP
+	}
+
+	return corev1.URIScheme(t.ReadinessScheme)
+}
+
+func (t *healthTrait) getStartupScheme() corev1.URIScheme {
+	if t.StartupScheme == "" {
+		return corev1.URISchemeHTTP
+	}
+
+	return corev1.URIScheme(t.StartupScheme)
 }
 
 func (t *healthTrait) newLivenessProbe(port *intstr.IntOrString, path string) *corev1.Probe {
@@ -126,7 +180,7 @@ func (t *healthTrait) newLivenessProbe(port *intstr.IntOrString, path string) *c
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path:   path,
-				Scheme: corev1.URIScheme(t.LivenessScheme),
+				Scheme: t.getLivenessScheme(),
 			},
 		},
 		InitialDelaySeconds: t.LivenessInitialDelay,
@@ -148,7 +202,7 @@ func (t *healthTrait) newReadinessProbe(port *intstr.IntOrString, path string) *
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path:   path,
-				Scheme: corev1.URIScheme(t.ReadinessScheme),
+				Scheme: t.getReadinessScheme(),
 			},
 		},
 		InitialDelaySeconds: t.ReadinessInitialDelay,
@@ -156,6 +210,28 @@ func (t *healthTrait) newReadinessProbe(port *intstr.IntOrString, path string) *
 		PeriodSeconds:       t.ReadinessPeriod,
 		SuccessThreshold:    t.ReadinessSuccessThreshold,
 		FailureThreshold:    t.ReadinessFailureThreshold,
+	}
+
+	if port != nil {
+		p.ProbeHandler.HTTPGet.Port = *port
+	}
+
+	return &p
+}
+
+func (t *healthTrait) newStartupProbe(port *intstr.IntOrString, path string) *corev1.Probe {
+	p := corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path:   path,
+				Scheme: t.getStartupScheme(),
+			},
+		},
+		InitialDelaySeconds: t.StartupInitialDelay,
+		TimeoutSeconds:      t.StartupTimeout,
+		PeriodSeconds:       t.StartupPeriod,
+		SuccessThreshold:    t.StartupSuccessThreshold,
+		FailureThreshold:    t.StartupFailureThreshold,
 	}
 
 	if port != nil {

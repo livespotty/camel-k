@@ -18,23 +18,28 @@ limitations under the License.
 package trait
 
 import (
+	"fmt"
 	"os"
 
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/defaults"
-	"github.com/apache/camel-k/pkg/util/envvar"
-	"github.com/apache/camel-k/pkg/util/property"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
+	"github.com/apache/camel-k/v2/pkg/util/envvar"
+	"github.com/apache/camel-k/v2/pkg/util/property"
 )
 
 type environmentTrait struct {
-	BaseTrait
+	BasePlatformTrait
 	traitv1.EnvironmentTrait `property:",squash"`
 }
 
 const (
+	environmentTraitID    = "environment"
+	environmentTraitOrder = 800
+
 	envVarNamespace            = "NAMESPACE"
 	envVarPodName              = "POD_NAME"
 	envVarOperatorID           = "CAMEL_K_OPERATOR_ID"
@@ -54,37 +59,38 @@ const (
 
 func newEnvironmentTrait() Trait {
 	return &environmentTrait{
-		BaseTrait: NewBaseTrait("environment", 800),
-		EnvironmentTrait: traitv1.EnvironmentTrait{
-			ContainerMeta: pointer.Bool(true),
-		},
+		BasePlatformTrait: NewBasePlatformTrait(environmentTraitID, environmentTraitOrder),
 	}
 }
 
-func (t *environmentTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, true) {
-		return false, nil
+func (t *environmentTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil {
+		return false, nil, nil
 	}
 
-	return e.IntegrationInRunningPhases(), nil
+	return e.IntegrationInRunningPhases(), nil, nil
 }
 
 func (t *environmentTrait) Apply(e *Environment) error {
-	envvar.SetVal(&e.EnvVars, envVarCamelKVersion, defaults.Version)
+	envvar.SetVal(&e.EnvVars, envVarCamelKVersion, e.Integration.Status.Version)
 	envvar.SetVal(&e.EnvVars, envVarOperatorID, defaults.OperatorID())
 	if e.Integration != nil {
 		envvar.SetVal(&e.EnvVars, envVarCamelKIntegration, e.Integration.Name)
 	}
-	envvar.SetVal(&e.EnvVars, envVarCamelKRuntimeVersion, e.RuntimeVersion)
+	envvar.SetVal(&e.EnvVars, envVarCamelKRuntimeVersion, e.Integration.Status.RuntimeVersion)
 	envvar.SetVal(&e.EnvVars, envVarMountPathConfigMaps, camel.ConfigConfigmapsMountPath)
 	envvar.SetVal(&e.EnvVars, envVarMountPathSecrets, camel.ConfigSecretsMountPath)
+	if e.CamelCatalog.GetRuntimeProvider() == v1.RuntimeProviderPlainQuarkus {
+		envvar.SetVal(&e.EnvVars, "QUARKUS_CONFIG_LOCATIONS",
+			fmt.Sprintf("%s/application.properties,%s/user.properties", camel.BasePath, camel.ConfDPath))
+	}
 
-	if pointer.BoolDeref(t.ContainerMeta, true) {
+	if ptr.Deref(t.ContainerMeta, true) {
 		envvar.SetValFrom(&e.EnvVars, envVarNamespace, "metadata.namespace")
 		envvar.SetValFrom(&e.EnvVars, envVarPodName, "metadata.name")
 	}
 
-	if pointer.BoolDeref(t.HTTPProxy, true) {
+	if ptr.Deref(t.HTTPProxy, true) {
 		if HTTPProxy, ok := os.LookupEnv("HTTP_PROXY"); ok {
 			envvar.SetVal(&e.EnvVars, "HTTP_PROXY", HTTPProxy)
 		}
@@ -99,14 +105,18 @@ func (t *environmentTrait) Apply(e *Environment) error {
 	if t.Vars != nil {
 		for _, env := range t.Vars {
 			k, v := property.SplitPropertyFileEntry(env)
-			envvar.SetVal(&e.EnvVars, k, v)
+			confs := v1.PlainConfigSecretRegexp.FindAllStringSubmatch(v, -1)
+			if len(confs) > 0 {
+				var res, err = v1.DecodeValueSource(v, "")
+				if err != nil {
+					return err
+				}
+				envvar.SetValFromValueSource(&e.EnvVars, k, res)
+			} else {
+				envvar.SetVal(&e.EnvVars, k, v)
+			}
 		}
 	}
 
 	return nil
-}
-
-// IsPlatformTrait overrides base class method.
-func (t *environmentTrait) IsPlatformTrait() bool {
-	return true
 }

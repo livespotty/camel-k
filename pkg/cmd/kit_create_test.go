@@ -20,9 +20,9 @@ package cmd
 import (
 	"testing"
 
-	"github.com/apache/camel-k/pkg/util/test"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const subCmdKit = "create"
@@ -33,7 +33,7 @@ func initializeKitCreateCmdOptions(t *testing.T) (*kitCreateCommandOptions, *cob
 
 	options, rootCmd := kamelTestPreAddCommandInit()
 	kitCreateCmdOptions := addTestKitCreateCmd(*options, rootCmd)
-	kamelTestPostAddCommandInit(t, rootCmd)
+	kamelTestPostAddCommandInit(t, rootCmd, options)
 
 	return kitCreateCmdOptions, rootCmd, *options
 }
@@ -47,23 +47,23 @@ func addTestKitCreateCmd(options RootCmdOptions, rootCmd *cobra.Command) *kitCre
 	kitCreateCmd.PostRunE = func(c *cobra.Command, args []string) error {
 		return nil
 	}
-	kitCreateCmd.Args = test.ArbitraryArgs
+	kitCreateCmd.Args = ArbitraryArgs
 	rootCmd.AddCommand(kitCreateCmd)
 	return kitCreateOptions
 }
 
 func TestKitCreateNonExistingFlag(t *testing.T) {
 	_, rootCmd, _ := initializeKitCreateCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, subCmdKit, "--nonExistingFlag")
-	assert.NotNil(t, err)
+	_, err := ExecuteCommand(rootCmd, subCmdKit, "--nonExistingFlag")
+	require.Error(t, err)
 }
 
 func TestKitCreateConfigMapFlag(t *testing.T) {
 	kitCreateCmdOptions, rootCmd, _ := initializeKitCreateCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, subCmdKit,
+	_, err := ExecuteCommand(rootCmd, subCmdKit,
 		"--configmap", "someString1",
 		"--configmap", "someString2")
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.Len(t, kitCreateCmdOptions.Configmaps, 2)
 	assert.Equal(t, "someString1", kitCreateCmdOptions.Configmaps[0])
 	assert.Equal(t, "someString2", kitCreateCmdOptions.Configmaps[1])
@@ -71,10 +71,10 @@ func TestKitCreateConfigMapFlag(t *testing.T) {
 
 func TestKitCreateDependencyFlag(t *testing.T) {
 	kitCreateCmdOptions, rootCmd, _ := initializeKitCreateCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, subCmdKit,
+	_, err := ExecuteCommand(rootCmd, subCmdKit,
 		"--dependency", "someString1",
 		"--dependency", "someString2")
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.Len(t, kitCreateCmdOptions.Dependencies, 2)
 	assert.Equal(t, "someString1", kitCreateCmdOptions.Dependencies[0])
 	assert.Equal(t, "someString2", kitCreateCmdOptions.Dependencies[1])
@@ -82,17 +82,17 @@ func TestKitCreateDependencyFlag(t *testing.T) {
 
 func TestKitCreateImageFlag(t *testing.T) {
 	kitCreateCmdOptions, rootCmd, _ := initializeKitCreateCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, subCmdKit, "--image", "someString")
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(rootCmd, subCmdKit, "--image", "someString")
+	require.NoError(t, err)
 	assert.Equal(t, "someString", kitCreateCmdOptions.Image)
 }
 
 func TestKitCreatePropertyFlag(t *testing.T) {
 	kitCreateCmdOptions, rootCmd, _ := initializeKitCreateCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, subCmdKit,
+	_, err := ExecuteCommand(rootCmd, subCmdKit,
 		"--property", "someString1",
 		"--property", "someString2")
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.Len(t, kitCreateCmdOptions.Properties, 2)
 	assert.Equal(t, "someString1", kitCreateCmdOptions.Properties[0])
 	assert.Equal(t, "someString2", kitCreateCmdOptions.Properties[1])
@@ -100,10 +100,10 @@ func TestKitCreatePropertyFlag(t *testing.T) {
 
 func TestKitCreateRepositoryFlag(t *testing.T) {
 	kitCreateCmdOptions, rootCmd, _ := initializeKitCreateCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, subCmdKit,
+	_, err := ExecuteCommand(rootCmd, subCmdKit,
 		"--repository", "someString1",
 		"--repository", "someString2")
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.Len(t, kitCreateCmdOptions.Repositories, 2)
 	assert.Equal(t, "someString1", kitCreateCmdOptions.Repositories[0])
 	assert.Equal(t, "someString2", kitCreateCmdOptions.Repositories[1])
@@ -111,10 +111,10 @@ func TestKitCreateRepositoryFlag(t *testing.T) {
 
 func TestKitCreateSecretFlag(t *testing.T) {
 	kitCreateCmdOptions, rootCmd, _ := initializeKitCreateCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, subCmdKit,
+	_, err := ExecuteCommand(rootCmd, subCmdKit,
 		"--secret", "someString1",
 		"--secret", "someString2")
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.Len(t, kitCreateCmdOptions.Secrets, 2)
 	assert.Equal(t, "someString1", kitCreateCmdOptions.Secrets[0])
 	assert.Equal(t, "someString2", kitCreateCmdOptions.Secrets[1])
@@ -122,10 +122,10 @@ func TestKitCreateSecretFlag(t *testing.T) {
 
 func TestKitCreateTraitFlag(t *testing.T) {
 	kitCreateCmdOptions, rootCmd, _ := initializeKitCreateCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, subCmdKit,
+	_, err := ExecuteCommand(rootCmd, subCmdKit,
 		"--trait", "someString1",
 		"--trait", "someString2")
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.Len(t, kitCreateCmdOptions.Traits, 2)
 	assert.Equal(t, "someString1", kitCreateCmdOptions.Traits[0])
 	assert.Equal(t, "someString2", kitCreateCmdOptions.Traits[1])

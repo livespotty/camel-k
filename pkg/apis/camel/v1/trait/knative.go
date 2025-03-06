@@ -20,7 +20,6 @@ package trait
 // The Knative trait automatically discovers addresses of Knative resources and inject them into the
 // running integration.
 //
-// The full Knative configuration is injected in the CAMEL_KNATIVE_CONFIGURATION in JSON format.
 // The Camel Knative component will then use the full configuration to configure the routes.
 //
 // The trait is enabled by default when the Knative profile is active.
@@ -57,4 +56,16 @@ type KnativeTrait struct {
 	SinkBinding *bool `property:"sink-binding" json:"sinkBinding,omitempty"`
 	// Enable automatic discovery of all trait properties.
 	Auto *bool `property:"auto" json:"auto,omitempty"`
+	// Enables the camel-k-operator to set the "bindings.knative.dev/include=true" label to the namespace
+	// As Knative requires this label to perform injection of K_SINK URL into the service.
+	// If this is false, the integration pod may start and fail, read the SinkBinding Knative documentation. (default: true)
+	NamespaceLabel *bool `property:"namespace-label" json:"namespaceLabel,omitempty"`
+	// Sets filter attributes on the event stream (such as event type, source, subject and so on).
+	// A list of key-value pairs that represent filter attributes and its values.
+	// The syntax is KEY=VALUE, e.g., `source="my.source"`.
+	// Filter attributes get set on the Knative trigger that is being created as part of this integration.
+	Filters []string `property:"filters" json:"filters,omitempty"`
+	// Enables the default filtering for the Knative trigger using the event type
+	// If this is true, the created Knative trigger uses the event type as a filter on the event stream when no other filter criteria is given. (default: true)
+	FilterEventType *bool `property:"filter-event-type" json:"filterEventType,omitempty"`
 }

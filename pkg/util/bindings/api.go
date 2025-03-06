@@ -20,11 +20,10 @@ package bindings
 
 import (
 	"context"
-	"fmt"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
-	"github.com/apache/camel-k/pkg/client"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+
+	"github.com/apache/camel-k/v2/pkg/client"
 )
 
 const (
@@ -45,33 +44,26 @@ type Binding struct {
 	ApplicationProperties map[string]string
 }
 
-// BindingProvider maps a KameletBinding endpoint into Camel K resources.
+// BindingProvider maps a Binding endpoint into Camel K resources.
 type BindingProvider interface {
 	// ID returns the name of the binding provider
 	ID() string
 	// Translate does the actual mapping
-	Translate(ctx BindingContext, endpointContext EndpointContext, endpoint v1alpha1.Endpoint) (*Binding, error)
+	Translate(ctx BindingContext, endpointContext EndpointContext, endpoint v1.Endpoint) (*Binding, error)
 	// Order returns the relative order of execution of the binding provider
 	Order() int
 }
 
-// nolint: containedctx
+//nolint:containedctx
 type BindingContext struct {
 	Ctx       context.Context
 	Client    client.Client
 	Namespace string
 	Profile   v1.TraitProfile
+	Metadata  map[string]string
 }
 
 type EndpointContext struct {
-	Type     v1alpha1.EndpointType
+	Type     v1.EndpointType
 	Position *int
-}
-
-func (c EndpointContext) GenerateID() string {
-	id := string(c.Type)
-	if c.Position != nil {
-		id = fmt.Sprintf("%s-%d", id, *c.Position)
-	}
-	return id
 }

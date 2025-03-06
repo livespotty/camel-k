@@ -28,11 +28,15 @@ import (
 
 	"go.uber.org/multierr"
 
-	klog "github.com/apache/camel-k/pkg/util/log"
+	klog "github.com/apache/camel-k/v2/pkg/util/log"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/client-go/kubernetes"
+)
+
+const (
+	scraperPeriodicTimeout = 2 * time.Second
 )
 
 // SelectorScraper scrapes all pods with a given selector.
@@ -49,6 +53,7 @@ type SelectorScraper struct {
 
 // NewSelectorScraper creates a new SelectorScraper.
 func NewSelectorScraper(client kubernetes.Interface, namespace string, defaultContainerName string, labelSelector string, tailLines *int64) *SelectorScraper {
+	klog.InitForCmd()
 	return &SelectorScraper{
 		client:               client,
 		namespace:            namespace,
@@ -90,7 +95,7 @@ func (s *SelectorScraper) periodicSynchronize(ctx context.Context, out *bufio.Wr
 		if err := clientCloser(); err != nil {
 			s.L.Error(err, "Unable to close the client")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(scraperPeriodicTimeout):
 		go s.periodicSynchronize(ctx, out, clientCloser)
 	}
 }

@@ -21,8 +21,13 @@ package trait
 //
 // +camel-k:trait=camel.
 type CamelTrait struct {
-	Trait `property:",squash" json:",inline"`
-	// The camel-k-runtime version to use for the integration. It overrides the default version set in the Integration Platform.
+	PlatformBaseTrait `property:",squash" json:",inline"`
+	// The runtime provider to use for the integration. (Default, Camel K Runtime).
+	// +kubebuilder:validation:Enum=quarkus;plain-quarkus
+	RuntimeProvider string `property:"runtime-provider" json:"runtimeProvider,omitempty"`
+	// The runtime version to use for the integration. It overrides the default version set in the Integration Platform.
+	// You can use a fixed version (for example "3.2.3") or a semantic version (for example "3.x") which will try to resolve
+	// to the best matching Catalog existing on the cluster (Default, the one provided by the operator version).
 	RuntimeVersion string `property:"runtime-version" json:"runtimeVersion,omitempty"`
 	// A list of properties to be provided to the Integration runtime
 	Properties []string `property:"properties" json:"properties,omitempty"`

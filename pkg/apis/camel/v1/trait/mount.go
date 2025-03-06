@@ -19,10 +19,9 @@ package trait
 
 // The Mount trait can be used to configure volumes mounted on the Integration Pods.
 //
-// +camel-k:trait=mount
-// nolint: tagliatelle
+// +camel-k:trait=mount.
 type MountTrait struct {
-	Trait `property:",squash" json:",inline"`
+	PlatformBaseTrait `property:",squash" json:",inline"`
 	// A list of configuration pointing to configmap/secret.
 	// The configuration are expected to be UTF-8 resources as they are processed by runtime Camel Context and tried to be parsed as property files.
 	// They are also made available on the classpath in order to ease their usage directly from the Route.
@@ -33,6 +32,17 @@ type MountTrait struct {
 	// The destination path can be either a default location or any path specified by the user.
 	// Syntax: [configmap|secret]:name[/key][@path], where name represents the resource name, key optionally represents the resource key to be filtered and path represents the destination path
 	Resources []string `property:"resources" json:"resources,omitempty"`
-	// A list of Persistent Volume Claims to be mounted. Syntax: [pvcname:/container/path]
+	// A list of Persistent Volume Claims to be mounted. Syntax: [pvcname:/container/path]. If the PVC is not found, the Integration fails.
+	// You can use the syntax [pvcname:/container/path:size:accessMode<:storageClass>] to create a dynamic PVC based on the Storage Class provided
+	// or the default cluster Storage Class. However, if the PVC exists, the operator would mount it.
 	Volumes []string `property:"volumes" json:"volumes,omitempty"`
+	// A list of EmptyDir volumes to be mounted. An optional size limit may be configured (default 500Mi).
+	// Syntax: name:/container/path[:sizeLimit]
+	EmptyDirs []string `property:"empty-dirs" json:"emptyDirs,omitempty"`
+	// Enable "hot reload" when a secret/configmap mounted is edited (default `false`). The configmap/secret must be
+	// marked with `camel.apache.org/integration` label to be taken in account. The resource will be watched for any kind change, also for
+	// changes in metadata.
+	HotReload *bool `property:"hot-reload" json:"hotReload,omitempty"`
+	// Deprecated: no longer available since version 2.5.
+	ScanKameletsImplicitLabelSecrets *bool `property:"scan-kamelets-implicit-label-secrets" json:"scanKameletsImplicitLabelSecrets,omitempty"`
 }

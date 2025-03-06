@@ -20,12 +20,19 @@ package trait
 import (
 	"strconv"
 
+	"github.com/apache/camel-k/v2/pkg/util/boolean"
+
 	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	servingv1 "knative.dev/serving/pkg/apis/serving/v1"
 
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+)
+
+const (
+	istioTraitID    = "istio"
+	istioTraitOrder = 2300
 )
 
 type istioTrait struct {
@@ -36,27 +43,26 @@ type istioTrait struct {
 const (
 	istioSidecarInjectAnnotation    = "sidecar.istio.io/inject"
 	istioOutboundIPRangesAnnotation = "traffic.sidecar.istio.io/includeOutboundIPRanges"
+
+	defaultAllow = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 )
 
 func newIstioTrait() Trait {
 	return &istioTrait{
-		BaseTrait: NewBaseTrait("istio", 2300),
-		IstioTrait: traitv1.IstioTrait{
-			Allow: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
-		},
+		BaseTrait: NewBaseTrait(istioTraitID, istioTraitOrder),
 	}
 }
 
-func (t *istioTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, false) {
-		return false, nil
+func (t *istioTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil || !ptr.Deref(t.Enabled, false) {
+		return false, nil, nil
 	}
 
-	return e.IntegrationInRunningPhases(), nil
+	return e.IntegrationInRunningPhases(), nil, nil
 }
 
 func (t *istioTrait) Apply(e *Environment) error {
-	if t.Allow != "" {
+	if t.getAllow() != "" {
 		e.Resources.VisitDeployment(func(d *appsv1.Deployment) {
 			d.Spec.Template.Annotations = t.injectIstioAnnotation(d.Spec.Template.Annotations, true)
 		})
@@ -71,12 +77,20 @@ func (t *istioTrait) injectIstioAnnotation(annotations map[string]string, includ
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[istioOutboundIPRangesAnnotation] = t.Allow
+	annotations[istioOutboundIPRangesAnnotation] = t.getAllow()
 	if includeInject {
-		annotations[istioSidecarInjectAnnotation] = True
+		annotations[istioSidecarInjectAnnotation] = boolean.TrueString
 	}
 	if t.Inject != nil {
 		annotations[istioSidecarInjectAnnotation] = strconv.FormatBool(*t.Inject)
 	}
 	return annotations
+}
+
+func (t *istioTrait) getAllow() string {
+	if t.Allow == "" {
+		return defaultAllow
+	}
+
+	return t.Allow
 }

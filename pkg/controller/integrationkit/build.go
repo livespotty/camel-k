@@ -19,21 +19,26 @@ package integrationkit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/apache/camel-k/pkg/util/defaults"
-	"github.com/pkg/errors"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/trait"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/trait"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+)
+
+const (
+	buildTimeout = 10 * time.Minute
 )
 
 // NewBuildAction creates a new build request handling action for the kit.
@@ -51,11 +56,13 @@ func (action *buildAction) Name() string {
 
 func (action *buildAction) CanHandle(kit *v1.IntegrationKit) bool {
 	return kit.Status.Phase == v1.IntegrationKitPhaseBuildSubmitted ||
-		kit.Status.Phase == v1.IntegrationKitPhaseBuildRunning
+		kit.Status.Phase == v1.IntegrationKitPhaseBuildRunning ||
+		kit.Status.Phase == v1.IntegrationKitPhaseWaitingForCatalog
 }
 
 func (action *buildAction) Handle(ctx context.Context, kit *v1.IntegrationKit) (*v1.IntegrationKit, error) {
-	if kit.Status.Phase == v1.IntegrationKitPhaseBuildSubmitted {
+	if kit.Status.Phase == v1.IntegrationKitPhaseBuildSubmitted ||
+		kit.Status.Phase == v1.IntegrationKitPhaseWaitingForCatalog {
 		return action.handleBuildSubmitted(ctx, kit)
 	} else if kit.Status.Phase == v1.IntegrationKitPhaseBuildRunning {
 		return action.handleBuildRunning(ctx, kit)
@@ -75,66 +82,12 @@ func (action *buildAction) handleBuildSubmitted(ctx context.Context, kit *v1.Int
 		build.Status.Phase == v1.BuildPhaseInterrupted ||
 		build.Status.Phase == v1.BuildPhaseSucceeded {
 
-		env, err := trait.Apply(ctx, action.client, nil, kit)
+		b, err := action.createBuild(ctx, kit)
 		if err != nil {
 			return nil, err
 		}
 
-		if env.CamelCatalog == nil {
-			return nil, errors.New("undefined camel catalog")
-		}
-
-		labels := kubernetes.FilterCamelCreatorLabels(kit.Labels)
-		labels[v1.IntegrationKitLayoutLabel] = kit.Labels[v1.IntegrationKitLayoutLabel]
-
-		annotations := make(map[string]string)
-		if v, ok := kit.Annotations[v1.PlatformSelectorAnnotation]; ok {
-			annotations[v1.PlatformSelectorAnnotation] = v
-		}
-		operatorID := defaults.OperatorID()
-		if operatorID != "" {
-			annotations[v1.OperatorIDAnnotation] = operatorID
-		}
-
-		timeout := env.Platform.Status.Build.GetTimeout()
-		if layout := labels[v1.IntegrationKitLayoutLabel]; env.Platform.Spec.Build.Timeout == nil && layout == v1.IntegrationKitLayoutNative {
-			// Increase the timeout to a sensible default
-			timeout = metav1.Duration{
-				Duration: 10 * time.Minute,
-			}
-		}
-		build = &v1.Build{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: v1.SchemeGroupVersion.String(),
-				Kind:       v1.BuildKind,
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace:   kit.Namespace,
-				Name:        kit.Name,
-				Labels:      labels,
-				Annotations: annotations,
-			},
-			Spec: v1.BuildSpec{
-				Strategy: env.Platform.Status.Build.BuildStrategy,
-				Tasks:    env.BuildTasks,
-				Timeout:  timeout,
-			},
-		}
-
-		// Set the integration kit instance as the owner and controller
-		if err := controllerutil.SetControllerReference(kit, build, action.client.GetScheme()); err != nil {
-			return nil, err
-		}
-
-		err = action.client.Delete(ctx, build)
-		if err != nil && !k8serrors.IsNotFound(err) {
-			return nil, errors.Wrap(err, "cannot delete build")
-		}
-
-		err = action.client.Create(ctx, build)
-		if err != nil {
-			return nil, errors.Wrap(err, "cannot create build")
-		}
+		build = b
 	}
 
 	if build.Status.Phase == v1.BuildPhaseRunning {
@@ -143,6 +96,104 @@ func (action *buildAction) handleBuildSubmitted(ctx context.Context, kit *v1.Int
 	}
 
 	return nil, nil
+}
+
+func (action *buildAction) createBuild(ctx context.Context, kit *v1.IntegrationKit) (*v1.Build, error) {
+	env, err := trait.Apply(ctx, action.client, nil, kit)
+	if err != nil {
+		return nil, err
+	}
+
+	if env.CamelCatalog == nil {
+		return nil, errors.New("undefined camel catalog")
+	}
+
+	labels := kubernetes.FilterCamelCreatorLabels(kit.Labels)
+	labels[v1.IntegrationKitLayoutLabel] = kit.Labels[v1.IntegrationKitLayoutLabel]
+
+	annotations := make(map[string]string)
+	if v, ok := kit.Annotations[v1.PlatformSelectorAnnotation]; ok {
+		annotations[v1.PlatformSelectorAnnotation] = v
+	}
+
+	if v, ok := kit.Annotations[v1.IntegrationProfileAnnotation]; ok {
+		annotations[v1.IntegrationProfileAnnotation] = v
+
+		if v, ok := kit.Annotations[v1.IntegrationProfileNamespaceAnnotation]; ok {
+			annotations[v1.IntegrationProfileNamespaceAnnotation] = v
+		}
+	}
+
+	operatorID := defaults.OperatorID()
+	if operatorID != "" {
+		annotations[v1.OperatorIDAnnotation] = operatorID
+	}
+
+	timeout := env.Platform.Status.Build.GetTimeout()
+	if layout := labels[v1.IntegrationKitLayoutLabel]; env.Platform.Spec.Build.Timeout == nil && layout == v1.IntegrationKitLayoutNativeSources {
+		// Increase the timeout to a sensible default
+		timeout = metav1.Duration{
+			Duration: buildTimeout,
+		}
+	}
+
+	// We may need to change certain builder configuration values
+	operatorNamespace := platform.GetOperatorNamespace()
+	buildConfig := v1.ConfigurationTasksByName(env.Pipeline, "builder")
+	if buildConfig.IsEmpty() {
+		// default to IntegrationPlatform configuration
+		buildConfig = &env.Platform.Status.Build.BuildConfiguration
+	} else {
+		if buildConfig.Strategy == "" {
+			// we always need to define a strategy, so we default to platform if none
+			buildConfig.Strategy = env.Platform.Status.Build.BuildConfiguration.Strategy
+		}
+
+		if buildConfig.OrderStrategy == "" {
+			// we always need to define an order strategy, so we default to platform if none
+			buildConfig.OrderStrategy = env.Platform.Status.Build.BuildConfiguration.OrderStrategy
+		}
+	}
+
+	// The build operation, when executed as a Pod, should be executed by a container image containing the
+	// `kamel builder` command. Likely the same image running the operator should be fine.
+	buildConfig.ToolImage = platform.OperatorImage
+	buildConfig.BuilderPodNamespace = operatorNamespace
+	v1.SetBuilderConfigurationTasks(env.Pipeline, buildConfig)
+
+	build := &v1.Build{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: v1.SchemeGroupVersion.String(),
+			Kind:       v1.BuildKind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   kit.Namespace,
+			Name:        kit.Name,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: v1.BuildSpec{
+			Tasks:   env.Pipeline,
+			Timeout: timeout,
+		},
+	}
+
+	// Set the integration kit instance as the owner and controller
+	if err := controllerutil.SetControllerReference(kit, build, action.client.GetScheme()); err != nil {
+		return nil, err
+	}
+
+	err = action.client.Delete(ctx, build)
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return nil, fmt.Errorf("cannot delete build: %w", err)
+	}
+
+	err = action.client.Create(ctx, build)
+	if err != nil {
+		return nil, fmt.Errorf("cannot create build: %w", err)
+	}
+
+	return build, nil
 }
 
 func (action *buildAction) handleBuildRunning(ctx context.Context, kit *v1.IntegrationKit) (*v1.IntegrationKit, error) {
@@ -165,6 +216,7 @@ func (action *buildAction) handleBuildRunning(ctx context.Context, kit *v1.Integ
 			)
 		}
 
+		kit.Status.RootImage = build.Status.RootImage
 		kit.Status.BaseImage = build.Status.BaseImage
 		kit.Status.Image = build.Status.Image
 

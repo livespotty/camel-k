@@ -23,11 +23,11 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+
 	"github.com/spf13/cobra"
 
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
 )
 
 func newKameletGetCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kameletGetCommandOptions) {
@@ -36,10 +36,11 @@ func newKameletGetCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kameletG
 	}
 
 	cmd := cobra.Command{
-		Use:     "get",
-		Short:   "Get defined Kamelet",
-		Long:    `Get defined Kamelet.`,
-		PreRunE: decode(&options),
+		Use:        "get",
+		Short:      "Get defined Kamelet",
+		Long:       `Get defined Kamelet.`,
+		Deprecated: "consider using kubectl (or oc) command instead.",
+		PreRunE:    decode(&options, options.Flags),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(); err != nil {
 				return err
@@ -89,7 +90,7 @@ func (command *kameletGetCommandOptions) run(cmd *cobra.Command) error {
 		return err
 	}
 
-	klList := v1alpha1.NewKameletList()
+	klList := v1.NewKameletList()
 	if err := c.List(command.Context, &klList, k8sclient.InNamespace(command.Namespace)); err != nil {
 		return err
 	}
@@ -97,18 +98,18 @@ func (command *kameletGetCommandOptions) run(cmd *cobra.Command) error {
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 8, 1, '\t', 0)
 	fmt.Fprintln(w, "NAME\tPHASE\tTYPE\tGROUP\tBUNDLED\tREAD ONLY\tTITLE")
 	for _, kl := range klList.Items {
-		klType := kl.Labels[v1alpha1.KameletTypeLabel]
-		group := kl.Annotations[v1alpha1.KameletGroupLabel]
-		bundled := kl.Labels[v1alpha1.KameletBundledLabel]
-		readOnly := kl.Labels[v1alpha1.KameletReadOnlyLabel]
+		klType := kl.Labels[v1.KameletTypeLabel]
+		group := kl.Annotations[v1.KameletGroupLabel]
+		bundled := kl.Labels[v1.KameletBundledLabel]
+		readOnly := kl.Labels[v1.KameletReadOnlyLabel]
 
-		if command.Sink && klType != v1alpha1.KameletTypeSink {
+		if command.Sink && klType != v1.KameletTypeSink {
 			continue
 		}
-		if command.Source && klType != v1alpha1.KameletTypeSource {
+		if command.Source && klType != v1.KameletTypeSource {
 			continue
 		}
-		if command.Action && klType != v1alpha1.KameletTypeAction {
+		if command.Action && klType != v1.KameletTypeAction {
 			continue
 		}
 		if command.Group != "" && !strings.EqualFold(command.Group, group) {
@@ -121,9 +122,8 @@ func (command *kameletGetCommandOptions) run(cmd *cobra.Command) error {
 			continue
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			kl.Name,
-			string(kl.Status.Phase),
 			klType,
 			group,
 			bundled,

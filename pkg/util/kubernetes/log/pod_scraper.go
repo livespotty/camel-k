@@ -20,13 +20,14 @@ package log
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"time"
 
 	"go.uber.org/multierr"
 
-	klog "github.com/apache/camel-k/pkg/util/log"
-	"github.com/pkg/errors"
+	klog "github.com/apache/camel-k/v2/pkg/util/log"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -53,6 +54,7 @@ type PodScraper struct {
 
 // NewPodScraper creates a new pod scraper.
 func NewPodScraper(c kubernetes.Interface, namespace string, podName string, defaultContainerName string, tailLines *int64) *PodScraper {
+	klog.InitForCmd()
 	return &PodScraper{
 		namespace:            namespace,
 		podName:              podName,
@@ -144,6 +146,8 @@ func (s *PodScraper) handleAndRestart(ctx context.Context, err error, wait time.
 
 // waitForPodRunning waits for a given pod to reach the running state.
 // It may return the internal container to watch if present.
+//
+//nolint:nestif
 func (s *PodScraper) waitForPodRunning(ctx context.Context, namespace string, podName string, defaultContainerName string) (string, error) {
 	pod := corev1.Pod{
 		TypeMeta: metav1.TypeMeta{

@@ -22,8 +22,8 @@ package v1
 import (
 	"net/http"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client/camel/clientset/versioned/scheme"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client/camel/clientset/versioned/scheme"
 	rest "k8s.io/client-go/rest"
 )
 
@@ -34,6 +34,9 @@ type CamelV1Interface interface {
 	IntegrationsGetter
 	IntegrationKitsGetter
 	IntegrationPlatformsGetter
+	IntegrationProfilesGetter
+	KameletsGetter
+	PipesGetter
 }
 
 // CamelV1Client is used to interact with features provided by the camel.apache.org group.
@@ -59,6 +62,18 @@ func (c *CamelV1Client) IntegrationKits(namespace string) IntegrationKitInterfac
 
 func (c *CamelV1Client) IntegrationPlatforms(namespace string) IntegrationPlatformInterface {
 	return newIntegrationPlatforms(c, namespace)
+}
+
+func (c *CamelV1Client) IntegrationProfiles(namespace string) IntegrationProfileInterface {
+	return newIntegrationProfiles(c, namespace)
+}
+
+func (c *CamelV1Client) Kamelets(namespace string) KameletInterface {
+	return newKamelets(c, namespace)
+}
+
+func (c *CamelV1Client) Pipes(namespace string) PipeInterface {
+	return newPipes(c, namespace)
 }
 
 // NewForConfig creates a new CamelV1Client for the given config.

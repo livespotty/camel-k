@@ -20,19 +20,22 @@ package trait
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
-
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/platform"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/openshift"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/openshift"
+)
+
+const (
+	pullSecretTraitID    = "pull-secret"
+	pullSecretTraitOrder = 1700
 )
 
 type pullSecretTrait struct {
@@ -42,50 +45,56 @@ type pullSecretTrait struct {
 
 func newPullSecretTrait() Trait {
 	return &pullSecretTrait{
-		BaseTrait: NewBaseTrait("pull-secret", 1700),
+		BaseTrait: NewBaseTrait(pullSecretTraitID, pullSecretTraitOrder),
 	}
 }
 
-func (t *pullSecretTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, true) {
-		return false, nil
+func (t *pullSecretTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil {
+		return false, nil, nil
 	}
-
+	if !ptr.Deref(t.Enabled, true) {
+		return false, NewIntegrationConditionUserDisabled("PullSecret"), nil
+	}
 	if !e.IntegrationInRunningPhases() {
-		return false, nil
+		return false, nil, nil
 	}
 
-	if pointer.BoolDeref(t.Auto, true) {
-		if t.SecretName == "" {
-			secret := e.Platform.Status.Build.Registry.Secret
-			if secret != "" {
-				key := ctrl.ObjectKey{Namespace: e.Platform.Namespace, Name: secret}
-				obj := corev1.Secret{}
-				if err := t.Client.Get(e.Ctx, key, &obj); err != nil {
-					return false, err
-				}
-				if obj.Type == corev1.SecretTypeDockerConfigJson {
-					t.SecretName = secret
-				}
-			}
-		}
-		if t.ImagePullerDelegation == nil {
-			var isOpenShift bool
-			if t.Client != nil {
-				var err error
-				isOpenShift, err = openshift.IsOpenShift(t.Client)
-				if err != nil {
-					return false, err
-				}
-			}
-			isOperatorGlobal := platform.IsCurrentOperatorGlobal()
-			isKitExternal := e.Integration.GetIntegrationKitNamespace(e.Platform) != e.Integration.Namespace
-			needsDelegation := isOpenShift && isOperatorGlobal && isKitExternal
-			t.ImagePullerDelegation = &needsDelegation
+	if ptr.Deref(t.Auto, true) {
+		err := t.autoConfigure(e)
+		if err != nil {
+			return false, nil, err
 		}
 	}
 
-	return t.SecretName != "" || pointer.BoolDeref(t.ImagePullerDelegation, false), nil
+	return t.SecretName != "" || ptr.Deref(t.ImagePullerDelegation, false), nil, nil
+}
+func (t *pullSecretTrait) autoConfigure(e *Environment) error {
+	if t.SecretName == "" {
+		s, err := t.resolveSecret(e)
+		if err != nil {
+			return err
+		}
+
+		t.SecretName = s
+	}
+
+	if t.ImagePullerDelegation == nil {
+		var isOpenShift bool
+		if t.Client != nil {
+			var err error
+			isOpenShift, err = openshift.IsOpenShift(t.Client)
+			if err != nil {
+				return err
+			}
+		}
+		isOperatorGlobal := platform.IsCurrentOperatorGlobal()
+		isKitExternal := e.Integration.GetIntegrationKitNamespace(e.Platform) != e.Integration.Namespace
+		needsDelegation := isOpenShift && isOperatorGlobal && isKitExternal
+		t.ImagePullerDelegation = &needsDelegation
+	}
+
+	return nil
 }
 
 func (t *pullSecretTrait) Apply(e *Environment) error {
@@ -96,7 +105,7 @@ func (t *pullSecretTrait) Apply(e *Environment) error {
 			})
 		})
 	}
-	if pointer.BoolDeref(t.ImagePullerDelegation, false) {
+	if ptr.Deref(t.ImagePullerDelegation, false) {
 		if err := t.delegateImagePuller(e); err != nil {
 			return err
 		}
@@ -110,7 +119,7 @@ func (t *pullSecretTrait) delegateImagePuller(e *Environment) error {
 	// (different from the integration namespace when delegation is enabled).
 	rb := t.newImagePullerRoleBinding(e)
 	if _, err := kubernetes.ReplaceResource(e.Ctx, e.Client, rb); err != nil {
-		return errors.Wrap(err, "error during the creation of the system:image-puller delegating role binding")
+		return fmt.Errorf("error during the creation of the system:image-puller delegating role binding: %w", err)
 	}
 	return nil
 }
@@ -158,4 +167,23 @@ func (t *pullSecretTrait) newImagePullerRoleBinding(e *Environment) *rbacv1.Role
 			},
 		},
 	}
+}
+
+func (t *pullSecretTrait) resolveSecret(e *Environment) (string, error) {
+	secret := e.Platform.Status.Build.Registry.Secret
+	if secret == "" {
+		return "", nil
+	}
+
+	key := ctrl.ObjectKey{Namespace: e.Platform.Namespace, Name: secret}
+	obj := corev1.Secret{}
+	if err := t.Client.Get(e.Ctx, key, &obj); err != nil {
+		return "", err
+	}
+
+	if obj.Type != corev1.SecretTypeDockerConfigJson {
+		return "", nil
+	}
+
+	return secret, nil
 }

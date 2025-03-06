@@ -23,7 +23,6 @@ package util
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -35,12 +34,43 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	routev1 "github.com/openshift/api/route/v1"
+	olm "github.com/operator-framework/api/pkg/operators/v1alpha1"
+	eventingv1 "knative.dev/eventing/pkg/apis/eventing/v1"
+	servingv1 "knative.dev/serving/pkg/apis/serving/v1"
 
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/client/camel/clientset/versioned"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/openshift"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/client/camel/clientset/versioned"
+	"github.com/apache/camel-k/v2/pkg/util/knative"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/openshift"
 )
+
+// DumpClusterState prints informations about the cluster state
+func DumpClusterState(ctx context.Context, c client.Client, ns string, t *testing.T) error {
+	t.Logf("-------------------- start dumping cluster state --------------------\n")
+
+	nodes, err := c.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+
+	for _, node := range nodes.Items {
+		nodeReady := false
+		nodeConditions := node.Status.Conditions
+		for _, condition := range nodeConditions {
+			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
+				nodeReady = true
+			}
+		}
+		t.Logf("node: Name='%s', Ready='%t'", node.ObjectMeta.Name, nodeReady)
+		if node.Spec.Taints != nil {
+			t.Logf("node taints: Taints='%s'", node.Spec.Taints)
+		}
+	}
+
+	t.Logf("-------------------- dumping cluster state --------------------\n")
+	return nil
+}
 
 // Dump prints all information about the given namespace to debug errors
 func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
@@ -50,20 +80,8 @@ func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
 	if err != nil {
 		return err
 	}
-	pls, err := camelClient.CamelV1().IntegrationPlatforms(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	t.Logf("Found %d platforms:\n", len(pls.Items))
-	for _, p := range pls.Items {
-		ref := p
-		pdata, err := kubernetes.ToYAMLNoManagedFields(&ref)
-		if err != nil {
-			return err
-		}
-		t.Logf("---\n%s\n---\n", string(pdata))
-	}
 
+	// Integrations
 	its, err := camelClient.CamelV1().Integrations(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -78,6 +96,7 @@ func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
 		t.Logf("---\n%s\n---\n", string(pdata))
 	}
 
+	// IntegrationKits
 	iks, err := camelClient.CamelV1().IntegrationKits(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -92,6 +111,7 @@ func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
 		t.Logf("---\n%s\n---\n", string(pdata))
 	}
 
+	// Builds
 	builds, err := camelClient.CamelV1().Builds(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -105,6 +125,7 @@ func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
 		t.Logf("---\n%s\n---\n", string(data))
 	}
 
+	// Configmaps
 	cms, err := c.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -119,11 +140,12 @@ func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
 		t.Logf("---\n%s\n---\n", string(pdata))
 	}
 
+	// Deployments
 	deployments, err := c.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
-	t.Logf("Found %d deployments:\n", len(iks.Items))
+	t.Logf("Found %d deployments:\n", len(deployments.Items))
 	for _, deployment := range deployments.Items {
 		ref := deployment
 		data, err := kubernetes.ToYAMLNoManagedFields(&ref)
@@ -133,6 +155,22 @@ func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
 		t.Logf("---\n%s\n---\n", string(data))
 	}
 
+	// PVCs
+	pvcs, err := c.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	t.Logf("Found %d persistent volume claims:\n", len(pvcs.Items))
+	for _, pvc := range pvcs.Items {
+		ref := pvc
+		pdata, err := kubernetes.ToYAMLNoManagedFields(&ref)
+		if err != nil {
+			return err
+		}
+		t.Logf("---\n%s\n---\n", string(pdata))
+	}
+
+	// Pods
 	lst, err := c.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -164,6 +202,87 @@ func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
 		}
 	}
 
+	// IntegrationPlatforms
+	pls, err := camelClient.CamelV1().IntegrationPlatforms(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	t.Logf("Found %d platforms:\n", len(pls.Items))
+	for _, p := range pls.Items {
+		ref := p
+		pdata, err := kubernetes.ToYAMLNoManagedFields(&ref)
+		if err != nil {
+			return err
+		}
+		t.Logf("---\n%s\n---\n", string(pdata))
+	}
+
+	// IntegrationProfiles
+	iprs, err := camelClient.CamelV1().IntegrationProfiles(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	t.Logf("Found %d integration profiles:\n", len(iprs.Items))
+	for _, p := range iprs.Items {
+		ref := p
+		pdata, err := kubernetes.ToYAMLNoManagedFields(&ref)
+		if err != nil {
+			return err
+		}
+		t.Logf("---\n%s\n---\n", string(pdata))
+	}
+
+	// Knative resources
+	if installed, _ := knative.IsEventingInstalled(c); installed {
+		var trgs eventingv1.TriggerList
+		err = c.List(ctx, &trgs)
+		if err != nil {
+			return err
+		}
+		t.Logf("Found %d Knative trigger:\n", len(trgs.Items))
+		for _, p := range trgs.Items {
+			ref := p
+			pdata, err := kubernetes.ToYAMLNoManagedFields(&ref)
+			if err != nil {
+				return err
+			}
+			t.Logf("---\n%s\n---\n", string(pdata))
+		}
+	}
+
+	if installed, _ := knative.IsServingInstalled(c); installed {
+		var ksrvs servingv1.ServiceList
+		err = c.List(ctx, &ksrvs)
+		if err != nil {
+			return err
+		}
+		t.Logf("Found %d Knative services:\n", len(ksrvs.Items))
+		for _, p := range ksrvs.Items {
+			ref := p
+			pdata, err := kubernetes.ToYAMLNoManagedFields(&ref)
+			if err != nil {
+				return err
+			}
+			t.Logf("---\n%s\n---\n", string(pdata))
+		}
+	}
+
+	// CamelCatalogs
+	cats, err := camelClient.CamelV1().CamelCatalogs(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	t.Logf("Found %d catalogs:\n", len(cats.Items))
+	for _, c := range cats.Items {
+		ref := c
+		cdata, err := kubernetes.ToYAMLNoManagedFields(&ref)
+		if err != nil {
+			return err
+		}
+		t.Logf("---\n%s\n---\n", string(cdata))
+	}
+
+	// Services
 	svcs, err := c.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -178,6 +297,7 @@ func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
 		t.Logf("---\n%s\n---\n", string(data))
 	}
 
+	// Routes
 	if ocp, err := openshift.IsOpenShift(c); err == nil && ocp {
 		routes := routev1.RouteList{
 			TypeMeta: metav1.TypeMeta{
@@ -200,17 +320,40 @@ func Dump(ctx context.Context, c client.Client, ns string, t *testing.T) error {
 		}
 	}
 
-	//
-	// Get logs for global operator if it is being used
-	//
-	globalTest := os.Getenv("CAMEL_K_FORCE_GLOBAL_TEST") == "true"
-	if globalTest {
-		opns := os.Getenv("CAMEL_K_GLOBAL_OPERATOR_NS")
-		if opns == "" {
-			err := errors.New("No operator namespace defined in CAMEL_K_GLOBAL_OPERATOR_NS")
-			t.Logf("ERROR cannot find global operator namespace: %v\n", err)
+	// Cronjobs
+	cronjobs, err := c.BatchV1().CronJobs(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	t.Logf("\nFound %d cronjobs:\n", len(cronjobs.Items))
+	for _, cronjobs := range cronjobs.Items {
+		ref := cronjobs
+		data, err := kubernetes.ToYAMLNoManagedFields(&ref)
+		if err != nil {
+			return err
 		}
+		t.Logf("---\n%s\n---\n", string(data))
+	}
 
+	// OLM CSV
+	csvs := olm.ClusterServiceVersionList{}
+	err = c.List(ctx, &csvs, ctrl.InNamespace(ns))
+	if err != nil && !kubernetes.IsUnknownAPIError(err) {
+		return err
+	}
+	t.Logf("\nFound %d OLM CSVs:\n", len(csvs.Items))
+	for _, csv := range csvs.Items {
+		ref := csv
+		data, err := kubernetes.ToYAMLNoManagedFields(&ref)
+		if err != nil {
+			return err
+		}
+		t.Logf("---\n%s\n---\n", string(data))
+	}
+
+	// Some log from running pods
+	opns := os.Getenv("CAMEL_K_GLOBAL_OPERATOR_NS")
+	if opns != "" {
 		lst, err := c.CoreV1().Pods(opns).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -258,7 +401,7 @@ func dumpLogs(ctx context.Context, c client.Client, prefix string, ns string, na
 
 	if os.Getenv("CAMEL_K_TEST_LOG_LEVEL") != "debug" {
 		// If not in debug mode then curtail the dumping of log lines
-		lines := int64(50)
+		lines := int64(150)
 		logOptions.TailLines = &lines
 	}
 

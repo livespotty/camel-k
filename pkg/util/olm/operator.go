@@ -22,8 +22,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pkg/errors"
-
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kubectl/pkg/cmd/set/env"
 
@@ -35,9 +33,9 @@ import (
 	operatorsv1 "github.com/operator-framework/api/pkg/operators/v1"
 	operatorsv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
 
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/openshift"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/openshift"
 )
 
 // The following properties can be overridden at build time via ldflags
@@ -182,19 +180,19 @@ func Install(ctx context.Context, client client.Client, namespace string, global
 	// Additional configuration
 	err = maybeSetTolerations(&sub, tolerations)
 	if err != nil {
-		return false, errors.Wrap(err, "could not set tolerations")
+		return false, fmt.Errorf("could not set tolerations: %w", err)
 	}
 	err = maybeSetNodeSelectors(&sub, nodeSelectors)
 	if err != nil {
-		return false, errors.Wrap(err, "could not set node selectors")
+		return false, fmt.Errorf("could not set node selectors: %w", err)
 	}
 	err = maybeSetResourcesRequirements(&sub, resourcesRequirements)
 	if err != nil {
-		return false, errors.Wrap(err, "could not set resources requirements")
+		return false, fmt.Errorf("could not set resources requirements: %w", err)
 	}
 	err = maybeSetEnvVars(&sub, envVars)
 	if err != nil {
-		return false, errors.Wrap(err, "could not set environment variables")
+		return false, fmt.Errorf("could not set environment variables: %w", err)
 	}
 
 	if collection != nil {
@@ -221,9 +219,10 @@ func Install(ctx context.Context, client client.Client, namespace string, global
 			if collection != nil {
 				collection.Add(group)
 			} else if err := client.Create(ctx, group); err != nil {
-				return false, errors.Wrap(err, fmt.Sprintf("namespace %s has no operator group defined and "+
+				return false, fmt.Errorf("namespace %s has no operator group defined and "+
 					"current user is not able to create it. "+
-					"Make sure you have the right roles to install operators from OLM", namespace))
+					"Make sure you have the right roles to install operators from OLM"+": %w", namespace, err)
+
 			}
 		}
 	}

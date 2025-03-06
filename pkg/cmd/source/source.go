@@ -23,16 +23,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 
-	"github.com/apache/camel-k/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util"
 	"github.com/spf13/cobra"
 
 	"golang.org/x/oauth2"
 
-	"github.com/google/go-github/v32/github"
-	"github.com/pkg/errors"
+	"github.com/google/go-github/v52/github"
 )
 
 // Source represents the source file of an Integration.
@@ -53,7 +52,7 @@ func newSource(location string, compress bool, loadContent func() ([]byte, error
 		locPath = location
 	}
 	src := Source{
-		Name:     path.Base(locPath),
+		Name:     filepath.Base(locPath),
 		Origin:   location,
 		Location: location,
 		Compress: compress,
@@ -85,12 +84,46 @@ func (s *Source) setContent(content []byte) error {
 	return nil
 }
 
-func (s Source) IsYaml() bool {
+func (s *Source) IsYaml() bool {
 	return strings.HasSuffix(s.Name, ".yaml") || strings.HasSuffix(s.Name, ".yml")
+}
+
+// globSources identifies glob patterns like sources/*.yaml and expand them into individual file paths.
+func globSources(locations []string) ([]string, error) {
+	var sources = make([]string, 0, len(locations))
+
+	for _, src := range locations {
+		glob, err := isGlobCandidate(src)
+		if err != nil {
+			return nil, err
+		}
+
+		if glob {
+			matches, err := filepath.Glob(src)
+			if err != nil {
+				return nil, err
+			}
+
+			if len(matches) > 0 {
+				sources = append(sources, matches...)
+			} else {
+				// leave the original location if there wasn't any matches
+				sources = append(sources, src)
+			}
+		} else {
+			sources = append(sources, src)
+		}
+	}
+	return sources, nil
 }
 
 // Resolve resolves sources from a variety of locations including local and remote.
 func Resolve(ctx context.Context, locations []string, compress bool, cmd *cobra.Command) ([]Source, error) {
+	locations, err := globSources(locations)
+	if err != nil {
+		return nil, err
+	}
+
 	sources := make([]Source, 0, len(locations))
 
 	for _, location := range locations {
@@ -202,9 +235,9 @@ func resolveGist(ctx context.Context, location string, compress bool, cmd *cobra
 // resolveLocal resolves a source from the local file system.
 func resolveLocal(location string, compress bool) (Source, error) {
 	if _, err := os.Stat(location); err != nil && os.IsNotExist(err) {
-		return Source{}, errors.Wrapf(err, "file %s does not exist", location)
+		return Source{}, fmt.Errorf("file %s does not exist: %w", location, err)
 	} else if err != nil {
-		return Source{}, errors.Wrapf(err, "error while accessing file %s", location)
+		return Source{}, fmt.Errorf("error while accessing file %s: %w", location, err)
 	}
 
 	answer, err := newSource(location, compress, func() ([]byte, error) {

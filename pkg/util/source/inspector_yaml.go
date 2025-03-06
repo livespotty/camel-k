@@ -23,16 +23,16 @@ import (
 
 	yaml2 "gopkg.in/yaml.v2"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/uri"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/uri"
 )
 
-// YAMLInspector --.
+// YAMLInspector inspects YAML DSL spec.
 type YAMLInspector struct {
 	baseInspector
 }
 
-// Extract --.
+// Extract extracts all metadata from source spec.
 func (i YAMLInspector) Extract(source v1.SourceSpec, meta *Metadata) error {
 	definitions := make([]map[string]interface{}, 0)
 
@@ -41,6 +41,9 @@ func (i YAMLInspector) Extract(source v1.SourceSpec, meta *Metadata) error {
 	}
 
 	for _, definition := range definitions {
+		if err := i.parseDefinition(definition, meta); err != nil {
+			return err
+		}
 		for k, v := range definition {
 			if err := i.parseStep(k, v, meta); err != nil {
 				return err
@@ -62,16 +65,39 @@ func (i YAMLInspector) Extract(source v1.SourceSpec, meta *Metadata) error {
 	return nil
 }
 
+//nolint:nestif
+func (i YAMLInspector) parseDefinition(def map[string]interface{}, meta *Metadata) error {
+	for k, v := range def {
+		if k == "rest" {
+			meta.ExposesHTTPServices = true
+			meta.RequiredCapabilities.Add(v1.CapabilityRest)
+			// support contract first openapi
+			if oa, ok := v.(map[interface{}]interface{}); ok {
+				if _, oaOk := oa["openApi"]; oaOk {
+					if dfDep := i.catalog.GetArtifactByScheme("rest-openapi"); dfDep != nil {
+						meta.AddDependency(dfDep.GetDependencyID())
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+//nolint:nestif
 func (i YAMLInspector) parseStep(key string, content interface{}, meta *Metadata) error {
 	switch key {
+	case "bean":
+		if bean := i.catalog.GetArtifactByScheme("bean"); bean != nil {
+			meta.AddDependency(bean.GetDependencyID())
+		}
 	case "rest":
 		meta.ExposesHTTPServices = true
 		meta.RequiredCapabilities.Add(v1.CapabilityRest)
 	case "circuitBreaker":
 		meta.RequiredCapabilities.Add(v1.CapabilityCircuitBreaker)
-	case "unmarshal":
-		fallthrough
-	case "marshal":
+	case "marshal", "unmarshal":
 		if cm, ok := content.(map[interface{}]interface{}); ok {
 			if js, jsOk := cm["json"]; jsOk {
 				dataFormatID := defaultJSONDataFormat
@@ -85,13 +111,13 @@ func (i YAMLInspector) parseStep(key string, content interface{}, meta *Metadata
 				}
 			}
 		}
-	case "kamelet":
+	case kamelet:
 		switch t := content.(type) {
 		case string:
-			AddKamelet(meta, "kamelet:"+t)
+			AddKamelet(meta, kamelet+":"+t)
 		case map[interface{}]interface{}:
 			if name, ok := t["name"].(string); ok {
-				AddKamelet(meta, "kamelet:"+name)
+				AddKamelet(meta, kamelet+":"+name)
 			}
 		}
 	}
@@ -142,6 +168,16 @@ func (i YAMLInspector) parseStep(key string, content interface{}, meta *Metadata
 				} else if m, ok := v.(map[interface{}]interface{}); ok {
 					if err := i.parseStep("language", m, meta); err != nil {
 						return err
+					}
+				}
+			case "deadLetterUri":
+				if s, ok := v.(string); ok {
+					_, scheme := i.catalog.DecodeComponent(s)
+					if dfDep := i.catalog.GetArtifactByScheme(scheme.ID); dfDep != nil {
+						meta.AddDependency(dfDep.GetDependencyID())
+					}
+					if scheme.ID == kamelet {
+						AddKamelet(meta, s)
 					}
 				}
 			default:
@@ -200,4 +236,47 @@ func (i YAMLInspector) parseStepsParam(steps []interface{}, meta *Metadata) erro
 		}
 	}
 	return nil
+}
+
+// ReplaceFromURI parses the source content and replace the `from` URI configuration with the a new URI. Returns true if it applies a replacement.
+func (i YAMLInspector) ReplaceFromURI(source *v1.SourceSpec, newFromURI string) (bool, error) {
+	definitions := make([]map[string]interface{}, 0)
+
+	if err := yaml2.Unmarshal([]byte(source.Content), &definitions); err != nil {
+		return false, err
+	}
+
+	// We expect the from in .route.from or .from location
+	for _, routeRaw := range definitions {
+		var from map[interface{}]interface{}
+		var fromOk bool
+		route, routeOk := routeRaw["route"].(map[interface{}]interface{})
+		if routeOk {
+			from, fromOk = route["from"].(map[interface{}]interface{})
+			if !fromOk {
+				return false, nil
+			}
+		}
+		if from == nil {
+			from, fromOk = routeRaw["from"].(map[interface{}]interface{})
+			if !fromOk {
+				return false, nil
+			}
+		}
+		delete(from, "parameters")
+		from["uri"] = newFromURI
+	}
+
+	newContentRaw, err := yaml2.Marshal(definitions)
+	if err != nil {
+		return false, err
+	}
+
+	newContent := string(newContentRaw)
+	if newContent != source.Content {
+		source.Content = newContent
+		return true, nil
+	}
+
+	return false, nil
 }

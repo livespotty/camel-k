@@ -20,9 +20,9 @@ package cmd
 import (
 	"testing"
 
-	"github.com/apache/camel-k/pkg/util/test"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const cmdBuilder = "builder"
@@ -33,7 +33,7 @@ func initializeBuilderCmdOptions(t *testing.T) (*builderCmdOptions, *cobra.Comma
 
 	options, rootCmd := kamelTestPreAddCommandInit()
 	builderCmdOptions := addTestBuilderCmd(*options, rootCmd)
-	kamelTestPostAddCommandInit(t, rootCmd)
+	kamelTestPostAddCommandInit(t, rootCmd, options)
 
 	return builderCmdOptions, rootCmd, *options
 }
@@ -47,27 +47,27 @@ func addTestBuilderCmd(options RootCmdOptions, rootCmd *cobra.Command) *builderC
 	builderCmd.PostRunE = func(c *cobra.Command, args []string) error {
 		return nil
 	}
-	builderCmd.Args = test.ArbitraryArgs
+	builderCmd.Args = ArbitraryArgs
 	rootCmd.AddCommand(builderCmd)
 	return builderOptions
 }
 
 func TestBuilderNonExistingFlag(t *testing.T) {
 	_, rootCmd, _ := initializeBuilderCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdBuilder, "--nonExistingFlag")
-	assert.NotNil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdBuilder, "--nonExistingFlag")
+	require.Error(t, err)
 }
 
 func TestBuilderBuildNameFlag(t *testing.T) {
 	builderCmdOptions, rootCmd, _ := initializeBuilderCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdBuilder, "--build-name", "someBuild")
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdBuilder, "--build-name", "someBuild")
+	require.NoError(t, err)
 	assert.Equal(t, "someBuild", builderCmdOptions.BuildName)
 }
 
 func TestBuilderTaskNameFlag(t *testing.T) {
 	builderCmdOptions, rootCmd, _ := initializeBuilderCmdOptions(t)
-	_, err := test.ExecuteCommand(rootCmd, cmdBuilder, "--task-name", "someTask")
-	assert.Nil(t, err)
+	_, err := ExecuteCommand(rootCmd, cmdBuilder, "--task-name", "someTask")
+	require.NoError(t, err)
 	assert.Equal(t, "someTask", builderCmdOptions.TaskName)
 }

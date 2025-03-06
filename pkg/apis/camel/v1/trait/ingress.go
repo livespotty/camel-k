@@ -17,6 +17,8 @@ limitations under the License.
 
 package trait
 
+import networkingv1 "k8s.io/api/networking/v1"
+
 // The Ingress trait can be used to expose the service associated with the integration
 // to the outside world with a Kubernetes Ingress.
 //
@@ -25,8 +27,28 @@ package trait
 // +camel-k:trait=ingress.
 type IngressTrait struct {
 	Trait `property:",squash" json:",inline"`
+	// The Ingress class name as defined by the Ingress spec
+	// See https://kubernetes.io/docs/concepts/services-networking/ingress/
+	IngressClassName string `property:"ingress-class-name" json:"ingressClassName,omitempty"`
+	// The annotations added to the ingress.
+	// This can be used to set controller specific annotations, e.g., when using the NGINX Ingress controller:
+	// See https://github.com/kubernetes/ingress-nginx/blob/main/docs/user-guide/nginx-configuration/annotations.md
+	Annotations map[string]string `property:"annotations" json:"annotations,omitempty"`
 	// To configure the host exposed by the ingress.
 	Host string `property:"host" json:"host,omitempty"`
+	// To configure the path exposed by the ingress (default `/`).
+	// Deprecated: In favor of `paths` - left for backward compatibility.
+	Path string `property:"path" json:"path,omitempty"`
+	// To configure the paths exposed by the ingress (default `['/']`).
+	Paths []string `property:"paths" json:"paths,omitempty"`
+	// To configure the path type exposed by the ingress.
+	// One of `Exact`, `Prefix`, `ImplementationSpecific` (default to `Prefix`).
+	// +kubebuilder:validation:Enum=Exact;Prefix;ImplementationSpecific
+	PathType *networkingv1.PathType `property:"path-type" json:"pathType,omitempty"`
 	// To automatically add an ingress whenever the integration uses an HTTP endpoint consumer.
 	Auto *bool `property:"auto" json:"auto,omitempty"`
+	// To configure tls hosts
+	TLSHosts []string `property:"tls-hosts" json:"tlsHosts,omitempty"`
+	// To configure tls secret name
+	TLSSecretName string `property:"tls-secret-name" json:"tlsSecretName,omitempty"`
 }

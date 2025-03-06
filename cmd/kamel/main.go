@@ -19,13 +19,11 @@ package main
 
 import (
 	"context"
-	"math/rand"
 	"os"
-	"time"
 
-	_ "github.com/apache/camel-k/addons"
-	_ "github.com/apache/camel-k/pkg/builder"
-	"github.com/apache/camel-k/pkg/cmd"
+	_ "github.com/apache/camel-k/v2/addons"
+	_ "github.com/apache/camel-k/v2/pkg/builder"
+	"github.com/apache/camel-k/v2/pkg/cmd"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth/azure"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
@@ -33,8 +31,6 @@ import (
 )
 
 func main() {
-	rand.Seed(time.Now().UTC().UnixNano())
-
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Cancel ctx as soon as main returns

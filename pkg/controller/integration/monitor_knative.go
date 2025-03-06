@@ -19,13 +19,14 @@ package integration
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 
 	servingv1 "knative.dev/serving/pkg/apis/serving/v1"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 type knativeServiceController struct {
@@ -37,7 +38,8 @@ var _ controller = &knativeServiceController{}
 
 func (c *knativeServiceController) checkReadyCondition(ctx context.Context) (bool, error) {
 	// Check the KnativeService conditions
-	if ready := kubernetes.GetKnativeServiceCondition(*c.obj, servingv1.ServiceConditionReady); ready.IsFalse() && ready.GetReason() == "RevisionFailed" {
+	if ready := kubernetes.GetKnativeServiceCondition(*c.obj, servingv1.ServiceConditionReady); ready.IsFalse() &&
+		ready.GetReason() == "RevisionFailed" {
 		c.integration.Status.Phase = v1.IntegrationPhaseError
 		c.integration.SetReadyConditionError(ready.Message)
 		return true, nil
@@ -46,11 +48,7 @@ func (c *knativeServiceController) checkReadyCondition(ctx context.Context) (boo
 	return false, nil
 }
 
-func (c *knativeServiceController) getPodSpec() corev1.PodSpec {
-	return c.obj.Spec.Template.Spec.PodSpec
-}
-
-func (c *knativeServiceController) updateReadyCondition(readyPods []corev1.Pod) bool {
+func (c *knativeServiceController) updateReadyCondition(readyPods int32) bool {
 	ready := kubernetes.GetKnativeServiceCondition(*c.obj, servingv1.ServiceConditionReady)
 	if ready.IsTrue() {
 		c.integration.SetReadyCondition(corev1.ConditionTrue,
@@ -61,4 +59,12 @@ func (c *knativeServiceController) updateReadyCondition(readyPods []corev1.Pod) 
 		ready.GetReason(), ready.GetMessage())
 
 	return false
+}
+
+func (c *knativeServiceController) hasTemplateIntegrationLabel() bool {
+	return c.obj.Spec.Template.Labels[v1.IntegrationLabel] != ""
+}
+
+func (c *knativeServiceController) getControllerName() string {
+	return fmt.Sprintf("KnativeService/%s", c.obj.Name)
 }

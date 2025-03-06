@@ -23,8 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/camel"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
 )
 
 func TestHttpJavaSource(t *testing.T) {
@@ -42,7 +42,7 @@ func TestHttpJavaSource(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.True(t, meta.ExposesHTTPServices)
@@ -67,7 +67,7 @@ func TestHttpOnlyJavaSource(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.True(t, meta.ExposesHTTPServices)
@@ -89,7 +89,7 @@ func TestHttpOnlyJavaSourceRest(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.True(t, meta.ExposesHTTPServices)
@@ -101,7 +101,7 @@ func TestHttpOnlyJavaSourceRest2(t *testing.T) {
 		DataSpec: v1.DataSpec{
 			Name: "Request.java",
 			Content: `
-			from("vm:bots/cippa").to("log:stash");
+			from("seda:bots/cippa").to("log:stash");
 			rest( ).get("").to("log:stash");
 		`,
 		},
@@ -111,7 +111,7 @@ func TestHttpOnlyJavaSourceRest2(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.True(t, meta.ExposesHTTPServices)
@@ -134,7 +134,7 @@ func TestNoHttpGroovySource(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.False(t, meta.ExposesHTTPServices)
@@ -157,7 +157,7 @@ func TestHttpOnlyGroovySource(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.True(t, meta.ExposesHTTPServices)
@@ -180,7 +180,7 @@ func TestHttpXMLSource(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.True(t, meta.ExposesHTTPServices)
@@ -204,7 +204,7 @@ func TestHttpOnlyXMLSource(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	meta, err := Extract(catalog, code)
+	meta, err := extract(catalog, code)
 	require.NoError(t, err)
 
 	assert.True(t, meta.ExposesHTTPServices)

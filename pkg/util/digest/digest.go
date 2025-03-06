@@ -24,27 +24,28 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"hash"
 	"io"
-	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/defaults"
-	"github.com/apache/camel-k/pkg/util/dsl"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
+
+	"fmt"
 )
 
 const (
+	// IntegrationDigestEnvVar -- .
 	IntegrationDigestEnvVar = "CAMEL_K_DIGEST"
 )
 
 // ComputeForIntegration a digest of the fields that are relevant for the deployment
 // Produces a digest that can be used as docker image tag.
-func ComputeForIntegration(integration *v1.Integration) (string, error) {
+func ComputeForIntegration(integration *v1.Integration, configmapVersions []string, secretVersions []string) (string, error) {
 	hash := sha256.New()
 	// Integration version is relevant
 	if _, err := hash.Write([]byte(integration.Status.Version)); err != nil {
@@ -53,6 +54,14 @@ func ComputeForIntegration(integration *v1.Integration) (string, error) {
 
 	// Integration operator id is relevant
 	if _, err := hash.Write([]byte(v1.GetOperatorIDAnnotation(integration))); err != nil {
+		return "", err
+	}
+
+	// Integration profile is relevant
+	if _, err := hash.Write([]byte(v1.GetIntegrationProfileAnnotation(integration))); err != nil {
+		return "", err
+	}
+	if _, err := hash.Write([]byte(v1.GetIntegrationProfileNamespaceAnnotation(integration))); err != nil {
 		return "", err
 	}
 
@@ -76,16 +85,9 @@ func ComputeForIntegration(integration *v1.Integration) (string, error) {
 		}
 	}
 
-	// Integration resources
-	for _, item := range integration.Spec.Resources {
-		if _, err := hash.Write([]byte(item.Content)); err != nil {
-			return "", err
-		}
-	}
-
 	// Integration flows
 	if len(integration.Spec.Flows) > 0 {
-		flows, err := dsl.ToYamlDSL(integration.Spec.Flows)
+		flows, err := v1.ToYamlDSL(integration.Spec.Flows)
 		if err != nil {
 			return "", err
 		}
@@ -112,27 +114,10 @@ func ComputeForIntegration(integration *v1.Integration) (string, error) {
 	// Calculation logic prior to 1.10.0 (the new Traits API schema) is maintained
 	// in order to keep consistency in the digest calculated from the same set of
 	// Trait configurations for backward compatibility.
-	traitsMap, err := toMap(integration.Spec.Traits)
-	if err != nil {
+	if err := computeForTraits(hash, integration.Spec.Traits); err != nil {
 		return "", err
 	}
-	for _, name := range sortedTraitsMapKeys(traitsMap) {
-		if name != "addons" {
-			if err := computeForTrait(hash, name, traitsMap[name]); err != nil {
-				return "", err
-			}
-		} else {
-			// Addons
-			addons := traitsMap["addons"]
-			for _, name := range util.SortedMapKeys(addons) {
-				if addon, ok := addons[name].(map[string]interface{}); ok {
-					if err := computeForTrait(hash, name, addon); err != nil {
-						return "", err
-					}
-				}
-			}
-		}
-	}
+
 	// Integration traits as annotations
 	for _, k := range sortedTraitAnnotationsKeys(integration) {
 		v := integration.Annotations[k]
@@ -141,9 +126,53 @@ func ComputeForIntegration(integration *v1.Integration) (string, error) {
 		}
 	}
 
+	// Configmap versions
+	for _, cm := range configmapVersions {
+		if cm != "" {
+			if _, err := hash.Write([]byte(cm)); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	// Secret versions
+	for _, s := range secretVersions {
+		if s != "" {
+			if _, err := hash.Write([]byte(s)); err != nil {
+				return "", err
+			}
+		}
+	}
+
 	// Add a letter at the beginning and use URL safe encoding
 	digest := "v" + base64.RawURLEncoding.EncodeToString(hash.Sum(nil))
 	return digest, nil
+}
+
+//nolint:nestif
+func computeForTraits(hash hash.Hash, traits v1.Traits) error {
+	specTraitsMap, err := toMap(traits)
+	if err != nil {
+		return err
+	}
+	for _, name := range sortedTraitsMapKeys(specTraitsMap) {
+		if name != "addons" {
+			if err := computeForTrait(hash, name, specTraitsMap[name]); err != nil {
+				return err
+			}
+		} else {
+			// Addons
+			addons := specTraitsMap["addons"]
+			for _, name := range util.SortedMapKeys(addons) {
+				if addon, ok := addons[name].(map[string]interface{}); ok {
+					if err := computeForTrait(hash, name, addon); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func computeForTrait(hash hash.Hash, name string, trait map[string]interface{}) error {
@@ -280,12 +309,6 @@ func ComputeForSource(s v1.SourceSpec) (string, error) {
 	if _, err := hash.Write([]byte(s.Loader)); err != nil {
 		return "", err
 	}
-	for _, i := range s.Interceptors {
-		if _, err := hash.Write([]byte(i)); err != nil {
-			return "", err
-		}
-	}
-
 	if _, err := hash.Write([]byte(strconv.FormatBool(s.Compression))); err != nil {
 		return "", err
 	}
@@ -306,6 +329,7 @@ func sortedTraitsMapKeys(m map[string]map[string]interface{}) []string {
 	return res
 }
 
+// Deprecated: to be removed in future versions.
 func sortedTraitAnnotationsKeys(it *v1.Integration) []string {
 	res := make([]string, 0, len(it.Annotations))
 	for k := range it.Annotations {
@@ -318,7 +342,7 @@ func sortedTraitAnnotationsKeys(it *v1.Integration) []string {
 }
 
 func ComputeSHA1(elem ...string) (string, error) {
-	file := path.Join(elem...)
+	file := filepath.Join(elem...)
 
 	// #nosec G401
 	h := sha1.New()

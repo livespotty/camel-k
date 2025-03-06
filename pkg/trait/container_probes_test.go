@@ -21,28 +21,32 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/internal"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 func newTestProbesEnv(t *testing.T, integration *v1.Integration) Environment {
 	t.Helper()
 
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, catalog)
 
+	client, _ := internal.NewFakeClient()
 	traitCatalog := NewCatalog(nil)
 
 	return Environment{
 		Catalog:      traitCatalog,
 		CamelCatalog: catalog,
+		Client:       client,
 		Platform: &v1.IntegrationPlatform{
 			Status: v1.IntegrationPlatformStatus{
 				Phase: v1.IntegrationPlatformPhaseReady,
@@ -53,6 +57,7 @@ func newTestProbesEnv(t *testing.T, integration *v1.Integration) Environment {
 				},
 			},
 		},
+		IntegrationKit:        &v1.IntegrationKit{},
 		Integration:           integration,
 		Resources:             kubernetes.NewCollection(),
 		ApplicationProperties: make(map[string]string),
@@ -63,8 +68,10 @@ func TestProbesDependencies(t *testing.T) {
 	integration := &v1.Integration{
 		Spec: v1.IntegrationSpec{
 			Traits: v1.Traits{
-				Container: &traitv1.ContainerTrait{
-					DeprecatedProbesEnabled: pointer.Bool(true),
+				Health: &traitv1.HealthTrait{
+					Trait: traitv1.Trait{
+						Enabled: ptr.To(true),
+					},
 				},
 			},
 		},
@@ -73,9 +80,10 @@ func TestProbesDependencies(t *testing.T) {
 	env := newTestProbesEnv(t, integration)
 	env.Integration.Status.Phase = v1.IntegrationPhaseInitialization
 
-	err := env.Catalog.apply(&env)
-	assert.Nil(t, err)
-
+	conditions, traits, err := env.Catalog.apply(&env)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.Contains(t, env.Integration.Status.Dependencies, "mvn:org.apache.camel.quarkus:camel-quarkus-microprofile-health")
 }
 
@@ -83,10 +91,13 @@ func TestProbesOnDeployment(t *testing.T) {
 	integration := &v1.Integration{
 		Spec: v1.IntegrationSpec{
 			Traits: v1.Traits{
-				Container: &traitv1.ContainerTrait{
-					DeprecatedProbesEnabled:   pointer.Bool(true),
-					Expose:                    pointer.Bool(true),
-					DeprecatedLivenessTimeout: 1234,
+				Health: &traitv1.HealthTrait{
+					Trait: traitv1.Trait{
+						Enabled: ptr.To(true),
+					},
+					LivenessProbeEnabled:  ptr.To(true),
+					ReadinessProbeEnabled: ptr.To(true),
+					LivenessTimeout:       1234,
 				},
 			},
 		},
@@ -95,8 +106,10 @@ func TestProbesOnDeployment(t *testing.T) {
 	env := newTestProbesEnv(t, integration)
 	env.Integration.Status.Phase = v1.IntegrationPhaseDeploying
 
-	err := env.Catalog.apply(&env)
-	assert.Nil(t, err)
+	conditions, traits, err := env.Catalog.apply(&env)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 
 	container := env.GetIntegrationContainer()
 
@@ -115,12 +128,15 @@ func TestProbesOnDeploymentWithCustomScheme(t *testing.T) {
 	integration := &v1.Integration{
 		Spec: v1.IntegrationSpec{
 			Traits: v1.Traits{
-				Container: &traitv1.ContainerTrait{
-					DeprecatedProbesEnabled:   pointer.Bool(true),
-					Expose:                    pointer.Bool(true),
-					DeprecatedLivenessTimeout: 1234,
-					DeprecatedLivenessScheme:  "HTTPS",
-					DeprecatedReadinessScheme: "HTTPS",
+				Health: &traitv1.HealthTrait{
+					Trait: traitv1.Trait{
+						Enabled: ptr.To(true),
+					},
+					LivenessProbeEnabled:  ptr.To(true),
+					ReadinessProbeEnabled: ptr.To(true),
+					LivenessScheme:        "HTTPS",
+					ReadinessScheme:       "HTTPS",
+					LivenessTimeout:       1234,
 				},
 			},
 		},
@@ -129,8 +145,10 @@ func TestProbesOnDeploymentWithCustomScheme(t *testing.T) {
 	env := newTestProbesEnv(t, integration)
 	env.Integration.Status.Phase = v1.IntegrationPhaseDeploying
 
-	err := env.Catalog.apply(&env)
-	assert.Nil(t, err)
+	conditions, traits, err := env.Catalog.apply(&env)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 
 	container := env.GetIntegrationContainer()
 
@@ -152,13 +170,16 @@ func TestProbesOnKnativeService(t *testing.T) {
 			Traits: v1.Traits{
 				KnativeService: &traitv1.KnativeServiceTrait{
 					Trait: traitv1.Trait{
-						Enabled: pointer.Bool(true),
+						Enabled: ptr.To(true),
 					},
 				},
-				Container: &traitv1.ContainerTrait{
-					DeprecatedProbesEnabled:   pointer.Bool(true),
-					Expose:                    pointer.Bool(true),
-					DeprecatedLivenessTimeout: 1234,
+				Health: &traitv1.HealthTrait{
+					Trait: traitv1.Trait{
+						Enabled: ptr.To(true),
+					},
+					LivenessProbeEnabled:  ptr.To(true),
+					ReadinessProbeEnabled: ptr.To(true),
+					LivenessTimeout:       1234,
 				},
 			},
 		},
@@ -167,16 +188,34 @@ func TestProbesOnKnativeService(t *testing.T) {
 	env := newTestProbesEnv(t, integration)
 	env.Integration.Status.Phase = v1.IntegrationPhaseDeploying
 
-	err := env.Catalog.apply(&env)
-	assert.Nil(t, err)
+	serviceOverrideCondition := NewIntegrationCondition(
+		"Service",
+		v1.IntegrationConditionTraitInfo,
+		corev1.ConditionTrue,
+		"TraitConfiguration",
+		"explicitly disabled by the platform: knative-service trait has priority over this trait",
+	)
+	ctrlStrategyCondition := NewIntegrationCondition(
+		"Deployment",
+		v1.IntegrationConditionDeploymentAvailable,
+		corev1.ConditionFalse,
+		"DeploymentAvailable",
+		"controller strategy: knative-service",
+	)
+
+	conditions, traits, err := env.Catalog.apply(&env)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.Contains(t, conditions, ctrlStrategyCondition)
+	assert.Contains(t, conditions, serviceOverrideCondition)
 
 	container := env.GetIntegrationContainer()
 
 	assert.Equal(t, "", container.LivenessProbe.HTTPGet.Host)
-	assert.Equal(t, int32(0), container.LivenessProbe.HTTPGet.Port.IntVal)
+	assert.Equal(t, int32(defaultContainerPort), container.LivenessProbe.HTTPGet.Port.IntVal)
 	assert.Equal(t, defaultLivenessProbePath, container.LivenessProbe.HTTPGet.Path)
 	assert.Equal(t, "", container.ReadinessProbe.HTTPGet.Host)
-	assert.Equal(t, int32(0), container.ReadinessProbe.HTTPGet.Port.IntVal)
+	assert.Equal(t, int32(defaultContainerPort), container.ReadinessProbe.HTTPGet.Port.IntVal)
 	assert.Equal(t, defaultReadinessProbePath, container.ReadinessProbe.HTTPGet.Path)
 	assert.Equal(t, int32(1234), container.LivenessProbe.TimeoutSeconds)
 }

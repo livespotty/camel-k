@@ -18,22 +18,25 @@ limitations under the License.
 package trait
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/rs/xid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	routev1 "github.com/openshift/api/route/v1"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/test"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/internal"
+	"github.com/apache/camel-k/v2/pkg/util/boolean"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 const (
@@ -107,8 +110,8 @@ func createTestRouteEnvironment(t *testing.T, name string) *Environment {
 	t.Helper()
 
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
-	client, _ := test.NewFakeClient(
+	require.NoError(t, err)
+	client, _ := internal.NewFakeClient(
 		&corev1.Secret{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "v1",
@@ -141,6 +144,7 @@ func createTestRouteEnvironment(t *testing.T, name string) *Environment {
 	res := &Environment{
 		CamelCatalog: catalog,
 		Catalog:      NewCatalog(client),
+		Client:       client,
 		Integration: &v1.Integration{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
@@ -160,7 +164,7 @@ func createTestRouteEnvironment(t *testing.T, name string) *Environment {
 			Spec: v1.IntegrationPlatformSpec{
 				Cluster: v1.IntegrationPlatformClusterOpenShift,
 				Build: v1.IntegrationPlatformBuildSpec{
-					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
+					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyJib,
 					Registry:        v1.RegistrySpec{Address: "registry"},
 					RuntimeVersion:  catalog.Runtime.Version,
 				},
@@ -203,9 +207,10 @@ func TestRoute_Default(t *testing.T) {
 	environment := createTestRouteEnvironment(t, name)
 	traitsCatalog := environment.Catalog
 
-	err := traitsCatalog.apply(environment)
-
-	assert.Nil(t, err)
+	conditions, traits, err := traitsCatalog.apply(environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("container"))
 	assert.NotNil(t, environment.GetTrait("route"))
@@ -226,15 +231,23 @@ func TestRoute_Disabled(t *testing.T) {
 	environment.Integration.Spec.Traits = v1.Traits{
 		Route: &traitv1.RouteTrait{
 			Trait: traitv1.Trait{
-				Enabled: pointer.Bool(false),
+				Enabled: ptr.To(false),
 			},
 		},
 	}
 
+	expectedCondition := NewIntegrationCondition(
+		"Route",
+		v1.IntegrationConditionExposureAvailable,
+		corev1.ConditionFalse,
+		"RouteNotAvailable",
+		"explicitly disabled",
+	)
 	traitsCatalog := environment.Catalog
-	err := traitsCatalog.apply(environment)
-
-	assert.Nil(t, err)
+	conditions, traits, err := traitsCatalog.apply(environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.Contains(t, conditions, expectedCondition)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.Nil(t, environment.GetTrait("route"))
 
@@ -254,9 +267,10 @@ func TestRoute_Configure_IntegrationKitOnly(t *testing.T) {
 	enabled := false
 	routeTrait.Enabled = &enabled
 
-	result, err := routeTrait.Configure(environment)
+	result, condition, err := routeTrait.Configure(environment)
 	assert.False(t, result)
-	assert.Nil(t, err)
+	require.NoError(t, err)
+	assert.Nil(t, condition)
 }
 
 func TestRoute_Host(t *testing.T) {
@@ -270,9 +284,11 @@ func TestRoute_Host(t *testing.T) {
 		},
 	}
 
-	err := traitsCatalog.apply(environment)
+	conditions, traits, err := traitsCatalog.apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("route"))
 
@@ -300,9 +316,11 @@ func TestRoute_TLS_From_Secret_reencrypt(t *testing.T) {
 			TLSDestinationCACertificateSecret: tlsMultipleSecretsName + "/" + tlsMultipleSecretsCert3Key,
 		},
 	}
-	err := traitsCatalog.apply(environment)
+	conditions, traits, err := traitsCatalog.apply(environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("route"))
 
@@ -335,10 +353,10 @@ func TestRoute_TLS_wrong_secret(t *testing.T) {
 			TLSDestinationCACertificateSecret: "404",
 		},
 	}
-	err := traitsCatalog.apply(environment)
-
+	_, traits, err := traitsCatalog.apply(environment)
+	assert.Empty(t, traits)
 	// there must be errors as the trait has wrong configuration
-	assert.NotNil(t, err)
+	require.Error(t, err)
 	assert.Nil(t, environment.GetTrait("route"))
 
 	route := environment.Resources.GetRoute(func(r *routev1.Route) bool {
@@ -363,10 +381,10 @@ func TestRoute_TLS_secret_wrong_key(t *testing.T) {
 			TLSCACertificateSecret: tlsMultipleSecretsName + "/foo",
 		},
 	}
-	err := traitsCatalog.apply(environment)
-
+	_, traits, err := traitsCatalog.apply(environment)
+	assert.Empty(t, traits)
 	// there must be errors as the trait has wrong configuration
-	assert.NotNil(t, err)
+	require.Error(t, err)
 	assert.Nil(t, environment.GetTrait("route"))
 
 	route := environment.Resources.GetRoute(func(r *routev1.Route) bool {
@@ -391,10 +409,10 @@ func TestRoute_TLS_secret_missing_key(t *testing.T) {
 			TLSCACertificateSecret: tlsMultipleSecretsName,
 		},
 	}
-	err := traitsCatalog.apply(environment)
-
+	_, traits, err := traitsCatalog.apply(environment)
+	assert.Empty(t, traits)
 	// there must be errors as the trait has wrong configuration
-	assert.NotNil(t, err)
+	require.Error(t, err)
 	assert.Nil(t, environment.GetTrait("route"))
 
 	route := environment.Resources.GetRoute(func(r *routev1.Route) bool {
@@ -420,9 +438,10 @@ func TestRoute_TLS_reencrypt(t *testing.T) {
 			TLSDestinationCACertificate: destinationCaCert,
 		},
 	}
-	err := traitsCatalog.apply(environment)
-
-	assert.Nil(t, err)
+	conditions, traits, err := traitsCatalog.apply(environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("route"))
 
@@ -454,9 +473,10 @@ func TestRoute_TLS_edge(t *testing.T) {
 			TLSCACertificate: caCert,
 		},
 	}
-	err := traitsCatalog.apply(environment)
-
-	assert.Nil(t, err)
+	conditions, traits, err := traitsCatalog.apply(environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("route"))
 
@@ -486,9 +506,10 @@ func TestRoute_TLS_passthrough(t *testing.T) {
 			TLSInsecureEdgeTerminationPolicy: string(routev1.InsecureEdgeTerminationPolicyAllow),
 		},
 	}
-	err := traitsCatalog.apply(environment)
-
-	assert.Nil(t, err)
+	conditions, traits, err := traitsCatalog.apply(environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("route"))
 
@@ -516,9 +537,10 @@ func TestRoute_WithCustomServicePort(t *testing.T) {
 	}
 
 	traitsCatalog := environment.Catalog
-	err := traitsCatalog.apply(environment)
-
-	assert.Nil(t, err)
+	conditions, traits, err := traitsCatalog.apply(environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 	assert.NotNil(t, environment.GetTrait("container"))
 	assert.NotNil(t, environment.GetTrait("route"))
@@ -536,4 +558,30 @@ func TestRoute_WithCustomServicePort(t *testing.T) {
 		trait.ServicePortName,
 		route.Spec.Port.TargetPort.StrVal,
 	)
+}
+
+func TestRouteAnnotation(t *testing.T) {
+	annotationsTest := map[string]string{"haproxy.router.openshift.io/balance": boolean.TrueString}
+
+	name := xid.New().String()
+	environment := createTestRouteEnvironment(t, name)
+	environment.Integration.Spec.Traits = v1.Traits{
+		Route: &traitv1.RouteTrait{
+			Annotations: map[string]string{"haproxy.router.openshift.io/balance": boolean.TrueString},
+		},
+	}
+
+	traitsCatalog := environment.Catalog
+	conditions, traits, err := traitsCatalog.apply(environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
+
+	route := environment.Resources.GetRoute(func(r *routev1.Route) bool {
+		return r.ObjectMeta.Name == name
+	})
+
+	assert.NotNil(t, route)
+	assert.True(t, reflect.DeepEqual(route.GetAnnotations(), annotationsTest))
+
 }

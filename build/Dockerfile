@@ -13,35 +13,53 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM quay.io/quarkus/ubi-quarkus-mandrel:21.3.0.0-Final-java11
+ARG CK_BASE_IMAGE=eclipse-temurin:17-jdk
 
-ARG MAVEN_VERSION="3.8.4"
+FROM $CK_BASE_IMAGE AS base
+
+ARG IMAGE_ARCH
+
+ARG MAVEN_DEFAULT_VERSION="3.8.6"
 ARG MAVEN_HOME="/usr/share/maven"
-ARG SHA="a9b2d825eacf2e771ed5d6b0e01398589ac1bfa4171f36154d1b5787879605507802f699da6f7cfc80732a5282fd31b28e4cd6052338cbef0fa1358b48a5e3c8"
-ARG BASE_URL="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
+ARG MAVEN_DIST_URL="https://archive.apache.org/dist/maven/maven-3/${MAVEN_DEFAULT_VERSION}/binaries/apache-maven-${MAVEN_DEFAULT_VERSION}-bin.zip"
+ARG MVNW_DIR="/usr/share/maven/mvnw/"
+ARG MVN_REPO="/etc/maven/m2"
 
 USER 0
 
-RUN mkdir -p ${MAVEN_HOME} \
-    && curl -Lso /tmp/maven.tar.gz ${BASE_URL}/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
-    && echo "${SHA} /tmp/maven.tar.gz" | sha512sum -c - \
-    && tar -xzC ${MAVEN_HOME} --strip-components=1 -f /tmp/maven.tar.gz \
-    && rm -v /tmp/maven.tar.gz \
-    && ln -s ${MAVEN_HOME}/bin/mvn /usr/bin/mvn \
-    && rm ${MAVEN_HOME}/lib/maven-slf4j-provider*
+# Maven configuration
+RUN mkdir -p ${MAVEN_HOME}
+RUN mkdir -p ${MVN_REPO}
 
-ADD build/_maven_output /tmp/artifacts/m2
-ADD build/_kamelets /kamelets
-COPY build/_maven_overlay/ /usr/share/maven/lib/
-ADD build/_maven_overlay/logback.xml /usr/share/maven/conf/
+# Prepare the maven wrapper required in the build Pod strategy
+COPY build/mvnw/mvnw.tar ${MVNW_DIR}
+RUN tar -xC ${MVNW_DIR} -f ${MVNW_DIR}mvnw.tar \
+    && rm -v ${MVNW_DIR}mvnw.tar \
+    && sed -i "s;distributionUrl=.*;distributionUrl=${MAVEN_DIST_URL};" ${MVNW_DIR}.mvn/wrapper/maven-wrapper.properties
+# Used by mvnw to download maven dist into it
+ENV MAVEN_USER_HOME="${MAVEN_HOME}"
+# Install a default mvnw distribution at build time
+RUN ${MVNW_DIR}/mvnw --version
 
-ENV MAVEN_OPTS="${MAVEN_OPTS} -Dlogback.configurationFile=/usr/share/maven/conf/logback.xml"
+ADD build/_maven_output ${MVN_REPO}
+# Fix https://github.com/moby/moby/issues/37965
+RUN true
 
-RUN chgrp -R 0 /tmp/artifacts/m2 \
-    && chmod -R g=u /tmp/artifacts/m2 \
-    && chgrp -R 0 /kamelets \
-    && chmod -R g=u /kamelets
+RUN chgrp -R 0 ${MVN_REPO} \
+    && chown -R 1001:0 ${MVN_REPO} \
+    && chmod -R 775 ${MVN_REPO} \
+    && chgrp -R 0 ${MAVEN_HOME} \
+    && chown -R 1001:0 ${MAVEN_HOME} \
+    && chmod -R 775 ${MAVEN_HOME}
 
-USER 1000
+USER 1001:0
 
-ADD build/_output/bin/kamel /usr/local/bin/kamel
+ADD build/_output/bin/kamel-${IMAGE_ARCH} /usr/local/bin/kamel
+
+FROM golang:1.22 AS go
+
+RUN go install github.com/go-delve/delve/cmd/dlv@latest
+
+FROM base AS debug
+
+COPY --from=go /go/bin/dlv /usr/local/bin/dlv

@@ -18,22 +18,26 @@ limitations under the License.
 package trait
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	passert "github.com/magiconair/properties/assert"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/internal"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 func TestCronFromURI(t *testing.T) {
@@ -223,13 +227,15 @@ func TestCronFromURI(t *testing.T) {
 
 func TestCronDeps(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
+	client, _ := internal.NewFakeClient()
 	traitCatalog := NewCatalog(nil)
 
 	environment := Environment{
 		CamelCatalog: catalog,
 		Catalog:      traitCatalog,
+		Client:       client,
 		Integration: &v1.Integration{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test",
@@ -249,8 +255,7 @@ func TestCronDeps(t *testing.T) {
 						Language: v1.LanguageJavaSource,
 					},
 				},
-				Resources: []v1.ResourceSpec{},
-				Traits:    v1.Traits{},
+				Traits: v1.Traits{},
 			},
 		},
 		IntegrationKit: &v1.IntegrationKit{
@@ -262,7 +267,7 @@ func TestCronDeps(t *testing.T) {
 			Spec: v1.IntegrationPlatformSpec{
 				Cluster: v1.IntegrationPlatformClusterOpenShift,
 				Build: v1.IntegrationPlatformBuildSpec{
-					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
+					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyJib,
 					Registry:        v1.RegistrySpec{Address: "registry"},
 					RuntimeVersion:  catalog.Runtime.Version,
 				},
@@ -278,32 +283,116 @@ func TestCronDeps(t *testing.T) {
 	}
 	environment.Platform.ResyncStatusFullConfig()
 
-	c, err := NewFakeClient("ns")
-	assert.Nil(t, err)
+	c, err := newFakeClient("ns")
+	require.NoError(t, err)
 
 	tc := NewCatalog(c)
+	conditions, traits, err := tc.apply(&environment)
 
-	err = tc.apply(&environment)
-
-	assert.Nil(t, err)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 
 	ct, _ := environment.GetTrait("cron").(*cronTrait)
 	assert.NotNil(t, ct)
 	assert.Nil(t, ct.Fallback)
 	assert.True(t, util.StringSliceExists(environment.Integration.Status.Capabilities, v1.CapabilityCron))
-	assert.Contains(t, environment.Integration.Status.Dependencies, "mvn:org.apache.camel.k:camel-k-cron")
+	assert.Contains(t, environment.Integration.Status.Dependencies, "camel:timer")
 }
 
-func TestCronDepsFallback(t *testing.T) {
+func TestCronMultipleScheduleFallback(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	assert.Nil(t, err)
 
+	client, _ := internal.NewFakeClient()
 	traitCatalog := NewCatalog(nil)
 
 	environment := Environment{
 		CamelCatalog: catalog,
 		Catalog:      traitCatalog,
+		Client:       client,
+		Integration: &v1.Integration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test",
+				Namespace: "ns",
+			},
+			Status: v1.IntegrationStatus{
+				Phase: v1.IntegrationPhaseInitialization,
+			},
+			Spec: v1.IntegrationSpec{
+				Profile: v1.TraitProfileKnative,
+				Sources: []v1.SourceSpec{
+					{
+						DataSpec: v1.DataSpec{
+							Name:    "routes.java",
+							Content: `from("cron:tab?schedule=0 0/2 * * ?").to("log:test")`,
+						},
+						Language: v1.LanguageJavaSource,
+					},
+					{
+						DataSpec: v1.DataSpec{
+							Name:    "routes2.java",
+							Content: `from("cron:tab?schedule=0 0/3 * * ?").to("log:test")`,
+						},
+						Language: v1.LanguageJavaSource,
+					},
+				},
+				Traits: v1.Traits{},
+			},
+		},
+		IntegrationKit: &v1.IntegrationKit{
+			Status: v1.IntegrationKitStatus{
+				Phase: v1.IntegrationKitPhaseReady,
+			},
+		},
+		Platform: &v1.IntegrationPlatform{
+			Spec: v1.IntegrationPlatformSpec{
+				Cluster: v1.IntegrationPlatformClusterOpenShift,
+				Build: v1.IntegrationPlatformBuildSpec{
+					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyJib,
+					Registry:        v1.RegistrySpec{Address: "registry"},
+					RuntimeVersion:  catalog.Runtime.Version,
+				},
+				Profile: v1.TraitProfileKnative,
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
+			},
+		},
+		EnvVars:        make([]corev1.EnvVar, 0),
+		ExecutedTraits: make([]Trait, 0),
+		Resources:      kubernetes.NewCollection(),
+	}
+	environment.Platform.ResyncStatusFullConfig()
+
+	c, err := newFakeClient("ns")
+	assert.Nil(t, err)
+
+	tc := NewCatalog(c)
+	conditions, traits, err := tc.apply(&environment)
+
+	assert.Nil(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
+	assert.NotEmpty(t, environment.ExecutedTraits)
+
+	ct, _ := environment.GetTrait("cron").(*cronTrait)
+	assert.NotNil(t, ct)
+	assert.NotNil(t, ct.Fallback, "Should apply Fallback since non equivalent scheduling for multiple cron compatible component")
+}
+
+func TestCronDepsFallback(t *testing.T) {
+	catalog, err := camel.DefaultCatalog()
+	require.NoError(t, err)
+
+	client, _ := internal.NewFakeClient()
+	traitCatalog := NewCatalog(nil)
+
+	environment := Environment{
+		CamelCatalog: catalog,
+		Catalog:      traitCatalog,
+		Client:       client,
 		Integration: &v1.Integration{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test",
@@ -323,10 +412,9 @@ func TestCronDepsFallback(t *testing.T) {
 						Language: v1.LanguageJavaSource,
 					},
 				},
-				Resources: []v1.ResourceSpec{},
 				Traits: v1.Traits{
 					Cron: &traitv1.CronTrait{
-						Fallback: pointer.Bool(true),
+						Fallback: ptr.To(true),
 					},
 				},
 			},
@@ -340,7 +428,7 @@ func TestCronDepsFallback(t *testing.T) {
 			Spec: v1.IntegrationPlatformSpec{
 				Cluster: v1.IntegrationPlatformClusterOpenShift,
 				Build: v1.IntegrationPlatformBuildSpec{
-					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
+					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyJib,
 					Registry:        v1.RegistrySpec{Address: "registry"},
 					RuntimeVersion:  catalog.Runtime.Version,
 				},
@@ -356,14 +444,16 @@ func TestCronDepsFallback(t *testing.T) {
 	}
 	environment.Platform.ResyncStatusFullConfig()
 
-	c, err := NewFakeClient("ns")
-	assert.Nil(t, err)
+	c, err := newFakeClient("ns")
+	require.NoError(t, err)
 
 	tc := NewCatalog(c)
 
-	err = tc.apply(&environment)
+	conditions, traits, err := tc.apply(&environment)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.NotEmpty(t, conditions)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 
 	ct, _ := environment.GetTrait("cron").(*cronTrait)
@@ -371,18 +461,20 @@ func TestCronDepsFallback(t *testing.T) {
 	assert.NotNil(t, ct.Fallback)
 	assert.True(t, util.StringSliceExists(environment.Integration.Status.Capabilities, v1.CapabilityCron))
 	assert.Contains(t, environment.Integration.Status.Dependencies, "camel:quartz")
-	assert.Contains(t, environment.Integration.Status.Dependencies, "mvn:org.apache.camel.k:camel-k-cron")
+	assert.NotContains(t, environment.Integration.Status.Dependencies, "camel:timer")
 }
 
 func TestCronWithActiveDeadline(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
+	client, _ := internal.NewFakeClient()
 	traitCatalog := NewCatalog(nil)
 
 	environment := Environment{
 		CamelCatalog: catalog,
 		Catalog:      traitCatalog,
+		Client:       client,
 		Integration: &v1.Integration{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test",
@@ -392,7 +484,6 @@ func TestCronWithActiveDeadline(t *testing.T) {
 				Phase: v1.IntegrationPhaseDeploying,
 			},
 			Spec: v1.IntegrationSpec{
-				Profile: v1.TraitProfileKnative,
 				Sources: []v1.SourceSpec{
 					{
 						DataSpec: v1.DataSpec{
@@ -402,10 +493,9 @@ func TestCronWithActiveDeadline(t *testing.T) {
 						Language: v1.LanguageJavaSource,
 					},
 				},
-				Resources: []v1.ResourceSpec{},
 				Traits: v1.Traits{
 					Cron: &traitv1.CronTrait{
-						ActiveDeadlineSeconds: pointer.Int64(120),
+						ActiveDeadlineSeconds: ptr.To(int64(120)),
 					},
 				},
 			},
@@ -431,20 +521,27 @@ func TestCronWithActiveDeadline(t *testing.T) {
 	}
 	environment.Platform.ResyncStatusFullConfig()
 
-	c, err := NewFakeClient("ns")
-	assert.Nil(t, err)
+	c, err := newFakeClient("ns")
+	require.NoError(t, err)
 
 	tc := NewCatalog(c)
 
-	err = tc.apply(&environment)
-
-	assert.Nil(t, err)
+	expectedCondition := NewIntegrationCondition(
+		"Deployment",
+		v1.IntegrationConditionDeploymentAvailable,
+		corev1.ConditionFalse,
+		"DeploymentAvailable",
+		"controller strategy: cron-job",
+	)
+	conditions, traits, err := tc.apply(&environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.Contains(t, conditions, expectedCondition)
 	assert.NotEmpty(t, environment.ExecutedTraits)
 
 	ct, _ := environment.GetTrait("cron").(*cronTrait)
 	assert.NotNil(t, ct)
 	assert.Nil(t, ct.Fallback)
-	assert.Contains(t, environment.Interceptors, "cron")
 
 	cronJob := environment.Resources.GetCronJob(func(job *batchv1.CronJob) bool { return true })
 	assert.NotNil(t, cronJob)
@@ -458,13 +555,15 @@ func TestCronWithActiveDeadline(t *testing.T) {
 
 func TestCronWithBackoffLimit(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
+	client, _ := internal.NewFakeClient()
 	traitCatalog := NewCatalog(nil)
 
 	environment := Environment{
 		CamelCatalog: catalog,
 		Catalog:      traitCatalog,
+		Client:       client,
 		Integration: &v1.Integration{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test",
@@ -474,7 +573,6 @@ func TestCronWithBackoffLimit(t *testing.T) {
 				Phase: v1.IntegrationPhaseDeploying,
 			},
 			Spec: v1.IntegrationSpec{
-				Profile: v1.TraitProfileKnative,
 				Sources: []v1.SourceSpec{
 					{
 						DataSpec: v1.DataSpec{
@@ -484,7 +582,253 @@ func TestCronWithBackoffLimit(t *testing.T) {
 						Language: v1.LanguageJavaSource,
 					},
 				},
-				Resources: []v1.ResourceSpec{},
+				Traits: v1.Traits{
+					Cron: &traitv1.CronTrait{
+						BackoffLimit: ptr.To(int32(5)),
+					},
+				},
+			},
+		},
+		IntegrationKit: &v1.IntegrationKit{
+			Status: v1.IntegrationKitStatus{
+				Phase: v1.IntegrationKitPhaseReady,
+			},
+		},
+		Platform: &v1.IntegrationPlatform{
+			Spec: v1.IntegrationPlatformSpec{
+				Build: v1.IntegrationPlatformBuildSpec{
+					RuntimeVersion: catalog.Runtime.Version,
+				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
+			},
+		},
+		EnvVars:        make([]corev1.EnvVar, 0),
+		ExecutedTraits: make([]Trait, 0),
+		Resources:      kubernetes.NewCollection(),
+	}
+	environment.Platform.ResyncStatusFullConfig()
+
+	c, err := newFakeClient("ns")
+	require.NoError(t, err)
+
+	tc := NewCatalog(c)
+
+	expectedCondition := NewIntegrationCondition(
+		"Deployment",
+		v1.IntegrationConditionDeploymentAvailable,
+		corev1.ConditionFalse,
+		"DeploymentAvailable",
+		"controller strategy: cron-job",
+	)
+	conditions, traits, err := tc.apply(&environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.Contains(t, conditions, expectedCondition)
+	assert.NotEmpty(t, environment.ExecutedTraits)
+
+	ct, _ := environment.GetTrait("cron").(*cronTrait)
+	assert.NotNil(t, ct)
+	assert.Nil(t, ct.Fallback)
+
+	cronJob := environment.Resources.GetCronJob(func(job *batchv1.CronJob) bool { return true })
+	assert.NotNil(t, cronJob)
+
+	assert.NotNil(t, cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds)
+	assert.EqualValues(t, *cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds, 60)
+
+	assert.NotNil(t, cronJob.Spec.JobTemplate.Spec.BackoffLimit)
+	assert.EqualValues(t, *cronJob.Spec.JobTemplate.Spec.BackoffLimit, 5)
+
+	assert.Nil(t, cronJob.Spec.TimeZone)
+}
+
+func TestCronWithTimeZone(t *testing.T) {
+	catalog, err := camel.DefaultCatalog()
+	require.NoError(t, err)
+
+	client, _ := internal.NewFakeClient()
+	traitCatalog := NewCatalog(nil)
+
+	timeZone := "America/Sao_Paulo"
+
+	environment := Environment{
+		CamelCatalog: catalog,
+		Catalog:      traitCatalog,
+		Client:       client,
+		Integration: &v1.Integration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test",
+				Namespace: "ns",
+			},
+			Status: v1.IntegrationStatus{
+				Phase: v1.IntegrationPhaseDeploying,
+			},
+			Spec: v1.IntegrationSpec{
+				Sources: []v1.SourceSpec{
+					{
+						DataSpec: v1.DataSpec{
+							Name:    "routes.java",
+							Content: `from("cron:tab?schedule=0 0/2 * * ?").to("log:test")`,
+						},
+						Language: v1.LanguageJavaSource,
+					},
+				},
+				Traits: v1.Traits{
+					Cron: &traitv1.CronTrait{
+						TimeZone: &timeZone,
+					},
+				},
+			},
+		},
+		IntegrationKit: &v1.IntegrationKit{
+			Status: v1.IntegrationKitStatus{
+				Phase: v1.IntegrationKitPhaseReady,
+			},
+		},
+		Platform: &v1.IntegrationPlatform{
+			Spec: v1.IntegrationPlatformSpec{
+				Build: v1.IntegrationPlatformBuildSpec{
+					RuntimeVersion: catalog.Runtime.Version,
+				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
+			},
+		},
+		EnvVars:        make([]corev1.EnvVar, 0),
+		ExecutedTraits: make([]Trait, 0),
+		Resources:      kubernetes.NewCollection(),
+	}
+	environment.Platform.ResyncStatusFullConfig()
+
+	c, err := newFakeClient("ns")
+	require.NoError(t, err)
+
+	tc := NewCatalog(c)
+
+	expectedCondition := NewIntegrationCondition(
+		"Deployment",
+		v1.IntegrationConditionDeploymentAvailable,
+		corev1.ConditionFalse,
+		"DeploymentAvailable",
+		"controller strategy: cron-job",
+	)
+	conditions, traits, err := tc.apply(&environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+	assert.Contains(t, conditions, expectedCondition)
+	assert.NotEmpty(t, environment.ExecutedTraits)
+
+	ct, _ := environment.GetTrait("cron").(*cronTrait)
+	assert.NotNil(t, ct)
+	assert.Nil(t, ct.Fallback)
+
+	cronJob := environment.Resources.GetCronJob(func(job *batchv1.CronJob) bool { return true })
+	assert.NotNil(t, cronJob)
+
+	assert.NotNil(t, cronJob.Spec.TimeZone)
+	assert.EqualValues(t, *cronJob.Spec.TimeZone, "America/Sao_Paulo")
+}
+
+func TestCronAuto(t *testing.T) {
+	catalog, err := camel.DefaultCatalog()
+	require.NoError(t, err)
+
+	client, _ := internal.NewFakeClient()
+	traitCatalog := NewCatalog(nil)
+
+	environment := Environment{
+		CamelCatalog: catalog,
+		Catalog:      traitCatalog,
+		Client:       client,
+		Integration: &v1.Integration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test",
+				Namespace: "ns",
+			},
+			Status: v1.IntegrationStatus{
+				Phase: v1.IntegrationPhaseDeploying,
+			},
+			Spec: v1.IntegrationSpec{
+				Sources: []v1.SourceSpec{
+					{
+						DataSpec: v1.DataSpec{
+							Name:    "routes.java",
+							Content: `from("cron:tab?schedule=0 0/2 * * ?").to("log:test")`,
+						},
+						Language: v1.LanguageJavaSource,
+					},
+				},
+			},
+		},
+		IntegrationKit: &v1.IntegrationKit{
+			Status: v1.IntegrationKitStatus{
+				Phase: v1.IntegrationKitPhaseReady,
+			},
+		},
+		Platform: &v1.IntegrationPlatform{
+			Spec: v1.IntegrationPlatformSpec{
+				Build: v1.IntegrationPlatformBuildSpec{
+					RuntimeVersion: catalog.Runtime.Version,
+				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
+			},
+		},
+		EnvVars:        make([]corev1.EnvVar, 0),
+		ExecutedTraits: make([]Trait, 0),
+		Resources:      kubernetes.NewCollection(),
+	}
+	environment.Platform.ResyncStatusFullConfig()
+
+	c, err := newFakeClient("ns")
+	require.NoError(t, err)
+
+	tc := NewCatalog(c)
+	_, traits, err := tc.apply(&environment)
+	require.NoError(t, err)
+	assert.NotEmpty(t, traits)
+
+	assert.Equal(t, &traitv1.CronTrait{
+		Trait: traitv1.Trait{
+			Enabled: ptr.To(true),
+		},
+		Schedule:   "0 0/2 * * ?",
+		Components: "cron",
+	}, traits.Cron)
+}
+
+func TestCronRuntimeTriggerReplacement(t *testing.T) {
+	catalog, err := camel.DefaultCatalog()
+	assert.Nil(t, err)
+
+	client, _ := internal.NewFakeClient()
+	traitCatalog := NewCatalog(nil)
+
+	environment := Environment{
+		CamelCatalog: catalog,
+		Catalog:      traitCatalog,
+		Client:       client,
+		Integration: &v1.Integration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test",
+				Namespace: "ns",
+			},
+			Status: v1.IntegrationStatus{
+				Phase: v1.IntegrationPhaseInitialization,
+			},
+			Spec: v1.IntegrationSpec{
+				Sources: []v1.SourceSpec{
+					{
+						DataSpec: v1.DataSpec{
+							Name:    "routes.java",
+							Content: `from("quartz:trigger?cron=0 0/1 * * * ?").to("log:test")`,
+						},
+					},
+				},
 				Traits: v1.Traits{
 					Cron: &traitv1.CronTrait{
 						BackoffLimit: pointer.Int32(5),
@@ -513,27 +857,30 @@ func TestCronWithBackoffLimit(t *testing.T) {
 	}
 	environment.Platform.ResyncStatusFullConfig()
 
-	c, err := NewFakeClient("ns")
+	c, err := newFakeClient("ns")
 	assert.Nil(t, err)
 
 	tc := NewCatalog(c)
-
-	err = tc.apply(&environment)
-
+	_, _, err = tc.apply(&environment)
 	assert.Nil(t, err)
-	assert.NotEmpty(t, environment.ExecutedTraits)
 
-	ct, _ := environment.GetTrait("cron").(*cronTrait)
-	assert.NotNil(t, ct)
-	assert.Nil(t, ct.Fallback)
-	assert.Contains(t, environment.Interceptors, "cron")
+	// Integration Initialization
+	assert.NotEmpty(t, environment.Integration.Status.GeneratedSources)
+	assert.Equal(t,
+		fmt.Sprintf("from(\"%s\").to(\"log:test\")", overriddenFromURI),
+		environment.Integration.Status.GeneratedSources[0].Content,
+	)
+
+	// Integration Deployment
+	environment.Integration.Status.Phase = v1.IntegrationPhaseDeploying
+	_, _, err = tc.apply(&environment)
+	assert.Nil(t, err)
 
 	cronJob := environment.Resources.GetCronJob(func(job *batchv1.CronJob) bool { return true })
 	assert.NotNil(t, cronJob)
-
-	assert.NotNil(t, cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds)
-	assert.EqualValues(t, *cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds, 60)
-
-	assert.NotNil(t, cronJob.Spec.JobTemplate.Spec.BackoffLimit)
-	assert.EqualValues(t, *cronJob.Spec.JobTemplate.Spec.BackoffLimit, 5)
+	assert.Equal(t, "1", environment.ApplicationProperties["camel.main.durationMaxMessages"])
+	assert.Equal(t,
+		fmt.Sprintf("from(\"%s\").to(\"log:test\")", overriddenFromURI),
+		environment.Integration.Status.GeneratedSources[0].Content,
+	)
 }

@@ -22,26 +22,25 @@ import (
 	"sync"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
-
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/event"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/event"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
-func newScheduleAction(reader ctrl.Reader) Action {
+func newScheduleAction(reader ctrl.Reader, buildMonitor Monitor) Action {
 	return &scheduleAction{
-		reader: reader,
+		reader:       reader,
+		buildMonitor: buildMonitor,
 	}
 }
 
 type scheduleAction struct {
 	baseAction
-	lock   sync.Mutex
-	reader ctrl.Reader
+	lock         sync.Mutex
+	reader       ctrl.Reader
+	buildMonitor Monitor
 }
 
 // Name returns a common name of the action.
@@ -60,62 +59,52 @@ func (action *scheduleAction) Handle(ctx context.Context, build *v1.Build) (*v1.
 	action.lock.Lock()
 	defer action.lock.Unlock()
 
-	layout := build.Labels[v1.IntegrationKitLayoutLabel]
+	allowed, schedulingCondition, err := action.buildMonitor.canSchedule(ctx, action.reader, build)
 
-	// Native builds can be run in parallel, as incremental images is not applicable.
-	if layout == v1.IntegrationKitLayoutNative {
-		// Reset the Build status, and transition it to pending phase.
+	if err != nil {
+		return nil, err
+	} else if !allowed {
+		// Build not allowed at this state (probably max running builds limit exceeded) - let's requeue the build
+		// Update the condition without reseting the Build Status.
 		// This must be done in the critical section, rather than delegated to the controller.
-		return nil, action.toPendingPhase(ctx, build)
-	}
-
-	// We assume incremental images is only applicable across images whose layout is identical
-	withCompatibleLayout, err := labels.NewRequirement(v1.IntegrationKitLayoutLabel, selection.Equals, []string{layout})
-	if err != nil {
-		return nil, err
-	}
-
-	builds := &v1.BuildList{}
-	// We use the non-caching client as informers cache is not invalidated nor updated
-	// atomically by write operations
-	err = action.reader.List(ctx, builds,
-		ctrl.InNamespace(build.Namespace),
-		ctrl.MatchingLabelsSelector{
-			Selector: labels.NewSelector().Add(*withCompatibleLayout),
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	// Emulate a serialized working queue to only allow one build to run at a given time.
-	// This is currently necessary for the incremental build to work as expected.
-	// We may want to explicitly manage build priority as opposed to relying on
-	// the reconciliation loop to handle the queuing.
-	for _, b := range builds.Items {
-		if b.Status.Phase == v1.BuildPhasePending || b.Status.Phase == v1.BuildPhaseRunning {
-			// Let's requeue the build in case one is already running
-			return nil, nil
-		}
+		return nil, action.toUpdatedCondition(ctx, build, schedulingCondition)
 	}
 
 	// Reset the Build status, and transition it to pending phase.
 	// This must be done in the critical section, rather than delegated to the controller.
-	return nil, action.toPendingPhase(ctx, build)
+	return nil, action.toUpdatedStatus(ctx, build, schedulingCondition, v1.BuildPhasePending)
 }
 
-func (action *scheduleAction) toPendingPhase(ctx context.Context, build *v1.Build) error {
+func (action *scheduleAction) toUpdatedCondition(ctx context.Context, build *v1.Build, condition *v1.BuildCondition) error {
+	return action.patchBuildStatus(ctx, build, func(b *v1.Build) {
+		b.Status = v1.BuildStatus{
+			Phase:      b.Status.Phase,
+			StartedAt:  b.Status.StartedAt,
+			Failure:    b.Status.Failure,
+			Conditions: b.Status.Conditions,
+		}
+		b.Status.SetConditions(*condition)
+	})
+
+}
+
+func (action *scheduleAction) toUpdatedStatus(ctx context.Context, build *v1.Build, condition *v1.BuildCondition, phase v1.BuildPhase) error {
 	err := action.patchBuildStatus(ctx, build, func(b *v1.Build) {
 		now := metav1.Now()
 		b.Status = v1.BuildStatus{
-			Phase:      v1.BuildPhasePending,
+			Phase:      phase,
 			StartedAt:  &now,
 			Failure:    b.Status.Failure,
 			Conditions: b.Status.Conditions,
 		}
+		b.Status.SetConditions(*condition)
 	})
+
 	if err != nil {
 		return err
 	}
+
+	monitorRunningBuild(build)
 
 	buildCreator := kubernetes.GetCamelCreator(build)
 	// Report the duration the Build has been waiting in the build queue
@@ -132,7 +121,7 @@ func (action *scheduleAction) patchBuildStatus(ctx context.Context, build *v1.Bu
 	}
 
 	if target.Status.Phase != build.Status.Phase {
-		action.L.Info("state transition", "phase-from", build.Status.Phase, "phase-to", target.Status.Phase)
+		action.L.Info("State transition", "phase-from", build.Status.Phase, "phase-to", target.Status.Phase)
 	}
 	event.NotifyBuildUpdated(ctx, action.client, action.recorder, build, target)
 

@@ -20,8 +20,9 @@ package dsl
 import (
 	"testing"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTemplateReadWrite(t *testing.T) {
@@ -47,9 +48,9 @@ func TestTemplateReadWrite(t *testing.T) {
 	}
 
 	yamlBytes, err := TemplateToYamlDSL(templateJSON, "myid")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	yaml := string(yamlBytes)
-	expected := `- template:
+	expected := `- routeTemplate:
     beans:
     - name: myBean
       type: com.acme.MyBean

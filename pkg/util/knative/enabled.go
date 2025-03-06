@@ -18,26 +18,54 @@ limitations under the License.
 package knative
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 
-	util "github.com/apache/camel-k/pkg/util/kubernetes"
+	util "github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
-// IsInstalled returns true if we are connected to a cluster with Knative installed.
-func IsInstalled(c kubernetes.Interface) (bool, error) {
-	for _, api := range getRequiredKnativeGroupVersions() {
-		if installed, err := isInstalled(c, api); err != nil {
-			return false, err
-		} else if installed {
-			return true, nil
-		}
+// IsRefKindInstalled returns true if the cluster has the referenced Kind installed.
+func IsRefKindInstalled(c kubernetes.Interface, ref corev1.ObjectReference) (bool, error) {
+	if installed, err := isServerResourceAvailable(c, ref.GroupVersionKind().GroupVersion()); err != nil {
+		return false, err
+	} else if installed {
+		return true, nil
 	}
 	return false, nil
 }
 
-func isInstalled(c kubernetes.Interface, api schema.GroupVersion) (bool, error) {
+// IsInstalled returns true if we are connected to a cluster with either Knative Serving or Eventing installed.
+func IsInstalled(c kubernetes.Interface) (bool, error) {
+	if ok, err := IsServingInstalled(c); ok {
+		return ok, err
+	} else if ok, err = IsEventingInstalled(c); ok {
+		return ok, err
+	} else if err != nil {
+		return false, err
+	}
+
+	return false, nil
+}
+
+// IsServingInstalled returns true if we are connected to a cluster with Knative Serving installed.
+func IsServingInstalled(c kubernetes.Interface) (bool, error) {
+	return IsRefKindInstalled(c, corev1.ObjectReference{
+		Kind:       "Service",
+		APIVersion: "serving.knative.dev/v1",
+	})
+}
+
+// IsEventingInstalled returns true if we are connected to a cluster with Knative Eventing installed.
+func IsEventingInstalled(c kubernetes.Interface) (bool, error) {
+	return IsRefKindInstalled(c, corev1.ObjectReference{
+		Kind:       "Broker",
+		APIVersion: "eventing.knative.dev/v1",
+	})
+}
+
+func isServerResourceAvailable(c kubernetes.Interface, api schema.GroupVersion) (bool, error) {
 	_, err := c.Discovery().ServerResourcesForGroupVersion(api.String())
 	if err != nil && (k8serrors.IsNotFound(err) || util.IsUnknownAPIError(err)) {
 		return false, nil
@@ -45,16 +73,4 @@ func isInstalled(c kubernetes.Interface, api schema.GroupVersion) (bool, error) 
 		return false, err
 	}
 	return true, nil
-}
-
-func getRequiredKnativeGroupVersions() []schema.GroupVersion {
-	apis := make(map[schema.GroupVersion]bool)
-	res := make([]schema.GroupVersion, 0)
-	for _, gvk := range RequiredKinds {
-		if !apis[gvk.GroupVersion()] {
-			apis[gvk.GroupVersion()] = true
-			res = append(res, gvk.GroupVersion())
-		}
-	}
-	return res
 }

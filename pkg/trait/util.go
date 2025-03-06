@@ -20,26 +20,20 @@ package trait
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
-	"sort"
 	"strings"
-
-	"github.com/pkg/errors"
-	"github.com/scylladb/go-set/strset"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/metadata"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/property"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/property"
+	"github.com/apache/camel-k/v2/pkg/util/sets"
 )
 
 type Options map[string]map[string]interface{}
@@ -60,7 +54,7 @@ func (u Options) Get(id string) (map[string]interface{}, bool) {
 	return nil, false
 }
 
-var exactVersionRegexp = regexp.MustCompile(`^(\d+)\.(\d+)\.([\w-.]+)$`)
+var exactVersionRegexp = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)([\w-.]*)$`)
 
 // getIntegrationKit retrieves the kit set on the integration.
 func getIntegrationKit(ctx context.Context, c client.Client, integration *v1.Integration) (*v1.IntegrationKit, error) {
@@ -72,70 +66,10 @@ func getIntegrationKit(ctx context.Context, c client.Client, integration *v1.Int
 	return kit, err
 }
 
-func collectConfigurationValues(configurationType string, configurable ...v1.Configurable) []string {
-	result := strset.New()
-
-	for _, c := range configurable {
-		c := c
-
-		if c == nil || reflect.ValueOf(c).IsNil() {
-			continue
-		}
-
-		entries := c.Configurations()
-		if entries == nil {
-			continue
-		}
-
-		for _, entry := range entries {
-			if entry.Type == configurationType {
-				result.Add(entry.Value)
-			}
-		}
-	}
-
-	s := result.List()
-	sort.Strings(s)
-	return s
-}
-
-func collectConfigurations(configurationType string, configurable ...v1.Configurable) []map[string]string {
-	var result []map[string]string
-
-	for _, c := range configurable {
-		c := c
-
-		if c == nil || reflect.ValueOf(c).IsNil() {
-			continue
-		}
-
-		entries := c.Configurations()
-		if entries == nil {
-			continue
-		}
-
-		// nolint: staticcheck,nolintlint
-		for _, entry := range entries {
-			if entry.Type == configurationType {
-				item := make(map[string]string)
-				item["value"] = entry.Value
-				item["resourceType"] = entry.ResourceType
-				item["resourceMountPoint"] = entry.ResourceMountPoint
-				item["resourceKey"] = entry.ResourceKey
-				result = append(result, item)
-			}
-		}
-	}
-
-	return result
-}
-
 func collectConfigurationPairs(configurationType string, configurable ...v1.Configurable) []variable {
 	result := make([]variable, 0)
 
 	for _, c := range configurable {
-		c := c
-
 		if c == nil || reflect.ValueOf(c).IsNil() {
 			continue
 		}
@@ -199,17 +133,9 @@ func filterTransferableAnnotations(annotations map[string]string) map[string]str
 	return res
 }
 
-// ExtractSourceDependencies extracts dependencies from source.
-func ExtractSourceDependencies(source v1.SourceSpec, catalog *camel.RuntimeCatalog) (*strset.Set, error) {
-	dependencies := strset.New()
-
-	// Add auto-detected dependencies
-	meta, err := metadata.Extract(catalog, source)
-	if err != nil {
-		return nil, err
-	}
-	dependencies.Merge(meta.Dependencies)
-
+// ExtractSourceLoaderDependencies extracts dependencies from source.
+func ExtractSourceLoaderDependencies(source v1.SourceSpec, catalog *camel.RuntimeCatalog) *sets.Set {
+	dependencies := sets.NewSet()
 	// Add loader dependencies
 	lang := source.InferLanguage()
 	for loader, v := range catalog.Loaders {
@@ -232,7 +158,7 @@ func ExtractSourceDependencies(source v1.SourceSpec, catalog *camel.RuntimeCatal
 		}
 	}
 
-	return dependencies, nil
+	return dependencies
 }
 
 // AssertTraitsType asserts that traits is either v1.Traits or v1.IntegrationKitTraits.
@@ -265,20 +191,6 @@ func ToTraitMap(traits interface{}) (Options, error) {
 	return traitMap, nil
 }
 
-// ToPropertyMap accepts a trait and converts it to a map of trait properties.
-func ToPropertyMap(trait interface{}) (map[string]interface{}, error) {
-	data, err := json.Marshal(trait)
-	if err != nil {
-		return nil, err
-	}
-	propMap := make(map[string]interface{})
-	if err = json.Unmarshal(data, &propMap); err != nil {
-		return nil, err
-	}
-
-	return propMap, nil
-}
-
 // MigrateLegacyConfiguration moves up the legacy configuration in a trait to the new top-level properties.
 // Values of the new properties always take precedence over the ones from the legacy configuration
 // with the same property names.
@@ -303,7 +215,7 @@ func MigrateLegacyConfiguration(trait map[string]interface{}) error {
 		}
 		delete(trait, "configuration")
 	} else {
-		return errors.Errorf(`unexpected type for "configuration" field: %v`, reflect.TypeOf(trait["configuration"]))
+		return fmt.Errorf(`unexpected type for "configuration" field: %v`, reflect.TypeOf(trait["configuration"]))
 	}
 
 	return nil
@@ -332,32 +244,27 @@ func getBuilderTask(tasks []v1.Task) *v1.BuilderTask {
 	return nil
 }
 
+func getPackageTask(tasks []v1.Task) *v1.BuilderTask {
+	for i, task := range tasks {
+		if task.Package != nil {
+			return tasks[i].Package
+		}
+	}
+	return nil
+}
+
 // Equals return if traits are the same.
 func Equals(i1 Options, i2 Options) bool {
 	return reflect.DeepEqual(i1, i2)
 }
 
 // IntegrationsHaveSameTraits return if traits are the same.
-func IntegrationsHaveSameTraits(i1 *v1.Integration, i2 *v1.Integration) (bool, error) {
-	c1, err := NewTraitsOptionsForIntegration(i1)
+func IntegrationsHaveSameTraits(c client.Client, i1 *v1.Integration, i2 *v1.Integration) (bool, error) {
+	c1, err := NewSpecTraitsOptionsForIntegration(c, i1)
 	if err != nil {
 		return false, err
 	}
-	c2, err := NewTraitsOptionsForIntegration(i2)
-	if err != nil {
-		return false, err
-	}
-
-	return Equals(c1, c2), nil
-}
-
-// IntegrationKitsHaveSameTraits return if traits are the same.
-func IntegrationKitsHaveSameTraits(i1 *v1.IntegrationKit, i2 *v1.IntegrationKit) (bool, error) {
-	c1, err := NewTraitsOptionsForIntegrationKit(i1)
-	if err != nil {
-		return false, err
-	}
-	c2, err := NewTraitsOptionsForIntegrationKit(i2)
+	c2, err := NewSpecTraitsOptionsForIntegration(c, i2)
 	if err != nil {
 		return false, err
 	}
@@ -365,13 +272,13 @@ func IntegrationKitsHaveSameTraits(i1 *v1.IntegrationKit, i2 *v1.IntegrationKit)
 	return Equals(c1, c2), nil
 }
 
-// KameletBindingsHaveSameTraits return if traits are the same.
-func KameletBindingsHaveSameTraits(i1 *v1alpha1.KameletBinding, i2 *v1alpha1.KameletBinding) (bool, error) {
-	c1, err := NewTraitsOptionsForKameletBinding(i1)
+// PipesHaveSameTraits return if traits are the same.
+func PipesHaveSameTraits(c client.Client, i1 *v1.Pipe, i2 *v1.Pipe) (bool, error) {
+	c1, err := NewTraitsOptionsForPipe(c, i1)
 	if err != nil {
 		return false, err
 	}
-	c2, err := NewTraitsOptionsForKameletBinding(i2)
+	c2, err := NewTraitsOptionsForPipe(c, i2)
 	if err != nil {
 		return false, err
 	}
@@ -379,19 +286,18 @@ func KameletBindingsHaveSameTraits(i1 *v1alpha1.KameletBinding, i2 *v1alpha1.Kam
 	return Equals(c1, c2), nil
 }
 
-// IntegrationAndBindingSameTraits return if traits are the same.
+// IntegrationAndPipeSameTraits return if traits are the same.
 // The comparison is done for the subset of traits defines on the binding as during the trait processing,
 // some traits may be added to the Integration i.e. knative configuration in case of sink binding.
-func IntegrationAndBindingSameTraits(i1 *v1.Integration, i2 *v1alpha1.KameletBinding) (bool, error) {
-	itOpts, err := NewTraitsOptionsForIntegration(i1)
+func IntegrationAndPipeSameTraits(c client.Client, i1 *v1.Integration, i2 *v1.Pipe) (bool, error) {
+	itOpts, err := NewSpecTraitsOptionsForIntegration(c, i1)
 	if err != nil {
 		return false, err
 	}
-	klbOpts, err := NewTraitsOptionsForKameletBinding(i2)
+	klbOpts, err := NewTraitsOptionsForPipe(c, i2)
 	if err != nil {
 		return false, err
 	}
-
 	toCompare := make(Options)
 	for k := range klbOpts {
 		if v, ok := itOpts[k]; ok {
@@ -402,135 +308,193 @@ func IntegrationAndBindingSameTraits(i1 *v1.Integration, i2 *v1alpha1.KameletBin
 	return Equals(klbOpts, toCompare), nil
 }
 
-// IntegrationAndKitHaveSameTraits return if traits are the same.
-func IntegrationAndKitHaveSameTraits(i1 *v1.Integration, i2 *v1.IntegrationKit) (bool, error) {
-	itOpts, err := NewTraitsOptionsForIntegration(i1)
-	if err != nil {
-		return false, err
-	}
-	ikOpts, err := NewTraitsOptionsForIntegrationKit(i2)
-	if err != nil {
-		return false, err
-	}
-
-	return Equals(ikOpts, itOpts), nil
-}
-
-func NewTraitsOptionsForIntegration(i *v1.Integration) (Options, error) {
-	m1, err := ToTraitMap(i.Spec.Traits)
+// newTraitsOptions will merge the traits annotations with the traits spec using the same format.
+func newTraitsOptions(c client.Client, opts Options, annotations map[string]string) (Options, error) {
+	annotationTraits, err := ExtractAndMaybeDeleteTraits(c, annotations, false)
 	if err != nil {
 		return nil, err
 	}
+	if annotationTraits == nil {
+		return opts, nil
+	}
 
-	m2, err := FromAnnotations(&i.ObjectMeta)
+	m2, err := ToTraitMap(*annotationTraits)
 	if err != nil {
 		return nil, err
 	}
 
 	for k, v := range m2 {
-		m1[k] = v
+		opts[k] = v
 	}
 
-	return m1, nil
+	return opts, nil
 }
 
-func NewTraitsOptionsForIntegrationKit(i *v1.IntegrationKit) (Options, error) {
-	m1, err := ToTraitMap(i.Spec.Traits)
-	if err != nil {
-		return nil, err
-	}
-
-	m2, err := FromAnnotations(&i.ObjectMeta)
-	if err != nil {
-		return nil, err
-	}
-
-	for k, v := range m2 {
-		m1[k] = v
-	}
-
-	return m1, nil
-}
-
-func NewTraitsOptionsForIntegrationPlatform(i *v1.IntegrationPlatform) (Options, error) {
-	m1, err := ToTraitMap(i.Spec.Traits)
-	if err != nil {
-		return nil, err
-	}
-
-	m2, err := FromAnnotations(&i.ObjectMeta)
-	if err != nil {
-		return nil, err
-	}
-
-	for k, v := range m2 {
-		m1[k] = v
-	}
-
-	return m1, nil
-}
-
-func NewTraitsOptionsForKameletBinding(i *v1alpha1.KameletBinding) (Options, error) {
-	if i.Spec.Integration != nil {
-		m1, err := ToTraitMap(i.Spec.Integration.Traits)
-		if err != nil {
-			return nil, err
-		}
-
-		m2, err := FromAnnotations(&i.ObjectMeta)
-		if err != nil {
-			return nil, err
-		}
-
-		for k, v := range m2 {
-			m1[k] = v
-		}
-
-		return m1, nil
-	}
-
-	m1, err := FromAnnotations(&i.ObjectMeta)
-	if err != nil {
-		return nil, err
-	}
-
-	return m1, nil
-}
-
-func FromAnnotations(meta *metav1.ObjectMeta) (Options, error) {
-	options := make(Options)
-
-	for k, v := range meta.Annotations {
+// ExtractAndDeleteTraits will extract the annotation traits into v1.Traits struct, removing from the value from the input map.
+func ExtractAndMaybeDeleteTraits(c client.Client, annotations map[string]string, del bool) (*v1.Traits, error) {
+	// structure that will be marshalled into a v1.Traits as it was a kamel run command
+	catalog := NewCatalog(c)
+	traitsPlainParams := []string{}
+	for k, v := range annotations {
 		if strings.HasPrefix(k, v1.TraitAnnotationPrefix) {
-			configKey := strings.TrimPrefix(k, v1.TraitAnnotationPrefix)
-			if strings.Contains(configKey, ".") {
-				parts := strings.SplitN(configKey, ".", 2)
-				id := parts[0]
-				prop := parts[1]
-				if _, ok := options[id]; !ok {
-					options[id] = make(map[string]interface{})
-				}
+			key := strings.ReplaceAll(k, v1.TraitAnnotationPrefix, "")
+			traitID := strings.Split(key, ".")[0]
+			if err := ValidateTrait(catalog, traitID); err != nil {
+				return nil, err
+			}
+			traitArrayParams := extractAsArray(v)
+			for _, param := range traitArrayParams {
+				traitsPlainParams = append(traitsPlainParams, fmt.Sprintf("%s=%s", key, param))
+			}
+			if del {
+				delete(annotations, k)
+			}
+		}
+	}
+	if len(traitsPlainParams) == 0 {
+		return nil, nil
+	}
+	var traits v1.Traits
+	if err := ConfigureTraits(traitsPlainParams, &traits, catalog); err != nil {
+		return nil, err
+	}
 
-				propParts := util.ConfigTreePropertySplit(prop)
-				var current = options[id]
-				if len(propParts) > 1 {
-					c, err := util.NavigateConfigTree(current, propParts[0:len(propParts)-1])
-					if err != nil {
-						return options, err
-					}
-					if cc, ok := c.(map[string]interface{}); ok {
-						current = cc
-					} else {
-						return options, errors.New(`invalid array specification: to set an array value use the ["v1", "v2"] format`)
-					}
-				}
-				current[prop] = v
+	return &traits, nil
+}
 
-			} else {
-				return options, fmt.Errorf("wrong format for trait annotation %q: missing trait ID", k)
+// extractTraitValue can detect if the value is an array representation as ["prop1=1", "prop2=2"] and
+// return an array with the values or with the single value passed as a parameter.
+func extractAsArray(value string) []string {
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		arrayValue := []string{}
+		data := value[1 : len(value)-1]
+		vals := strings.Split(data, ",")
+		for _, v := range vals {
+			prop := strings.Trim(v, " ")
+			if strings.HasPrefix(prop, `"`) && strings.HasSuffix(prop, `"`) {
+				prop = prop[1 : len(prop)-1]
+			}
+			arrayValue = append(arrayValue, prop)
+		}
+		return arrayValue
+	}
+
+	return []string{value}
+}
+
+func NewSpecTraitsOptionsForIntegrationAndPlatform(c client.Client, i *v1.Integration, pl *v1.IntegrationPlatform) (Options, error) {
+	var options Options
+	var err error
+	if pl != nil {
+		options, err = ToTraitMap(pl.Status.Traits)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		options = Options{}
+	}
+
+	m1, err := ToTraitMap(i.Spec.Traits)
+	if err != nil {
+		return nil, err
+	}
+
+	for k, v := range m1 {
+		options[k] = v
+	}
+
+	// Deprecated: to remove when we remove support for traits annotations.
+	// IMPORTANT: when we remove this we'll need to remove the client.Client from the func,
+	// which will bring to more cascade removal. It had to be introduced to support the deprecated feature
+	// in a properly manner (ie, comparing the spec.traits with annotations in a proper way).
+	return newTraitsOptions(c, options, i.ObjectMeta.Annotations)
+}
+
+func NewSpecTraitsOptionsForIntegration(c client.Client, i *v1.Integration) (Options, error) {
+	m1, err := ToTraitMap(i.Spec.Traits)
+	if err != nil {
+		return nil, err
+	}
+
+	// Deprecated: to remove when we remove support for traits annotations.
+	// IMPORTANT: when we remove this we'll need to remove the client.Client from the func,
+	// which will bring to more cascade removal. It had to be introduced to support the deprecated feature
+	// in a properly manner (ie, comparing the spec.traits with annotations in a proper way).
+	return newTraitsOptions(c, m1, i.ObjectMeta.Annotations)
+}
+
+func newTraitsOptionsForIntegrationKit(c client.Client, i *v1.IntegrationKit, traits v1.IntegrationKitTraits) (Options, error) {
+	m1, err := ToTraitMap(traits)
+	if err != nil {
+		return nil, err
+	}
+
+	// Deprecated: to remove when we remove support for traits annotations.
+	// IMPORTANT: when we remove this we'll need to remove the client.Client from the func,
+	// which will bring to more cascade removal. It had to be introduced to support the deprecated feature
+	// in a properly manner (ie, comparing the spec.traits with annotations in a proper way).
+	return newTraitsOptions(c, m1, i.ObjectMeta.Annotations)
+}
+
+func NewSpecTraitsOptionsForIntegrationKit(c client.Client, i *v1.IntegrationKit) (Options, error) {
+	return newTraitsOptionsForIntegrationKit(c, i, i.Spec.Traits)
+}
+
+func NewTraitsOptionsForPipe(c client.Client, pipe *v1.Pipe) (Options, error) {
+	options := Options{}
+
+	return newTraitsOptions(c, options, pipe.ObjectMeta.Annotations)
+}
+
+// HasMatchingTraits verifies if two traits options match.
+func HasMatchingTraits(traitMap Options, kitTraitMap Options) (bool, error) {
+	catalog := NewCatalog(nil)
+
+	for _, t := range catalog.AllTraits() {
+		if t == nil || !t.InfluencesKit() {
+			// We don't store the trait configuration if the trait cannot influence the kit behavior
+			continue
+		}
+		id := string(t.ID())
+		it, _ := traitMap.Get(id)
+		kt, _ := kitTraitMap.Get(id)
+		if ct, ok := t.(ComparableTrait); ok {
+			// if it's match trait use its matches method to determine the match
+			if match, err := matchesComparableTrait(ct, it, kt); !match || err != nil {
+				return false, err
+			}
+		} else {
+			if !matchesTrait(it, kt) {
+				return false, nil
 			}
 		}
 	}
 
-	return options, nil
+	return true, nil
+}
+
+func matchesComparableTrait(ct ComparableTrait, it map[string]interface{}, kt map[string]interface{}) (bool, error) {
+	t1 := reflect.New(reflect.TypeOf(ct).Elem()).Interface()
+	if err := ToTrait(it, &t1); err != nil {
+		return false, err
+	}
+	t2 := reflect.New(reflect.TypeOf(ct).Elem()).Interface()
+	if err := ToTrait(kt, &t2); err != nil {
+		return false, err
+	}
+	ct2, ok := t2.(ComparableTrait)
+	if !ok {
+		return false, fmt.Errorf("type assertion failed: %v", t2)
+	}
+	tt1, ok := t1.(Trait)
+	if !ok {
+		return false, fmt.Errorf("type assertion failed: %v", t1)
+	}
+
+	return ct2.Matches(tt1), nil
+}
+
+func matchesTrait(it map[string]interface{}, kt map[string]interface{}) bool {
+	// perform exact match on the two trait maps
+	return reflect.DeepEqual(it, kt)
 }

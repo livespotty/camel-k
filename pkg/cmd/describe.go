@@ -21,12 +21,15 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
 	"github.com/spf13/cobra"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/apache/camel-k/pkg/trait"
-	"github.com/apache/camel-k/pkg/util/indentedwriter"
+	"github.com/apache/camel-k/v2/pkg/trait"
+	"github.com/apache/camel-k/v2/pkg/util/indentedwriter"
 )
 
 func describeObjectMeta(w *indentedwriter.Writer, om metav1.ObjectMeta) {
@@ -60,10 +63,10 @@ func describeTraits(w *indentedwriter.Writer, traits interface{}) error {
 		w.Writef(0, "Traits:\n")
 
 		for id, trait := range traitMap {
-			w.Writef(1, "%s:\n", strings.Title(id))
+			w.Writef(1, "%s:\n", cases.Title(language.English).String(id))
 			// TODO: print the whole TraitSpec as Yaml
 			for k, v := range trait {
-				w.Writef(2, "%s:\t%v\n", strings.Title(k), v)
+				w.Writef(2, "%s:\t%v\n", cases.Title(language.English).String(k), v)
 			}
 		}
 	}
@@ -72,9 +75,10 @@ func describeTraits(w *indentedwriter.Writer, traits interface{}) error {
 
 func newCmdDescribe(rootCmdOptions *RootCmdOptions) *cobra.Command {
 	cmd := cobra.Command{
-		Use:   "describe",
-		Short: "Describe a resource",
-		Long:  `Describe a Camel K resource.`,
+		Use:        "describe",
+		Deprecated: "consider using kubectl (or oc) custom resource describe command instead.",
+		Short:      "Describe a resource",
+		Long:       `Describe a Camel K resource.`,
 	}
 
 	cmd.AddCommand(cmdOnly(newDescribeKitCmd(rootCmdOptions)))

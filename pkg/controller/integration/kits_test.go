@@ -22,20 +22,30 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/client"
 
-	"github.com/apache/camel-k/pkg/trait"
-	"github.com/apache/camel-k/pkg/util/log"
-	"github.com/apache/camel-k/pkg/util/test"
+	"github.com/apache/camel-k/v2/pkg/trait"
 
+	"github.com/apache/camel-k/v2/pkg/internal"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLookupKitForIntegration_DiscardKitsInError(t *testing.T) {
-	c, err := test.NewFakeClient(
+	c, err := internal.NewFakeClient(
+		&v1.IntegrationPlatform{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: v1.SchemeGroupVersion.String(),
+				Kind:       v1.IntegrationPlatformKind,
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "ns",
+				Name:      "camel-k",
+			},
+		},
 		&v1.IntegrationKit{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: v1.SchemeGroupVersion.String(),
@@ -82,11 +92,7 @@ func TestLookupKitForIntegration_DiscardKitsInError(t *testing.T) {
 		},
 	)
 
-	assert.Nil(t, err)
-
-	a := buildKitAction{}
-	a.InjectLogger(log.Log)
-	a.InjectClient(c)
+	require.NoError(t, err)
 
 	kits, err := lookupKitsForIntegration(context.TODO(), c, &v1.Integration{
 		TypeMeta: metav1.TypeMeta{
@@ -105,14 +111,24 @@ func TestLookupKitForIntegration_DiscardKitsInError(t *testing.T) {
 		},
 	})
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, kits)
 	assert.Len(t, kits, 1)
 	assert.Equal(t, "my-kit-2", kits[0].Name)
 }
 
 func TestLookupKitForIntegration_DiscardKitsWithIncompatibleTraits(t *testing.T) {
-	c, err := test.NewFakeClient(
+	c, err := internal.NewFakeClient(
+		&v1.IntegrationPlatform{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: v1.SchemeGroupVersion.String(),
+				Kind:       v1.IntegrationPlatformKind,
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "ns",
+				Name:      "camel-k",
+			},
+		},
 		// Should be discarded because it does not contain the required traits
 		&v1.IntegrationKit{
 			TypeMeta: metav1.TypeMeta{
@@ -157,9 +173,7 @@ func TestLookupKitForIntegration_DiscardKitsWithIncompatibleTraits(t *testing.T)
 				},
 				Traits: v1.IntegrationKitTraits{
 					Builder: &traitv1.BuilderTrait{
-						Trait: traitv1.Trait{
-							Enabled: pointer.Bool(false),
-						},
+						PlatformBaseTrait: traitv1.PlatformBaseTrait{},
 					},
 				},
 			},
@@ -188,9 +202,7 @@ func TestLookupKitForIntegration_DiscardKitsWithIncompatibleTraits(t *testing.T)
 				},
 				Traits: v1.IntegrationKitTraits{
 					Builder: &traitv1.BuilderTrait{
-						Trait: traitv1.Trait{
-							Enabled: pointer.Bool(true),
-						},
+						PlatformBaseTrait: traitv1.PlatformBaseTrait{},
 						Properties: []string{
 							"build-key1=build-value1",
 						},
@@ -203,11 +215,7 @@ func TestLookupKitForIntegration_DiscardKitsWithIncompatibleTraits(t *testing.T)
 		},
 	)
 
-	assert.Nil(t, err)
-
-	a := buildKitAction{}
-	a.InjectLogger(log.Log)
-	a.InjectClient(c)
+	require.NoError(t, err)
 
 	kits, err := lookupKitsForIntegration(context.TODO(), c, &v1.Integration{
 		TypeMeta: metav1.TypeMeta{
@@ -221,9 +229,7 @@ func TestLookupKitForIntegration_DiscardKitsWithIncompatibleTraits(t *testing.T)
 		Spec: v1.IntegrationSpec{
 			Traits: v1.Traits{
 				Builder: &traitv1.BuilderTrait{
-					Trait: traitv1.Trait{
-						Enabled: pointer.Bool(true),
-					},
+					PlatformBaseTrait: traitv1.PlatformBaseTrait{},
 					Properties: []string{
 						"build-key1=build-value1",
 					},
@@ -238,7 +244,7 @@ func TestLookupKitForIntegration_DiscardKitsWithIncompatibleTraits(t *testing.T)
 		},
 	})
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, kits)
 	assert.Len(t, kits, 1)
 	assert.Equal(t, "my-kit-3", kits[0].Name)
@@ -257,9 +263,7 @@ func TestHasMatchingTraits_KitNoTraitShouldNotBePicked(t *testing.T) {
 		Spec: v1.IntegrationSpec{
 			Traits: v1.Traits{
 				Builder: &traitv1.BuilderTrait{
-					Trait: traitv1.Trait{
-						Enabled: pointer.Bool(true),
-					},
+					PlatformBaseTrait: traitv1.PlatformBaseTrait{},
 				},
 			},
 		},
@@ -276,11 +280,11 @@ func TestHasMatchingTraits_KitNoTraitShouldNotBePicked(t *testing.T) {
 		},
 	}
 
-	a := buildKitAction{}
-	a.InjectLogger(log.Log)
+	c, err := internal.NewFakeClient(integration, kit)
+	require.NoError(t, err)
 
-	ok, err := trait.IntegrationAndKitHaveSameTraits(integration, kit)
-	assert.Nil(t, err)
+	ok, err := integrationAndKitHaveSameTraits(c, integration, kit)
+	require.NoError(t, err)
 	assert.False(t, ok)
 }
 
@@ -297,9 +301,7 @@ func TestHasMatchingTraits_KitSameTraitShouldBePicked(t *testing.T) {
 		Spec: v1.IntegrationSpec{
 			Traits: v1.Traits{
 				Builder: &traitv1.BuilderTrait{
-					Trait: traitv1.Trait{
-						Enabled: pointer.Bool(true),
-					},
+					PlatformBaseTrait: traitv1.PlatformBaseTrait{},
 					Properties: []string{
 						"build-key1=build-value1",
 					},
@@ -320,9 +322,7 @@ func TestHasMatchingTraits_KitSameTraitShouldBePicked(t *testing.T) {
 		Spec: v1.IntegrationKitSpec{
 			Traits: v1.IntegrationKitTraits{
 				Builder: &traitv1.BuilderTrait{
-					Trait: traitv1.Trait{
-						Enabled: pointer.Bool(true),
-					},
+					PlatformBaseTrait: traitv1.PlatformBaseTrait{},
 					Properties: []string{
 						"build-key1=build-value1",
 					},
@@ -330,11 +330,119 @@ func TestHasMatchingTraits_KitSameTraitShouldBePicked(t *testing.T) {
 			},
 		},
 	}
-
-	a := buildKitAction{}
-	a.InjectLogger(log.Log)
-
-	ok, err := trait.IntegrationAndKitHaveSameTraits(integration, kit)
-	assert.Nil(t, err)
+	c, err := internal.NewFakeClient(integration, kit)
+	require.NoError(t, err)
+	ok, err := integrationAndKitHaveSameTraits(c, integration, kit)
+	require.NoError(t, err)
 	assert.True(t, ok)
+}
+
+func TestHasMatchingSources(t *testing.T) {
+	integration := &v1.Integration{
+		Spec: v1.IntegrationSpec{
+			Sources: []v1.SourceSpec{
+				v1.NewSourceSpec("test", "some content", v1.LanguageJavaShell),
+			},
+		},
+	}
+
+	kit := &v1.IntegrationKit{
+		Spec: v1.IntegrationKitSpec{
+			Sources: []v1.SourceSpec{
+				v1.NewSourceSpec("test", "some content", v1.LanguageJavaShell),
+			},
+		},
+	}
+
+	hms := hasMatchingSourcesForNative(integration, kit)
+	assert.True(t, hms)
+
+	kit2 := &v1.IntegrationKit{
+		Spec: v1.IntegrationKitSpec{
+			Sources: []v1.SourceSpec{
+				v1.NewSourceSpec("test", "some content 2", v1.LanguageJavaShell),
+				v1.NewSourceSpec("test", "some content", v1.LanguageJavaShell),
+			},
+		},
+	}
+
+	hms2 := hasMatchingSourcesForNative(integration, kit2)
+	assert.False(t, hms2)
+}
+
+func TestHasMatchingMultipleSources(t *testing.T) {
+	integration := &v1.Integration{
+		Spec: v1.IntegrationSpec{
+			Sources: []v1.SourceSpec{
+				v1.NewSourceSpec("test", "some content", v1.LanguageJavaShell),
+				v1.NewSourceSpec("test", "some content 2", v1.LanguageJavaShell),
+			},
+		},
+	}
+
+	kit := &v1.IntegrationKit{
+		Spec: v1.IntegrationKitSpec{
+			Sources: []v1.SourceSpec{
+				v1.NewSourceSpec("test", "some content 2", v1.LanguageJavaShell),
+				v1.NewSourceSpec("test", "some content", v1.LanguageJavaShell),
+			},
+		},
+	}
+
+	hms := hasMatchingSourcesForNative(integration, kit)
+	assert.True(t, hms)
+
+	integration2 := &v1.Integration{
+		Spec: v1.IntegrationSpec{
+			Sources: []v1.SourceSpec{
+				v1.NewSourceSpec("test", "some content", v1.LanguageJavaShell),
+			},
+		},
+	}
+
+	hms2 := hasMatchingSourcesForNative(integration2, kit)
+	assert.False(t, hms2)
+}
+
+func TestHasNotMatchingSources(t *testing.T) {
+	integration := &v1.Integration{
+		Spec: v1.IntegrationSpec{
+			Sources: []v1.SourceSpec{
+				v1.NewSourceSpec("test", "some content", v1.LanguageJavaShell),
+			},
+		},
+	}
+
+	kit := &v1.IntegrationKit{
+		Spec: v1.IntegrationKitSpec{
+			Sources: []v1.SourceSpec{
+				v1.NewSourceSpec("test", "some content 2", v1.LanguageJavaShell),
+			},
+		},
+	}
+
+	hsm := hasMatchingSourcesForNative(integration, kit)
+	assert.False(t, hsm)
+
+	kit2 := &v1.IntegrationKit{
+		Spec: v1.IntegrationKitSpec{
+			Sources: []v1.SourceSpec{},
+		},
+	}
+
+	hsm2 := hasMatchingSourcesForNative(integration, kit2)
+	assert.False(t, hsm2)
+}
+
+func integrationAndKitHaveSameTraits(c client.Client, i1 *v1.Integration, i2 *v1.IntegrationKit) (bool, error) {
+	itOpts, err := trait.NewSpecTraitsOptionsForIntegration(c, i1)
+	if err != nil {
+		return false, err
+	}
+	ikOpts, err := trait.NewSpecTraitsOptionsForIntegrationKit(c, i2)
+	if err != nil {
+		return false, err
+	}
+
+	return trait.Equals(ikOpts, itOpts), nil
 }

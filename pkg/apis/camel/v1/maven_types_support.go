@@ -17,26 +17,44 @@ limitations under the License.
 
 package v1
 
-import "encoding/xml"
+import (
+	"encoding/xml"
+)
 
+//nolint:nestif
 func (in *MavenArtifact) GetDependencyID() string {
-	switch {
-	case in.Version == "":
-		return "mvn:" + in.GroupID + ":" + in.ArtifactID
-	default:
-		return "mvn:" + in.GroupID + ":" + in.ArtifactID + ":" + in.Version
+	mvn := "mvn:" + in.GroupID + ":" + in.ArtifactID
+	if in.Classifier != "" {
+		if in.Version != "" {
+			mvn = mvn + ":" + in.Type + ":" + in.Version + ":" + in.Classifier
+		} else {
+			mvn = mvn + ":" + in.Type + "::" + in.Classifier
+		}
+	} else {
+		if in.Type != "" {
+			mvn = mvn + ":" + in.Type
+		}
+		if in.Version != "" {
+			mvn = mvn + ":" + in.Version
+		}
 	}
+	return mvn
 }
 
 type propertiesEntry struct {
+	// the name of the xml is dynamic, hence no tags are configured for the field
 	XMLName xml.Name
 	Value   string `xml:",chardata"`
 }
 
 func (m Properties) AddAll(properties map[string]string) {
 	for k, v := range properties {
-		m[k] = v
+		m.Add(k, v)
 	}
+}
+
+func (m Properties) Add(key string, value string) {
+	m[key] = value
 }
 
 func (m Properties) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
@@ -50,8 +68,63 @@ func (m Properties) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 	}
 
 	for k, v := range m {
+		//nolint:musttag
 		if err := e.Encode(propertiesEntry{XMLName: xml.Name{Local: k}, Value: v}); err != nil {
 			return err
+		}
+	}
+
+	return e.EncodeToken(start.End())
+}
+
+func (m PluginProperties) AddAll(properties map[string]string) {
+	for k, v := range properties {
+		m.Add(k, v)
+	}
+}
+
+func (m PluginProperties) Add(key string, value string) {
+	m[key] = StringOrProperties{Value: value}
+}
+
+func (m PluginProperties) AddProperties(key string, properties map[string]string) {
+	m[key] = StringOrProperties{Properties: properties}
+}
+
+func (m PluginProperties) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	if len(m) == 0 {
+		return nil
+	}
+
+	if err := e.EncodeToken(start); err != nil {
+		return err
+	}
+
+	for k, v := range m {
+		if v.Value != "" {
+			//nolint:musttag
+			if err := e.Encode(propertiesEntry{XMLName: xml.Name{Local: k}, Value: v.Value}); err != nil {
+				return err
+			}
+		}
+
+		if len(v.Properties) > 0 {
+			nestedPropertyStart := xml.StartElement{Name: xml.Name{Local: k}}
+			if err := e.EncodeToken(nestedPropertyStart); err != nil {
+				return err
+			}
+
+			for key, value := range v.Properties {
+				//nolint:musttag
+				if err := e.Encode(propertiesEntry{XMLName: xml.Name{Local: key}, Value: value}); err != nil {
+					return err
+				}
+			}
+
+			if err := e.EncodeToken(nestedPropertyStart.End()); err != nil {
+				return err
+			}
+
 		}
 	}
 

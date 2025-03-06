@@ -19,20 +19,19 @@ package camel
 
 import (
 	"context"
-	"path"
+	"path/filepath"
 
 	yaml2 "gopkg.in/yaml.v2"
 
-	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/resources"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/defaults"
-	"github.com/apache/camel-k/pkg/util/jvm"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/maven"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/resources"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
+	"github.com/apache/camel-k/v2/pkg/util/jvm"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/maven"
 )
 
 func DefaultCatalog() (*RuntimeCatalog, error) {
@@ -46,7 +45,7 @@ func QuarkusCatalog() (*RuntimeCatalog, error) {
 func catalogForRuntimeProvider(provider v1.RuntimeProvider) (*RuntimeCatalog, error) {
 	catalogs := make([]v1.CamelCatalog, 0)
 
-	names, err := resources.WithPrefix("/camel-catalog-")
+	names, err := resources.WithPrefix("resources/camel-catalog-")
 	if err != nil {
 		return nil, err
 	}
@@ -95,26 +94,14 @@ func GenerateCatalog(
 	}
 
 	var caCerts [][]byte
-	// nolint: staticcheck
-	secrets := mergeSecrets(mvn.CASecrets, mvn.CASecret)
-	if secrets != nil {
-		caCerts, err = kubernetes.GetSecretsRefData(ctx, client, namespace, secrets)
+	if mvn.CASecrets != nil {
+		caCerts, err = kubernetes.GetSecretsRefData(ctx, client, namespace, mvn.CASecrets)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	return GenerateCatalogCommon(ctx, globalSettings, []byte(userSettings), caCerts, mvn, runtime, providerDependencies)
-}
-
-func mergeSecrets(secrets []corev1.SecretKeySelector, secret *corev1.SecretKeySelector) []corev1.SecretKeySelector {
-	if secrets == nil && secret == nil {
-		return nil
-	}
-	if secret == nil {
-		return secrets
-	}
-	return append(secrets, *secret)
 }
 
 func GenerateCatalogCommon(
@@ -161,7 +148,7 @@ func GenerateCatalogCommon(
 			return err
 		}
 
-		content, err := util.ReadFile(path.Join(tmpDir, "catalog.yaml"))
+		content, err := util.ReadFile(filepath.Join(tmpDir, "catalog.yaml"))
 		if err != nil {
 			return err
 		}
@@ -169,7 +156,7 @@ func GenerateCatalogCommon(
 		return yaml2.Unmarshal(content, &catalog)
 	})
 
-	return NewRuntimeCatalog(catalog.Spec), err
+	return NewRuntimeCatalog(catalog), err
 }
 
 func generateMavenProject(runtimeVersion string, providerDependencies []maven.Dependency) maven.Project {

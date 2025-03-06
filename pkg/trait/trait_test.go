@@ -18,22 +18,28 @@ limitations under the License.
 package trait
 
 import (
-	"path"
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v2"
 
 	routev1 "github.com/openshift/api/route/v1"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util/camel"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/internal"
+	"github.com/apache/camel-k/v2/pkg/resources"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
+	"github.com/apache/camel-k/v2/pkg/util/defaults"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 const (
@@ -41,7 +47,7 @@ const (
 )
 
 func TestOpenShiftTraits(t *testing.T) {
-	env := createTestEnv(t, v1.IntegrationPlatformClusterOpenShift, "camel:core")
+	env := createTestEnv(t, v1.IntegrationPlatformClusterOpenShift, "from('timer:my-timer').to('log:info')")
 	res := processTestEnv(t, env)
 
 	assert.NotEmpty(t, env.ExecutedTraits)
@@ -49,9 +55,6 @@ func TestOpenShiftTraits(t *testing.T) {
 	assert.Nil(t, env.GetTrait("service"))
 	assert.Nil(t, env.GetTrait("route"))
 	assert.NotNil(t, env.GetTrait("owner"))
-	assert.NotNil(t, res.GetConfigMap(func(cm *corev1.ConfigMap) bool {
-		return cm.Labels["camel.apache.org/properties.type"] != ""
-	}))
 	assert.NotNil(t, res.GetDeployment(func(deployment *appsv1.Deployment) bool {
 		return deployment.Name == TestDeploymentName
 	}))
@@ -64,9 +67,6 @@ func TestOpenShiftTraitsWithWeb(t *testing.T) {
 	assert.NotNil(t, env.GetTrait("service"))
 	assert.NotNil(t, env.GetTrait("route"))
 	assert.NotNil(t, env.GetTrait("owner"))
-	assert.NotNil(t, res.GetConfigMap(func(cm *corev1.ConfigMap) bool {
-		return cm.Labels["camel.apache.org/properties.type"] != ""
-	}))
 	assert.NotNil(t, res.GetDeployment(func(deployment *appsv1.Deployment) bool {
 		return deployment.Name == TestDeploymentName
 	}))
@@ -92,7 +92,7 @@ func TestOpenShiftTraitsWithWebAndDisabledTrait(t *testing.T) {
 	env := createTestEnv(t, v1.IntegrationPlatformClusterOpenShift, "from('netty-http:http').to('log:info')")
 	env.Integration.Spec.Traits.Service = &traitv1.ServiceTrait{
 		Trait: traitv1.Trait{
-			Enabled: pointer.Bool(false),
+			Enabled: ptr.To(false),
 		},
 	}
 	res := processTestEnv(t, env)
@@ -110,9 +110,6 @@ func TestKubernetesTraits(t *testing.T) {
 	assert.Nil(t, env.GetTrait("service"))
 	assert.Nil(t, env.GetTrait("route"))
 	assert.NotNil(t, env.GetTrait("owner"))
-	assert.NotNil(t, res.GetConfigMap(func(cm *corev1.ConfigMap) bool {
-		return cm.Labels["camel.apache.org/properties.type"] != ""
-	}))
 	assert.NotNil(t, res.GetDeployment(func(deployment *appsv1.Deployment) bool {
 		return deployment.Name == TestDeploymentName
 	}))
@@ -125,9 +122,6 @@ func TestKubernetesTraitsWithWeb(t *testing.T) {
 	assert.NotNil(t, env.GetTrait("service"))
 	assert.Nil(t, env.GetTrait("route"))
 	assert.NotNil(t, env.GetTrait("owner"))
-	assert.NotNil(t, res.GetConfigMap(func(cm *corev1.ConfigMap) bool {
-		return cm.Labels["camel.apache.org/properties.type"] != ""
-	}))
 	assert.NotNil(t, res.GetDeployment(func(deployment *appsv1.Deployment) bool {
 		return deployment.Name == TestDeploymentName
 	}))
@@ -141,26 +135,26 @@ func TestTraitHierarchyDecode(t *testing.T) {
 
 	env.Platform.Spec.Traits.KnativeService = &traitv1.KnativeServiceTrait{
 		Trait: traitv1.Trait{
-			Enabled: pointer.Bool(false),
+			Enabled: ptr.To(false),
 		},
-		MinScale: pointer.Int(1),
-		MaxScale: pointer.Int(10),
-		Target:   pointer.Int(15),
+		MinScale: ptr.To(1),
+		MaxScale: ptr.To(10),
+		Target:   ptr.To(15),
 	}
 	env.Platform.ResyncStatusFullConfig()
 
 	env.Integration.Spec.Traits.KnativeService = &traitv1.KnativeServiceTrait{
 		Trait: traitv1.Trait{
-			Enabled: pointer.Bool(true),
+			Enabled: ptr.To(true),
 		},
-		MinScale: pointer.Int(5),
-		MaxScale: pointer.Int(20),
+		MinScale: ptr.To(5),
+		MaxScale: ptr.To(20),
 	}
 
 	c := NewTraitTestCatalog()
 	err := c.Configure(env)
 
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	knt := c.GetTrait("knative-service")
 	assert.NotNil(t, knt)
@@ -182,282 +176,9 @@ func TestTraitHierarchyDecode(t *testing.T) {
 	assert.Equal(t, 15, *kns.Target)
 }
 
-func TestConfigureVolumesAndMountsTextResourcesAndProperties(t *testing.T) {
-	env := Environment{
-		Resources: kubernetes.NewCollection(),
-		Integration: &v1.Integration{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      TestDeploymentName,
-				Namespace: "ns",
-			},
-			Spec: v1.IntegrationSpec{
-				Resources: []v1.ResourceSpec{
-					{
-						DataSpec: v1.DataSpec{
-							Name:       "res1.txt",
-							ContentRef: "my-cm1",
-							ContentKey: "my-key1",
-						},
-						Type:      "data",
-						MountPath: "/etc/m1",
-					},
-					{
-						DataSpec: v1.DataSpec{
-							Name:       "res2.txt",
-							ContentRef: "my-cm2",
-						},
-						Type: "data",
-					},
-					{
-						DataSpec: v1.DataSpec{
-							Name:       "res3.txt",
-							ContentKey: "my-key3",
-						},
-						Type: "data",
-					},
-					{
-						DataSpec: v1.DataSpec{
-							Name: "res4.txt",
-						},
-						Type: "data",
-					},
-				},
-				Configuration: []v1.ConfigurationSpec{
-					{
-						Type:  "property",
-						Value: "a=b",
-					},
-					{
-						Type:         "configmap",
-						Value:        "test-configmap",
-						ResourceType: "config",
-					},
-					{
-						Type:         "secret",
-						Value:        "test-secret",
-						ResourceType: "config",
-					},
-					{
-						Type:  "volume",
-						Value: "testvolume:/foo/bar",
-					},
-					{
-						Type:  "volume",
-						Value: "an-invalid-volume-spec",
-					},
-				},
-			},
-		},
-	}
-
-	vols := make([]corev1.Volume, 0)
-	mnts := make([]corev1.VolumeMount, 0)
-
-	env.configureVolumesAndMounts(&vols, &mnts)
-
-	assert.Len(t, vols, 7)
-	assert.Len(t, mnts, 7)
-
-	v := findVolume(vols, func(v corev1.Volume) bool { return v.ConfigMap.Name == "my-cm1" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource.ConfigMap)
-	assert.Len(t, v.VolumeSource.ConfigMap.Items, 1)
-	assert.Equal(t, "my-key1", v.VolumeSource.ConfigMap.Items[0].Key)
-	assert.Equal(t, "res1.txt", v.VolumeSource.ConfigMap.Items[0].Path)
-
-	m := findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == "i-resource-000" })
-	assert.NotNil(t, m)
-	assert.Equal(t, "/etc/m1", m.MountPath)
-
-	v = findVolume(vols, func(v corev1.Volume) bool { return v.ConfigMap.Name == "my-cm2" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource.ConfigMap)
-	assert.Len(t, v.VolumeSource.ConfigMap.Items, 1)
-	assert.Equal(t, "content", v.VolumeSource.ConfigMap.Items[0].Key)
-	assert.Equal(t, "res2.txt", v.VolumeSource.ConfigMap.Items[0].Path)
-
-	m = findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == "i-resource-001" })
-	assert.NotNil(t, m)
-	assert.Equal(t, "/etc/camel/resources/res2.txt", m.MountPath)
-
-	v = findVolume(vols, func(v corev1.Volume) bool { return v.ConfigMap.Name == TestDeploymentName+"-resource-002" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource.ConfigMap)
-	assert.Len(t, v.VolumeSource.ConfigMap.Items, 1)
-	assert.Equal(t, "my-key3", v.VolumeSource.ConfigMap.Items[0].Key)
-	assert.Equal(t, "res3.txt", v.VolumeSource.ConfigMap.Items[0].Path)
-
-	m = findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == "i-resource-002" })
-	assert.NotNil(t, m)
-	assert.Equal(t, "/etc/camel/resources/res3.txt", m.MountPath)
-
-	v = findVolume(vols, func(v corev1.Volume) bool { return v.ConfigMap.Name == TestDeploymentName+"-resource-003" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource.ConfigMap)
-	assert.Len(t, v.VolumeSource.ConfigMap.Items, 1)
-	assert.Equal(t, "content", v.VolumeSource.ConfigMap.Items[0].Key)
-	assert.Equal(t, "res4.txt", v.VolumeSource.ConfigMap.Items[0].Path)
-
-	m = findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == "i-resource-003" })
-	assert.NotNil(t, m)
-	assert.Equal(t, "/etc/camel/resources/res4.txt", m.MountPath)
-
-	v = findVolume(vols, func(v corev1.Volume) bool { return v.ConfigMap.Name == "test-configmap" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource.ConfigMap)
-	assert.NotNil(t, v.VolumeSource.ConfigMap.LocalObjectReference)
-	assert.Equal(t, "test-configmap", v.VolumeSource.ConfigMap.LocalObjectReference.Name)
-
-	m = findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == "test-configmap" })
-	assert.NotNil(t, m)
-	assert.Equal(t, path.Join(camel.ConfigConfigmapsMountPath, "test-configmap"), m.MountPath)
-
-	v = findVolume(vols, func(v corev1.Volume) bool { return v.Name == "test-secret" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.Secret)
-	assert.Equal(t, "test-secret", v.Secret.SecretName)
-
-	m = findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == "test-secret" })
-	assert.NotNil(t, m)
-	assert.Equal(t, path.Join(camel.ConfigSecretsMountPath, "test-secret"), m.MountPath)
-
-	v = findVolume(vols, func(v corev1.Volume) bool { return v.Name == "testvolume-data" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource)
-	assert.NotNil(t, v.VolumeSource.PersistentVolumeClaim)
-	assert.Equal(t, "testvolume", v.VolumeSource.PersistentVolumeClaim.ClaimName)
-
-	m = findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == "testvolume-data" })
-	assert.NotNil(t, m)
-	assert.Equal(t, "/foo/bar", m.MountPath)
-}
-
-func TestConfigureVolumesAndMountsSources(t *testing.T) {
-	env := Environment{
-		Resources: kubernetes.NewCollection(),
-		Integration: &v1.Integration{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      TestDeploymentName,
-				Namespace: "ns",
-			},
-			Spec: v1.IntegrationSpec{
-				Sources: []v1.SourceSpec{
-					{
-						DataSpec: v1.DataSpec{
-							Name:       "source1.java",
-							ContentRef: "my-cm1",
-							ContentKey: "source1.java",
-						},
-						Type: "data",
-					},
-					{
-						DataSpec: v1.DataSpec{
-							Name:       "source2.java",
-							ContentRef: "my-cm2",
-						},
-						Type: "data",
-					},
-				},
-			},
-		},
-	}
-
-	vols := make([]corev1.Volume, 0)
-	mnts := make([]corev1.VolumeMount, 0)
-
-	env.configureVolumesAndMounts(&vols, &mnts)
-
-	assert.Len(t, vols, 2)
-	assert.Len(t, mnts, 2)
-
-	v := findVolume(vols, func(v corev1.Volume) bool { return v.ConfigMap.Name == "my-cm1" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource.ConfigMap)
-	assert.Len(t, v.VolumeSource.ConfigMap.Items, 1)
-	assert.Equal(t, "source1.java", v.VolumeSource.ConfigMap.Items[0].Key)
-
-	m := findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == v.Name })
-	assert.NotNil(t, m)
-
-	v = findVolume(vols, func(v corev1.Volume) bool { return v.ConfigMap.Name == "my-cm2" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource.ConfigMap)
-	assert.Len(t, v.VolumeSource.ConfigMap.Items, 1)
-	assert.Equal(t, "content", v.VolumeSource.ConfigMap.Items[0].Key)
-
-	m = findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == v.Name })
-	assert.NotNil(t, m)
-}
-
-func TestConfigureVolumesAndMountsBinaryAndTextResources(t *testing.T) {
-	env := Environment{
-		Resources: kubernetes.NewCollection(),
-		Integration: &v1.Integration{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      TestDeploymentName,
-				Namespace: "ns",
-			},
-			Spec: v1.IntegrationSpec{
-				Resources: []v1.ResourceSpec{
-					{
-						DataSpec: v1.DataSpec{
-							Name:        "res1.bin",
-							RawContent:  []byte{1, 2, 3, 4},
-							ContentRef:  "my-cm1",
-							ContentKey:  "my-binary",
-							ContentType: "application/octet-stream",
-						},
-						Type: "data",
-					},
-					{
-						DataSpec: v1.DataSpec{
-							Name:        "res2.txt",
-							ContentRef:  "my-cm2",
-							Content:     "hello",
-							ContentKey:  "my-text",
-							ContentType: "text/plain",
-						},
-						Type: "data",
-					},
-				},
-			},
-		},
-	}
-
-	vols := make([]corev1.Volume, 0)
-	mnts := make([]corev1.VolumeMount, 0)
-
-	env.configureVolumesAndMounts(&vols, &mnts)
-
-	assert.Len(t, vols, 2)
-	assert.Len(t, mnts, 2)
-
-	v := findVolume(vols, func(v corev1.Volume) bool { return v.ConfigMap.Name == "my-cm1" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource.ConfigMap)
-	assert.Len(t, v.VolumeSource.ConfigMap.Items, 1)
-	assert.Equal(t, "my-binary", v.VolumeSource.ConfigMap.Items[0].Key)
-	assert.Equal(t, "res1.bin", v.VolumeSource.ConfigMap.Items[0].Path)
-
-	m := findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == v.Name })
-	assert.NotNil(t, m)
-	assert.Equal(t, "/etc/camel/resources/res1.bin", m.MountPath)
-
-	v = findVolume(vols, func(v corev1.Volume) bool { return v.ConfigMap.Name == "my-cm2" })
-	assert.NotNil(t, v)
-	assert.NotNil(t, v.VolumeSource.ConfigMap)
-	assert.Len(t, v.VolumeSource.ConfigMap.Items, 1)
-	assert.Equal(t, "my-text", v.VolumeSource.ConfigMap.Items[0].Key)
-	assert.Equal(t, "res2.txt", v.VolumeSource.ConfigMap.Items[0].Path)
-
-	m = findVVolumeMount(mnts, func(m corev1.VolumeMount) bool { return m.Name == v.Name })
-	assert.NotNil(t, m)
-	assert.Equal(t, "/etc/camel/resources/res2.txt", m.MountPath)
-}
-
 func TestOnlySomeTraitsInfluenceBuild(t *testing.T) {
 	c := NewTraitTestCatalog()
-	buildTraits := []string{"builder", "quarkus", "registry"}
+	buildTraits := []string{"builder", "camel", "quarkus", "registry"}
 
 	for _, trait := range c.AllTraits() {
 		if trait.InfluencesKit() {
@@ -471,7 +192,7 @@ func TestOnlySomeTraitsInfluenceBuild(t *testing.T) {
 func TestOnlySomeTraitsArePlatform(t *testing.T) {
 	c := NewTraitTestCatalog()
 	platformTraits := []string{
-		"builder", "camel", "jvm", "runtime", "container", "mount", "dependencies", "deployer",
+		"builder", "camel", "jvm", "runtime", "container", "security-context", "mount", "dependencies", "deployer",
 		"deployment", "environment", "error-handler", "kamelets", "openapi", "owner", "platform", "quarkus",
 	}
 
@@ -523,20 +244,22 @@ func processTestEnv(t *testing.T, env *Environment) *kubernetes.Collection {
 	t.Helper()
 
 	catalog := NewTraitTestCatalog()
-	err := catalog.apply(env)
-	assert.Nil(t, err)
+	_, _, err := catalog.apply(env)
+	require.NoError(t, err)
 	return env.Resources
 }
 
 func createTestEnv(t *testing.T, cluster v1.IntegrationPlatformCluster, script string) *Environment {
 	t.Helper()
 
+	client, _ := internal.NewFakeClient()
 	catalog, err := camel.DefaultCatalog()
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	res := &Environment{
 		CamelCatalog: catalog,
 		Catalog:      NewCatalog(nil),
+		Client:       client,
 		Integration: &v1.Integration{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      TestDeploymentName,
@@ -583,4 +306,209 @@ func createTestEnv(t *testing.T, cluster v1.IntegrationPlatformCluster, script s
 
 func NewTraitTestCatalog() *Catalog {
 	return NewCatalog(nil)
+}
+
+func TestExecutedTraitsCondition(t *testing.T) {
+	env := createTestEnv(t, v1.IntegrationPlatformClusterOpenShift, "from('timer:test').to('log:info')")
+	catalog := NewTraitTestCatalog()
+	conditions, traits, err := catalog.apply(env)
+	require.NoError(t, err)
+	assert.Empty(t, traits)
+	expectedCondition := NewIntegrationCondition(
+		"",
+		v1.IntegrationConditionTraitInfo,
+		corev1.ConditionTrue,
+		"TraitConfiguration",
+		"Applied traits: camel,environment,logging,deployer,deployment,gc,container,security-context,mount,quarkus,jvm,owner",
+	)
+	assert.Contains(t, conditions, expectedCondition)
+}
+
+func testDefaultIntegrationPhaseTraitsSetting(t *testing.T, phase v1.IntegrationPhase) {
+	it := &v1.Integration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-it",
+			Namespace: "ns",
+		},
+		Spec: v1.IntegrationSpec{
+			Sources: []v1.SourceSpec{
+				{
+					DataSpec: v1.DataSpec{
+						Name:    "file.groovy",
+						Content: "from('timer:test').to('log:info')",
+					},
+					Language: v1.LanguageGroovy,
+				},
+			},
+		},
+		Status: v1.IntegrationStatus{
+			Phase: phase,
+			Conditions: []v1.IntegrationCondition{
+				{
+					Type:   v1.IntegrationConditionDeploymentAvailable,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		},
+	}
+	platform := &v1.IntegrationPlatform{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-platform",
+			Namespace: "ns",
+		},
+		Status: v1.IntegrationPlatformStatus{
+			IntegrationPlatformSpec: v1.IntegrationPlatformSpec{
+				Build: v1.IntegrationPlatformBuildSpec{
+					RuntimeProvider: v1.RuntimeProviderQuarkus,
+					RuntimeVersion:  defaults.DefaultRuntimeVersion,
+				},
+			},
+			Phase: v1.IntegrationPlatformPhaseReady,
+		},
+	}
+	// Load the default catalog
+	camelCatalogData, err := resources.Resource(fmt.Sprintf("/resources/camel-catalog-%s.yaml", defaults.DefaultRuntimeVersion))
+	require.NoError(t, err)
+	var cat v1.CamelCatalog
+	err = yaml.Unmarshal(camelCatalogData, &cat)
+	require.NoError(t, err)
+	cat.SetAnnotations(platform.Annotations)
+	cat.SetNamespace(platform.Namespace)
+
+	client, err := internal.NewFakeClient(platform, &cat)
+	require.NoError(t, err)
+	env, err := Apply(context.Background(), client, it, nil)
+	require.NoError(t, err)
+	assert.NotEmpty(t, env.Integration)
+	// We should get no values slicking from the spec
+	// only traits marked as "auto" should be able to scan
+	// the sources and set values.
+	// Neither default traits values should not be included here.
+	assert.Equal(t, &v1.Traits{}, env.Integration.Status.Traits)
+}
+
+func TestDefaultIntegrationRunningTraitsSetting(t *testing.T) {
+	testDefaultIntegrationPhaseTraitsSetting(t, v1.IntegrationPhaseRunning)
+}
+
+func TestDefaultIntegrationNoneTraitsSetting(t *testing.T) {
+	testDefaultIntegrationPhaseTraitsSetting(t, v1.IntegrationPhaseNone)
+}
+
+func TestDefaultIntegrationInitTraitsSetting(t *testing.T) {
+	testDefaultIntegrationPhaseTraitsSetting(t, v1.IntegrationPhaseInitialization)
+}
+
+func TestDefaultIntegrationWaitingPlatformTraitsSetting(t *testing.T) {
+	testDefaultIntegrationPhaseTraitsSetting(t, v1.IntegrationPhaseWaitingForPlatform)
+}
+
+func TestDefaultIntegrationBuildingKitTraitsSetting(t *testing.T) {
+	testDefaultIntegrationPhaseTraitsSetting(t, v1.IntegrationPhaseBuildingKit)
+}
+
+func TestDefaultIntegrationDeployingTraitsSetting(t *testing.T) {
+	testDefaultIntegrationPhaseTraitsSetting(t, v1.IntegrationPhaseDeploying)
+}
+
+func TestDefaultIntegrationErrorTraitsSetting(t *testing.T) {
+	testDefaultIntegrationPhaseTraitsSetting(t, v1.IntegrationPhaseError)
+}
+
+func TestIntegrationTraitsSetting(t *testing.T) {
+	it := &v1.Integration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-it",
+			Namespace: "ns",
+		},
+		Spec: v1.IntegrationSpec{
+			Sources: []v1.SourceSpec{
+				{
+					DataSpec: v1.DataSpec{
+						Name:    "file.groovy",
+						Content: "from('timer:test').to('log:info')",
+					},
+					Language: v1.LanguageGroovy,
+				},
+			},
+			Traits: v1.Traits{
+				Builder: &traitv1.BuilderTrait{
+					Properties: []string{
+						"building=yes",
+					},
+				},
+				Camel: &traitv1.CamelTrait{
+					Properties: []string{
+						"hello=world",
+					},
+				},
+				Container: &traitv1.ContainerTrait{
+					Name: "my-container-name",
+				},
+				Addons: map[string]v1.AddonTrait{
+					"master": toAddonTrait(t, map[string]interface{}{
+						"resourceName": "test-lock",
+					}),
+				},
+			},
+		},
+		Status: v1.IntegrationStatus{
+			Phase: v1.IntegrationPhaseRunning,
+			Conditions: []v1.IntegrationCondition{
+				{
+					Type:   v1.IntegrationConditionDeploymentAvailable,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		},
+	}
+	platform := &v1.IntegrationPlatform{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-platform",
+			Namespace: "ns",
+		},
+		Status: v1.IntegrationPlatformStatus{
+			IntegrationPlatformSpec: v1.IntegrationPlatformSpec{
+				Build: v1.IntegrationPlatformBuildSpec{
+					RuntimeProvider: v1.RuntimeProviderQuarkus,
+					RuntimeVersion:  defaults.DefaultRuntimeVersion,
+				},
+			},
+			Phase: v1.IntegrationPlatformPhaseReady,
+		},
+	}
+	// Load the default catalog
+	camelCatalogData, err := resources.Resource(fmt.Sprintf("/resources/camel-catalog-%s.yaml", defaults.DefaultRuntimeVersion))
+	require.NoError(t, err)
+	var cat v1.CamelCatalog
+	err = yaml.Unmarshal(camelCatalogData, &cat)
+	require.NoError(t, err)
+	cat.SetAnnotations(platform.Annotations)
+	cat.SetNamespace(platform.Namespace)
+
+	client, err := internal.NewFakeClient(platform, &cat)
+	require.NoError(t, err)
+	env, err := Apply(context.Background(), client, it, nil)
+	require.NoError(t, err)
+	assert.NotEmpty(t, env.Integration)
+	assert.Equal(t, &v1.Traits{
+		Builder: &traitv1.BuilderTrait{
+			Properties: []string{
+				"building=yes",
+			},
+		},
+		Camel: &traitv1.CamelTrait{
+			Properties: []string{
+				"hello=world",
+			},
+		},
+		Container: &traitv1.ContainerTrait{
+			Name: "my-container-name",
+		},
+		Addons: map[string]v1.AddonTrait{
+			"master": toAddonTrait(t, map[string]interface{}{
+				"resourceName": "test-lock",
+			}),
+		},
+	}, env.Integration.Status.Traits)
 }

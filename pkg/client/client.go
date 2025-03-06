@@ -18,13 +18,12 @@ limitations under the License.
 package client
 
 import (
+	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sync"
 
-	user "github.com/mitchellh/go-homedir"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/scale"
 
@@ -43,11 +42,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/apache/camel-k/pkg/apis"
-	camel "github.com/apache/camel-k/pkg/client/camel/clientset/versioned"
-	camelv1 "github.com/apache/camel-k/pkg/client/camel/clientset/versioned/typed/camel/v1"
-	camelv1alpha1 "github.com/apache/camel-k/pkg/client/camel/clientset/versioned/typed/camel/v1alpha1"
-	"github.com/apache/camel-k/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/apis"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	camel "github.com/apache/camel-k/v2/pkg/client/camel/clientset/versioned"
+	camelv1 "github.com/apache/camel-k/v2/pkg/client/camel/clientset/versioned/typed/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util"
 )
 
 const (
@@ -55,12 +54,13 @@ const (
 	kubeConfigEnvVar         = "KUBECONFIG"
 )
 
+var newClientMutex sync.Mutex
+
 // Client is an abstraction for a k8s client.
 type Client interface {
 	ctrl.Client
 	kubernetes.Interface
 	CamelV1() camelv1.CamelV1Interface
-	CamelV1alpha1() camelv1alpha1.CamelV1alpha1Interface
 	GetScheme() *runtime.Scheme
 	GetConfig() *rest.Config
 	GetCurrentNamespace(kubeConfig string) (string, error)
@@ -70,7 +70,7 @@ type Client interface {
 
 // Injectable identifies objects that can receive a Client.
 type Injectable interface {
-	InjectClient(Client)
+	InjectClient(client Client)
 }
 
 // Provider is used to provide a new instance of the Client each time it's required.
@@ -91,10 +91,6 @@ var _ Client = &defaultClient{}
 
 func (c *defaultClient) CamelV1() camelv1.CamelV1Interface {
 	return c.camel.CamelV1()
-}
-
-func (c *defaultClient) CamelV1alpha1() camelv1alpha1.CamelV1alpha1Interface {
-	return c.camel.CamelV1alpha1()
 }
 
 func (c *defaultClient) GetScheme() *runtime.Scheme {
@@ -127,12 +123,21 @@ func NewClient(fastDiscovery bool) (Client, error) {
 
 // NewClientWithConfig creates a new k8s client that can be used from outside or in the cluster.
 func NewClientWithConfig(fastDiscovery bool, cfg *rest.Config) (Client, error) {
-	clientScheme := scheme.Scheme
 
-	// Setup Scheme for all resources
-	err := apis.AddToScheme(clientScheme)
-	if err != nil {
-		return nil, err
+	// The below call to apis.AddToScheme is not thread safe in the k8s API
+	// We try to synchronize here across all k8s clients
+	// https://github.com/apache/camel-k/issues/5315
+	newClientMutex.Lock()
+	defer newClientMutex.Unlock()
+
+	var err error
+	clientScheme := scheme.Scheme
+	if !clientScheme.IsVersionRegistered(v1.SchemeGroupVersion) {
+		// Setup Scheme for all resources
+		err = apis.AddToScheme(clientScheme)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var clientset kubernetes.Interface
@@ -212,7 +217,7 @@ func initialize(kubeconfig string) {
 }
 
 func getDefaultKubeConfigFile() (string, error) {
-	dir, err := user.Dir()
+	dir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -296,7 +301,7 @@ func shouldUseContainerMode() (bool, error) {
 func getNamespaceFromKubernetesContainer() (string, error) {
 	var nsba []byte
 	var err error
-	if nsba, err = ioutil.ReadFile(inContainerNamespaceFile); err != nil {
+	if nsba, err = os.ReadFile(inContainerNamespaceFile); err != nil {
 		return "", err
 	}
 	return string(nsba), nil

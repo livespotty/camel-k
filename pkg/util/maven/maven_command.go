@@ -19,21 +19,17 @@ package maven
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
-	"path"
+	"path/filepath"
 	"regexp"
-	"runtime"
-	"strconv"
 	"strings"
 
-	"github.com/pkg/errors"
-
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/log"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util/log"
 )
 
 var Log = log.WithName("maven")
@@ -48,9 +44,21 @@ func (c *Command) Do(ctx context.Context) error {
 		return err
 	}
 
-	mvnCmd := "mvn"
+	mvnCmd := ""
 	if c, ok := os.LookupEnv("MAVEN_CMD"); ok {
 		mvnCmd = c
+	}
+
+	if mvnCmd == "" {
+		if e, ok := os.LookupEnv("MAVEN_WRAPPER"); (ok && e == "true") || !ok {
+			// Prepare maven wrapper helps when running the builder as Pod as it makes
+			// the builder container, Maven agnostic
+			if err := c.prepareMavenWrapper(ctx); err != nil {
+				return err
+			}
+		}
+
+		mvnCmd = "./mvnw"
 	}
 
 	args := make([]string, 0)
@@ -62,76 +70,90 @@ func (c *Command) Do(ctx context.Context) error {
 		}
 	}
 
-	settingsPath := path.Join(c.context.Path, "settings.xml")
+	settingsPath := filepath.Join(c.context.Path, "settings.xml")
 	if settingsExists, err := util.FileExists(settingsPath); err != nil {
 		return err
 	} else if settingsExists {
 		args = append(args, "--global-settings", settingsPath)
 	}
 
-	settingsPath = path.Join(c.context.Path, "user-settings.xml")
+	settingsPath = filepath.Join(c.context.Path, "user-settings.xml")
 	if settingsExists, err := util.FileExists(settingsPath); err != nil {
 		return err
 	} else if settingsExists {
 		args = append(args, "--settings", settingsPath)
 	}
 
-	if !util.StringContainsPrefix(c.context.AdditionalArguments, "-Dmaven.artifact.threads") {
-		args = append(args, "-Dmaven.artifact.threads="+strconv.Itoa(runtime.GOMAXPROCS(0)))
+	settingsSecurityPath := filepath.Join(c.context.Path, "settings-security.xml")
+	if settingsSecurityExists, err := util.FileExists(settingsSecurityPath); err != nil {
+		return err
+	} else if settingsSecurityExists {
+		args = append(args, "-Dsettings.security="+settingsSecurityPath)
 	}
 
-	if !util.StringSliceExists(c.context.AdditionalArguments, "-T") {
-		args = append(args, "-T", strconv.Itoa(runtime.GOMAXPROCS(0)))
-	}
+	mavenOptions, env := c.optionsFromEnv()
 
 	cmd := exec.CommandContext(ctx, mvnCmd, args...)
 	cmd.Dir = c.context.Path
-
-	var mavenOptions string
-	if len(c.context.ExtraMavenOpts) > 0 {
-		// Inherit the parent process environment
-		env := os.Environ()
-
-		mavenOpts, ok := os.LookupEnv("MAVEN_OPTS")
-		if !ok {
-			mavenOptions = strings.Join(c.context.ExtraMavenOpts, " ")
-			env = append(env, "MAVEN_OPTS="+mavenOptions)
-		} else {
-			var extraOptions []string
-			options := strings.Fields(mavenOpts)
-			for _, extraOption := range c.context.ExtraMavenOpts {
-				// Basic duplicated key detection, that should be improved
-				// to support a wider range of JVM options
-				key := strings.SplitN(extraOption, "=", 2)[0]
-				exists := false
-				for _, opt := range options {
-					if strings.HasPrefix(opt, key) {
-						exists = true
-
-						break
-					}
-				}
-				if !exists {
-					extraOptions = append(extraOptions, extraOption)
-				}
-			}
-
-			options = append(options, extraOptions...)
-			mavenOptions = strings.Join(options, " ")
-			for i, e := range env {
-				if strings.HasPrefix(e, "MAVEN_OPTS=") {
-					env[i] = "MAVEN_OPTS=" + mavenOptions
-					break
-				}
-			}
-		}
-
-		cmd.Env = env
-	}
+	cmd.Env = env
 
 	Log.WithValues("MAVEN_OPTS", mavenOptions).Infof("executing: %s", strings.Join(cmd.Args, " "))
 
-	return util.RunAndLog(ctx, cmd, mavenLogHandler, mavenLogHandler)
+	// generate maven file
+	if !c.context.SkipMavenConfigGeneration {
+		if err := generateMavenContext(c.context.Path, args, mavenOptions); err != nil {
+			return err
+		}
+	}
+
+	return util.RunAndLog(ctx, cmd, LogHandler, LogHandler)
+}
+
+func (c *Command) optionsFromEnv() ([]string, []string) {
+	if len(c.context.ExtraMavenOpts) == 0 {
+		return nil, nil
+	}
+
+	var mavenOptions string
+
+	// Inherit the parent process environment
+	env := os.Environ()
+
+	mavenOpts, ok := os.LookupEnv("MAVEN_OPTS")
+	if !ok {
+		mavenOptions = strings.Join(c.context.ExtraMavenOpts, " ")
+		env = append(env, "MAVEN_OPTS="+mavenOptions)
+	} else {
+		var extraOptions []string
+		options := strings.Fields(mavenOpts)
+		for _, extraOption := range c.context.ExtraMavenOpts {
+			// Basic duplicated key detection, that should be improved
+			// to support a wider range of JVM options
+			key := strings.SplitN(extraOption, "=", 2)[0]
+			exists := false
+			for _, opt := range options {
+				if strings.HasPrefix(opt, key) {
+					exists = true
+
+					break
+				}
+			}
+			if !exists {
+				extraOptions = append(extraOptions, extraOption)
+			}
+		}
+
+		options = append(options, extraOptions...)
+		mavenOptions = strings.Join(options, " ")
+		for i, e := range env {
+			if strings.HasPrefix(e, "MAVEN_OPTS=") {
+				env[i] = "MAVEN_OPTS=" + mavenOptions
+				break
+			}
+		}
+	}
+
+	return c.context.ExtraMavenOpts, env
 }
 
 func NewContext(buildDir string) Context {
@@ -143,14 +165,15 @@ func NewContext(buildDir string) Context {
 }
 
 type Context struct {
-	Path                string
-	ExtraMavenOpts      []string
-	GlobalSettings      []byte
-	UserSettings        []byte
-	SettingsSecurity    []byte
-	AdditionalArguments []string
-	AdditionalEntries   map[string]interface{}
-	LocalRepository     string
+	SkipMavenConfigGeneration bool
+	Path                      string
+	ExtraMavenOpts            []string
+	GlobalSettings            []byte
+	UserSettings              []byte
+	SettingsSecurity          []byte
+	AdditionalArguments       []string
+	AdditionalEntries         map[string]interface{}
+	LocalRepository           string
 }
 
 func (c *Context) AddEntry(id string, entry interface{}) {
@@ -178,24 +201,24 @@ func (c *Context) AddSystemProperty(name string, value string) {
 }
 
 func generateProjectStructure(context Context, project Project) error {
-	if err := util.WriteFileWithBytesMarshallerContent(context.Path, "pom.xml", project); err != nil {
+	if err := util.WriteFileWithBytesMarshallerContent(context.Path, "pom.xml", &project); err != nil {
 		return err
 	}
 
 	if context.GlobalSettings != nil {
-		if err := util.WriteFileWithContent(path.Join(context.Path, "settings.xml"), context.GlobalSettings); err != nil {
+		if err := util.WriteFileWithContent(filepath.Join(context.Path, "settings.xml"), context.GlobalSettings); err != nil {
 			return err
 		}
 	}
 
 	if context.UserSettings != nil {
-		if err := util.WriteFileWithContent(path.Join(context.Path, "user-settings.xml"), context.UserSettings); err != nil {
+		if err := util.WriteFileWithContent(filepath.Join(context.Path, "user-settings.xml"), context.UserSettings); err != nil {
 			return err
 		}
 	}
 
 	if context.SettingsSecurity != nil {
-		if err := util.WriteFileWithContent(path.Join(context.Path, "settings-security.xml"), context.SettingsSecurity); err != nil {
+		if err := util.WriteFileWithContent(filepath.Join(context.Path, "settings-security.xml"), context.SettingsSecurity); err != nil {
 			return err
 		}
 	}
@@ -207,7 +230,7 @@ func generateProjectStructure(context Context, project Project) error {
 		if dc, ok := v.([]byte); ok {
 			bytes = dc
 		} else if dc, ok := v.(io.Reader); ok {
-			bytes, err = ioutil.ReadAll(dc)
+			bytes, err = io.ReadAll(dc)
 			if err != nil {
 				return err
 			}
@@ -218,7 +241,7 @@ func generateProjectStructure(context Context, project Project) error {
 		if len(bytes) > 0 {
 			Log.Infof("write entry: %s (%d bytes)", k, len(bytes))
 
-			err = util.WriteFileWithContent(path.Join(context.Path, k), bytes)
+			err = util.WriteFileWithContent(filepath.Join(context.Path, k), bytes)
 			if err != nil {
 				return err
 			}
@@ -228,37 +251,70 @@ func generateProjectStructure(context Context, project Project) error {
 	return nil
 }
 
+// We expect a maven wrapper under /usr/share/maven/mvnw.
+func (c *Command) prepareMavenWrapper(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "cp", "--recursive", "/usr/share/maven/mvnw/.", ".")
+	cmd.Dir = c.context.Path
+	return util.RunAndLog(ctx, cmd, LogHandler, LogHandler)
+}
+
 // ParseGAV decodes the provided Maven GAV into the corresponding Dependency.
 //
 // The artifact id is in the form of:
 //
-//     <groupId>:<artifactId>[:<packagingType>[:<classifier>]]:(<version>|'?')
+//	<groupId>:<artifactId>[:<packagingType>]:(<version>)[:<classifier>]
 //
+//nolint:mnd
 func ParseGAV(gav string) (Dependency, error) {
-	// <groupId>:<artifactId>[:<packagingType>[:<classifier>]]:(<version>|'?')
 	dep := Dependency{}
-	rex := regexp.MustCompile("([^: ]+):([^: ]+)(:([^: ]*)(:([^: ]+))?)?(:([^: ]+))?")
-	res := rex.FindStringSubmatch(gav)
-
-	if res == nil || len(res) < 9 {
-		return Dependency{}, errors.New("GAV must match <groupId>:<artifactId>[:<packagingType>[:<classifier>]]:(<version>|'?')")
+	res := strings.Split(gav, ":")
+	count := len(res)
+	if res == nil || count < 2 {
+		return Dependency{}, errors.New("GAV must match <groupId>:<artifactId>[:<packagingType>]:(<version>)[:<classifier>]")
 	}
-
-	dep.GroupID = res[1]
-	dep.ArtifactID = res[2]
-
-	cnt := strings.Count(gav, ":")
-	switch cnt {
-	case 2:
-		dep.Version = res[4]
-	case 3:
-		dep.Type = res[4]
-		dep.Version = res[6]
-	default:
-		dep.Type = res[4]
-		dep.Classifier = res[6]
-		dep.Version = res[8]
+	dep.GroupID = res[0]
+	dep.ArtifactID = res[1]
+	switch {
+	case count == 3:
+		// gav is: org:artifact:<type:version>
+		numeric := regexp.MustCompile(`\d`)
+		if numeric.MatchString(res[2]) {
+			dep.Version = res[2]
+		} else {
+			dep.Type = res[2]
+		}
+	case count == 4:
+		// gav is: org:artifact:type:version
+		dep.Type = res[2]
+		dep.Version = res[3]
+	case count == 5:
+		// gav is: org:artifact:<type>:<version>:classifier
+		dep.Type = res[2]
+		dep.Version = res[3]
+		dep.Classifier = res[4]
 	}
-
 	return dep, nil
+}
+
+// Create a .mvn/maven.config file containing all arguments for any follow up maven command.
+func generateMavenContext(path string, args, options []string) error {
+	return util.WriteFileWithContent(filepath.Join(path, ".mvn", "maven.config"), []byte(getMavenContext(args, options)))
+}
+
+func getMavenContext(args, options []string) string {
+	mavenContext := ""
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg != "package" && len(arg) != 0 {
+			mavenContext += fmt.Sprintf("%s\n", arg)
+		}
+	}
+	for _, opt := range options {
+		opt = strings.TrimSpace(opt)
+		if len(opt) != 0 {
+			mavenContext += fmt.Sprintf("%s\n", opt)
+		}
+	}
+
+	return mavenContext
 }

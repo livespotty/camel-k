@@ -26,8 +26,8 @@ import (
 
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/indentedwriter"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/indentedwriter"
 )
 
 func newDescribePlatformCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *describePlatformCommandOptions) {
@@ -36,11 +36,12 @@ func newDescribePlatformCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *de
 	}
 
 	cmd := cobra.Command{
-		Use:     "platform",
-		Aliases: []string{"ip"},
-		Short:   "Describe an Integration Platform",
-		Long:    `Describe an Integration Platform.`,
-		PreRunE: decode(&options),
+		Use:        "platform",
+		Aliases:    []string{"ip"},
+		Short:      "Describe an Integration Platform",
+		Long:       `Describe an Integration Platform.`,
+		Deprecated: "consider using kubectl (or oc) custom resource describe command instead.",
+		PreRunE:    decode(&options, options.Flags),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(cmd, args); err != nil {
 				return err

@@ -21,9 +21,10 @@ import (
 	"context"
 	"fmt"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
+// Build convert the Build CR in a struct that can be executable as an operator routine.
 func (b *Builder) Build(build *v1.Build) *Build {
 	return &Build{
 		builder: *b,
@@ -31,6 +32,7 @@ func (b *Builder) Build(build *v1.Build) *Build {
 	}
 }
 
+// Task convert the task in a routine task which can be executed inside operator.
 func (b *Build) Task(task v1.Task) Task {
 	switch {
 	case task.Builder != nil:
@@ -40,15 +42,18 @@ func (b *Build) Task(task v1.Task) Task {
 			build: b.build,
 			task:  task.Builder,
 		}
-	case task.Buildah != nil:
+	// Custom tasks are not supported in routines
+	case task.Custom != nil:
 		return &unsupportedTask{
 			build: b.build,
-			name:  task.Buildah.Name,
+			name:  task.Custom.Name,
 		}
-	case task.Kaniko != nil:
-		return &unsupportedTask{
+	case task.Package != nil:
+		return &builderTask{
+			c:     b.builder.client,
+			log:   b.builder.log,
 			build: b.build,
-			name:  task.Kaniko.Name,
+			task:  task.Package,
 		}
 	case task.Spectrum != nil:
 		return &spectrumTask{
@@ -61,6 +66,12 @@ func (b *Build) Task(task v1.Task) Task {
 			c:     b.builder.client,
 			build: b.build,
 			task:  task.S2i,
+		}
+	case task.Jib != nil:
+		return &jibTask{
+			c:     b.builder.client,
+			build: b.build,
+			task:  task.Jib,
 		}
 	}
 
@@ -106,6 +117,7 @@ func (t *unsupportedTask) Do(_ context.Context) v1.BuildStatus {
 
 var _ Task = &missingTask{}
 
+// TaskByName return the task identified by the name parameter.
 func (b *Build) TaskByName(name string) Task {
 	for _, task := range b.build.Spec.Tasks {
 		switch {
@@ -116,15 +128,17 @@ func (b *Build) TaskByName(name string) Task {
 				build: b.build,
 				task:  task.Builder,
 			}
-		case task.Buildah != nil && task.Buildah.Name == name:
+		case task.Custom != nil && task.Custom.Name == name:
 			return &unsupportedTask{
 				build: b.build,
-				name:  task.Buildah.Name,
+				name:  task.Custom.Name,
 			}
-		case task.Kaniko != nil && task.Kaniko.Name == name:
-			return &unsupportedTask{
+		case task.Package != nil && task.Package.Name == name:
+			return &builderTask{
+				c:     b.builder.client,
+				log:   b.builder.log,
 				build: b.build,
-				name:  task.Kaniko.Name,
+				task:  task.Package,
 			}
 		case task.Spectrum != nil && task.Spectrum.Name == name:
 			return &spectrumTask{
@@ -137,6 +151,12 @@ func (b *Build) TaskByName(name string) Task {
 				c:     b.builder.client,
 				build: b.build,
 				task:  task.S2i,
+			}
+		case task.Jib != nil && task.Jib.Name == name:
+			return &jibTask{
+				c:     b.builder.client,
+				build: b.build,
+				task:  task.Jib,
 			}
 		}
 	}

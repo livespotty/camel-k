@@ -24,10 +24,8 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strings"
 
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/gzip"
+	"github.com/apache/camel-k/v2/pkg/util/gzip"
 )
 
 const (
@@ -37,50 +35,6 @@ const (
 	Kilobyte = 1 << 10
 )
 
-func LoadRawContent(ctx context.Context, source string) ([]byte, string, error) {
-	var content []byte
-	var err error
-
-	ok, err := IsLocalAndFileExists(source)
-	if err != nil {
-		return nil, "", err
-	}
-
-	if ok {
-		content, err = util.ReadFile(source)
-	} else {
-		var u *url.URL
-		u, err = url.Parse(source)
-		if err != nil {
-			return nil, "", err
-		}
-
-		switch u.Scheme {
-		case "github":
-			content, err = loadContentGitHub(ctx, u)
-		case "http":
-			content, err = loadContentHTTP(ctx, u)
-		case "https":
-			content, err = loadContentHTTP(ctx, u)
-		default:
-			return nil, "", fmt.Errorf("missing file or unsupported scheme %s", u.Scheme)
-		}
-	}
-
-	if err != nil {
-		return nil, "", err
-	}
-
-	contentType := http.DetectContentType(content)
-	return content, contentType, nil
-}
-
-func IsBinary(contentType string) bool {
-	// According the http.DetectContentType method
-	// also json and other "text" application mime types would be reported as text
-	return !strings.HasPrefix(contentType, "text")
-}
-
 func CompressToString(content []byte) (string, error) {
 	bytes, err := gzip.CompressBase64(content)
 	if err != nil {
@@ -88,20 +42,6 @@ func CompressToString(content []byte) (string, error) {
 	}
 
 	return string(bytes), nil
-}
-
-func LoadTextContent(ctx context.Context, source string, base64Compression bool) (string, string, bool, error) {
-	content, contentType, err := LoadRawContent(ctx, source)
-	if err != nil {
-		return "", "", false, err
-	}
-
-	if base64Compression {
-		base64Compressed, err := CompressToString(content)
-		return base64Compressed, contentType, true, err
-	}
-
-	return string(content), contentType, false, nil
 }
 
 func loadContentHTTP(ctx context.Context, u fmt.Stringer) ([]byte, error) {
@@ -120,7 +60,7 @@ func loadContentHTTP(ctx context.Context, u fmt.Stringer) ([]byte, error) {
 		_ = resp.Body.Close()
 	}()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return []byte{}, fmt.Errorf("the provided URL %s is not reachable, error code is %d", u.String(), resp.StatusCode)
 	}
 

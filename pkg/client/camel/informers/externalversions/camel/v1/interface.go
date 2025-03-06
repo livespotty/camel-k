@@ -20,7 +20,7 @@ limitations under the License.
 package v1
 
 import (
-	internalinterfaces "github.com/apache/camel-k/pkg/client/camel/informers/externalversions/internalinterfaces"
+	internalinterfaces "github.com/apache/camel-k/v2/pkg/client/camel/informers/externalversions/internalinterfaces"
 )
 
 // Interface provides access to all the informers in this group version.
@@ -35,6 +35,12 @@ type Interface interface {
 	IntegrationKits() IntegrationKitInformer
 	// IntegrationPlatforms returns a IntegrationPlatformInformer.
 	IntegrationPlatforms() IntegrationPlatformInformer
+	// IntegrationProfiles returns a IntegrationProfileInformer.
+	IntegrationProfiles() IntegrationProfileInformer
+	// Kamelets returns a KameletInformer.
+	Kamelets() KameletInformer
+	// Pipes returns a PipeInformer.
+	Pipes() PipeInformer
 }
 
 type version struct {
@@ -71,4 +77,19 @@ func (v *version) IntegrationKits() IntegrationKitInformer {
 // IntegrationPlatforms returns a IntegrationPlatformInformer.
 func (v *version) IntegrationPlatforms() IntegrationPlatformInformer {
 	return &integrationPlatformInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// IntegrationProfiles returns a IntegrationProfileInformer.
+func (v *version) IntegrationProfiles() IntegrationProfileInformer {
+	return &integrationProfileInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// Kamelets returns a KameletInformer.
+func (v *version) Kamelets() KameletInformer {
+	return &kameletInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// Pipes returns a PipeInformer.
+func (v *version) Pipes() PipeInformer {
+	return &pipeInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

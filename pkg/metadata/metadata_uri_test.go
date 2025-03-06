@@ -23,8 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/camel"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/camel"
 )
 
 func TestJava1(t *testing.T) {
@@ -50,7 +50,7 @@ func TestJava1(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	metadata, err := Extract(catalog, source)
+	metadata, err := extract(catalog, source)
 	require.NoError(t, err)
 
 	assert.Contains(t, metadata.FromURIs, "timer:tick")
@@ -88,7 +88,7 @@ func TestJava2(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	metadata, err := Extract(catalog, source)
+	metadata, err := extract(catalog, source)
 	require.NoError(t, err)
 
 	assert.Contains(t, metadata.FromURIs, "timer:tick")
@@ -121,7 +121,7 @@ func TestGroovy1(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	metadata, err := Extract(catalog, source)
+	metadata, err := extract(catalog, source)
 	require.NoError(t, err)
 
 	assert.Contains(t, metadata.FromURIs, "timer:tick")
@@ -152,7 +152,7 @@ func TestGroovy2(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	metadata, err := Extract(catalog, source)
+	metadata, err := extract(catalog, source)
 	require.NoError(t, err)
 
 	assert.Empty(t, metadata.FromURIs)
@@ -188,7 +188,7 @@ func TestXml1(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	metadata, err := Extract(catalog, source)
+	metadata, err := extract(catalog, source)
 	require.NoError(t, err)
 
 	assert.Contains(t, metadata.FromURIs, "timer:hello?period=3000")
@@ -223,7 +223,7 @@ func TestKotlin1(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	metadata, err := Extract(catalog, source)
+	metadata, err := extract(catalog, source)
 	require.NoError(t, err)
 
 	assert.Contains(t, metadata.FromURIs, "timer:tick")
@@ -255,7 +255,7 @@ func TestJavascript1(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	metadata, err := Extract(catalog, source)
+	metadata, err := extract(catalog, source)
 	require.NoError(t, err)
 
 	assert.Empty(t, metadata.FromURIs)
@@ -292,7 +292,7 @@ func TestJYaml(t *testing.T) {
 	catalog, err := camel.DefaultCatalog()
 	require.NoError(t, err)
 
-	metadata, err := Extract(catalog, source)
+	metadata, err := extract(catalog, source)
 	require.NoError(t, err)
 
 	assert.NotEmpty(t, metadata.FromURIs)

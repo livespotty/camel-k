@@ -20,13 +20,14 @@ package integration
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/platform"
-	"github.com/apache/camel-k/pkg/trait"
-	"github.com/apache/camel-k/pkg/util/knative"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/platform"
+	"github.com/apache/camel-k/v2/pkg/trait"
+	"github.com/apache/camel-k/v2/pkg/util/knative"
 )
 
 // NewPlatformSetupAction creates a new platform-setup action.
@@ -52,14 +53,17 @@ func (action *platformSetupAction) CanHandle(integration *v1.Integration) bool {
 // Handle handles the integrations.
 func (action *platformSetupAction) Handle(ctx context.Context, integration *v1.Integration) (*v1.Integration, error) {
 	if _, err := trait.Apply(ctx, action.client, integration, nil); err != nil {
-		return nil, err
+		integration.Status.Phase = v1.IntegrationPhaseError
+		integration.SetReadyCondition(corev1.ConditionFalse,
+			v1.IntegrationConditionInitializationFailedReason, err.Error())
+		return integration, err
 	}
 
 	pl, err := platform.GetForResource(ctx, action.client, integration)
 	if err != nil && !k8serrors.IsNotFound(err) {
 		return nil, err
 	} else if pl != nil {
-		profile, err := determineBestProfile(action.client, integration, pl)
+		profile, err := determineBestTraitProfile(action.client, integration, pl)
 		if err != nil {
 			return nil, err
 		}
@@ -76,8 +80,8 @@ func (action *platformSetupAction) Handle(ctx context.Context, integration *v1.I
 	return integration, nil
 }
 
-// DetermineBestProfile tries to detect the best trait profile for the integration.
-func determineBestProfile(c client.Client, integration *v1.Integration, p *v1.IntegrationPlatform) (v1.TraitProfile, error) {
+// determineBestTraitProfile tries to detect the best trait profile for the integration.
+func determineBestTraitProfile(c client.Client, integration *v1.Integration, p *v1.IntegrationPlatform) (v1.TraitProfile, error) {
 	if integration.Spec.Profile != "" {
 		return integration.Spec.Profile, nil
 	}
@@ -98,5 +102,5 @@ func determineBestProfile(c client.Client, integration *v1.Integration, p *v1.In
 	} else if ok {
 		return v1.TraitProfileKnative, nil
 	}
-	return platform.GetProfile(p), nil
+	return platform.GetTraitProfile(p), nil
 }

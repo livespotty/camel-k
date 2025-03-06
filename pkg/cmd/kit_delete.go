@@ -27,7 +27,7 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
 func newKitDeleteCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kitDeleteCommandOptions) {
@@ -38,7 +38,7 @@ func newKitDeleteCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kitDelete
 	cmd := cobra.Command{
 		Use:     "delete [integration kit1] [integration kit2] ...",
 		Short:   "Delete integration kits deployed on Kubernetes",
-		PreRunE: decode(&options),
+		PreRunE: decode(&options, options.Flags),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(args); err != nil {
 				return err

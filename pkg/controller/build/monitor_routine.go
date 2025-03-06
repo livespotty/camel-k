@@ -21,9 +21,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"sync"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,11 +30,11 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/builder"
-	"github.com/apache/camel-k/pkg/event"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/patch"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/builder"
+	"github.com/apache/camel-k/v2/pkg/event"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/patch"
 )
 
 var routines sync.Map
@@ -68,6 +67,7 @@ func (action *monitorRoutineAction) Handle(ctx context.Context, build *v1.Build)
 			routines.Delete(build.Name)
 			build.Status.Phase = v1.BuildPhaseFailed
 			build.Status.Error = "Build routine exists"
+			monitorFinishedBuild(build)
 			return build, nil
 		}
 		status := v1.BuildStatus{Phase: v1.BuildPhaseRunning}
@@ -85,13 +85,18 @@ func (action *monitorRoutineAction) Handle(ctx context.Context, build *v1.Build)
 			// stops abruptly and restarts or the build status update fails.
 			build.Status.Phase = v1.BuildPhaseFailed
 			build.Status.Error = "Build routine not running"
+			monitorFinishedBuild(build)
 			return build, nil
 		}
 	}
 
+	// Monitor running state of the build - this may have been done already by the schedule action but the monitor action is idempotent
+	// We do this here to recover the running build state in the monitor in case of an operator restart
+	monitorRunningBuild(build)
 	return nil, nil
 }
 
+//nolint:nestif
 func (action *monitorRoutineAction) runBuild(ctx context.Context, build *v1.Build) {
 	defer routines.Delete(build.Name)
 
@@ -118,10 +123,11 @@ tasks:
 			break tasks
 
 		default:
+			// TODO apply code refactoring to the below conditions
 			// Coordinate the build and context directories across the sequence of tasks
 			if t := task.Builder; t != nil {
 				if t.BuildDir == "" {
-					tmpDir, err := ioutil.TempDir(os.TempDir(), build.Name+"-")
+					tmpDir, err := os.MkdirTemp(os.TempDir(), build.Name+"-")
 					if err != nil {
 						status.Failed(err)
 
@@ -132,18 +138,30 @@ tasks:
 					defer os.RemoveAll(tmpDir)
 				}
 				buildDir = t.BuildDir
+			} else if t := task.Package; t != nil {
+				if buildDir == "" {
+					status.Failed(fmt.Errorf("cannot determine builder directory for task %s", t.Name))
+					break tasks
+				}
+				t.BuildDir = buildDir
 			} else if t := task.Spectrum; t != nil && t.ContextDir == "" {
 				if buildDir == "" {
 					status.Failed(fmt.Errorf("cannot determine context directory for task %s", t.Name))
 					break tasks
 				}
-				t.ContextDir = path.Join(buildDir, builder.ContextDir)
+				t.ContextDir = filepath.Join(buildDir, builder.ContextDir)
 			} else if t := task.S2i; t != nil && t.ContextDir == "" {
 				if buildDir == "" {
 					status.Failed(fmt.Errorf("cannot determine context directory for task %s", t.Name))
 					break tasks
 				}
-				t.ContextDir = path.Join(buildDir, builder.ContextDir)
+				t.ContextDir = filepath.Join(buildDir, builder.ContextDir)
+			} else if t := task.Jib; t != nil && t.ContextDir == "" {
+				if buildDir == "" {
+					status.Failed(fmt.Errorf("cannot determine context directory for task %s", t.Name))
+					break tasks
+				}
+				t.ContextDir = filepath.Join(buildDir, builder.ContextDir)
 			}
 
 			// Execute the task
@@ -174,6 +192,8 @@ tasks:
 	duration := metav1.Now().Sub(build.Status.StartedAt.Time)
 	status.Duration = duration.String()
 
+	monitorFinishedBuild(build)
+
 	buildCreator := kubernetes.GetCamelCreator(build)
 	// Account for the Build metrics
 	observeBuildResult(build, status.Phase, buildCreator, duration)
@@ -198,16 +218,21 @@ func (action *monitorRoutineAction) updateBuildStatus(ctx context.Context, build
 	} else if target.Status.Phase == v1.BuildPhaseError {
 		action.L.Errorf(nil, "Build %s errored: %s", build.Name, target.Status.Error)
 	}
-	err = action.client.Status().Patch(ctx, target, ctrl.RawPatch(types.MergePatchType, p))
-	if err != nil {
-		action.L.Errorf(err, "Cannot update build status: %s", build.Name)
-		event.NotifyBuildError(ctx, action.client, action.recorder, build, target, err)
-		return err
+
+	if len(p) > 0 {
+		err = action.client.Status().Patch(ctx, target, ctrl.RawPatch(types.MergePatchType, p))
+		if err != nil {
+			action.L.Errorf(err, "Cannot update build status: %s", build.Name)
+			event.NotifyBuildError(ctx, action.client, action.recorder, build, target, err)
+			return err
+		}
+
+		if target.Status.Phase != build.Status.Phase {
+			action.L.Info("State transition", "phase-from", build.Status.Phase, "phase-to", target.Status.Phase)
+		}
+		event.NotifyBuildUpdated(ctx, action.client, action.recorder, build, target)
+		build.Status = target.Status
 	}
-	if target.Status.Phase != build.Status.Phase {
-		action.L.Info("state transition", "phase-from", build.Status.Phase, "phase-to", target.Status.Phase)
-	}
-	event.NotifyBuildUpdated(ctx, action.client, action.recorder, build, target)
-	build.Status = target.Status
+
 	return nil
 }

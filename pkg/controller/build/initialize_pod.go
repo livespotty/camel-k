@@ -19,12 +19,11 @@ package build
 
 import (
 	"context"
+	"fmt"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/pkg/errors"
-
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
 func newInitializePodAction(reader ctrl.Reader) Action {
@@ -50,8 +49,10 @@ func (action *initializePodAction) CanHandle(build *v1.Build) bool {
 
 // Handle handles the builds.
 func (action *initializePodAction) Handle(ctx context.Context, build *v1.Build) (*v1.Build, error) {
+	action.L.Info("Initializing Build")
+
 	if err := deleteBuilderPod(ctx, action.client, build); err != nil {
-		return nil, errors.Wrap(err, "cannot delete build pod")
+		return nil, fmt.Errorf("cannot delete build pod: %w", err)
 	}
 
 	pod, err := getBuilderPod(ctx, action.reader, build)

@@ -18,19 +18,19 @@ limitations under the License.
 package trait
 
 import (
+	"errors"
 	"sort"
 
-	"github.com/pkg/errors"
-
-	"k8s.io/utils/pointer"
-
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util"
-	"github.com/apache/camel-k/pkg/util/dsl"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/util"
+	"k8s.io/utils/ptr"
 )
 
-const flowsInternalSourceName = "camel-k-embedded-flow.yaml"
+const (
+	initTraitID    = "init"
+	initTraitOrder = 1
+)
 
 type initTrait struct {
 	BaseTrait
@@ -39,28 +39,28 @@ type initTrait struct {
 
 func NewInitTrait() Trait {
 	return &initTrait{
-		BaseTrait: NewBaseTrait("init", 1),
+		BaseTrait: NewBaseTrait(initTraitID, initTraitOrder),
 	}
 }
 
-func (t *initTrait) Configure(e *Environment) (bool, error) {
-	if !pointer.BoolDeref(t.Enabled, true) {
-		return false, errors.New("trait init cannot be disabled")
+func (t *initTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if !ptr.Deref(t.Enabled, true) {
+		return false, nil, errors.New("trait init cannot be disabled")
 	}
 
-	return e.IntegrationInPhase(v1.IntegrationPhaseInitialization), nil
+	return e.IntegrationInPhase(v1.IntegrationPhaseInitialization), nil, nil
 }
 
 func (t *initTrait) Apply(e *Environment) error {
 	// Flows need to be turned into a generated source
 	if len(e.Integration.Spec.Flows) > 0 {
-		content, err := dsl.ToYamlDSL(e.Integration.Spec.Flows)
+		content, err := v1.ToYamlDSL(e.Integration.Spec.Flows)
 		if err != nil {
 			return err
 		}
 		e.Integration.Status.AddOrReplaceGeneratedSources(v1.SourceSpec{
 			DataSpec: v1.DataSpec{
-				Name:    flowsInternalSourceName,
+				Name:    v1.IntegrationFlowEmbeddedSourceName,
 				Content: string(content),
 			},
 		})

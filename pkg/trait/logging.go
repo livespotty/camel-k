@@ -18,15 +18,17 @@ limitations under the License.
 package trait
 
 import (
-	"k8s.io/utils/pointer"
-
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	"github.com/apache/camel-k/pkg/util/envvar"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	"github.com/apache/camel-k/v2/pkg/util/boolean"
+	"k8s.io/utils/ptr"
 )
 
 const (
+	loggingTraitID    = "logging"
+	loggingTraitOrder = 800
+
+	envVarQuarkusConsoleColor              = "QUARKUS_CONSOLE_COLOR"
 	envVarQuarkusLogLevel                  = "QUARKUS_LOG_LEVEL"
-	envVarQuarkusLogConsoleColor           = "QUARKUS_LOG_CONSOLE_COLOR"
 	envVarQuarkusLogConsoleFormat          = "QUARKUS_LOG_CONSOLE_FORMAT"
 	envVarQuarkusLogConsoleJSON            = "QUARKUS_LOG_CONSOLE_JSON"
 	envVarQuarkusLogConsoleJSONPrettyPrint = "QUARKUS_LOG_CONSOLE_JSON_PRETTY_PRINT"
@@ -40,41 +42,61 @@ type loggingTrait struct {
 
 func newLoggingTraitTrait() Trait {
 	return &loggingTrait{
-		BaseTrait: NewBaseTrait("logging", 800),
-		LoggingTrait: traitv1.LoggingTrait{
-			Level: defaultLogLevel,
-		},
+		BaseTrait: NewBaseTrait(loggingTraitID, loggingTraitOrder),
 	}
 }
 
-func (l loggingTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(l.Enabled, true) {
-		return false, nil
+func (l *loggingTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil {
+		return false, nil, nil
+	}
+	if !ptr.Deref(l.Enabled, true) {
+		return false, NewIntegrationConditionUserDisabled("Logging"), nil
 	}
 
-	return e.IntegrationInRunningPhases(), nil
+	return e.IntegrationInRunningPhases(), nil, nil
 }
 
-func (l loggingTrait) Apply(e *Environment) error {
-	envvar.SetVal(&e.EnvVars, envVarQuarkusLogLevel, l.Level)
-
-	if l.Format != "" {
-		envvar.SetVal(&e.EnvVars, envVarQuarkusLogConsoleFormat, l.Format)
-	}
-
-	if pointer.BoolDeref(l.JSON, false) {
-		envvar.SetVal(&e.EnvVars, envVarQuarkusLogConsoleJSON, True)
-		if pointer.BoolDeref(l.JSONPrettyPrint, false) {
-			envvar.SetVal(&e.EnvVars, envVarQuarkusLogConsoleJSONPrettyPrint, True)
-		}
-	} else {
-		// If the trait is false OR unset, we default to false.
-		envvar.SetVal(&e.EnvVars, envVarQuarkusLogConsoleJSON, False)
-
-		if pointer.BoolDeref(l.Color, true) {
-			envvar.SetVal(&e.EnvVars, envVarQuarkusLogConsoleColor, True)
-		}
+func (l *loggingTrait) Apply(e *Environment) error {
+	if e.CamelCatalog.Runtime.Capabilities["logging"].RuntimeProperties != nil {
+		l.setCatalogConfiguration(e)
 	}
 
 	return nil
+}
+
+func (l *loggingTrait) setCatalogConfiguration(e *Environment) {
+	if e.ApplicationProperties == nil {
+		e.ApplicationProperties = make(map[string]string)
+	}
+	e.ApplicationProperties["camel.k.logging.level"] = l.getLevel()
+	if l.Format != "" {
+		e.ApplicationProperties["camel.k.logging.format"] = l.Format
+	}
+	if ptr.Deref(l.JSON, false) {
+		e.ApplicationProperties["camel.k.logging.json"] = boolean.TrueString
+		if ptr.Deref(l.JSONPrettyPrint, false) {
+			e.ApplicationProperties["camel.k.logging.jsonPrettyPrint"] = boolean.TrueString
+		}
+	} else {
+		// If the trait is false OR unset, we default to false.
+		e.ApplicationProperties["camel.k.logging.json"] = boolean.FalseString
+		if ptr.Deref(l.Color, true) {
+			e.ApplicationProperties["camel.k.logging.color"] = boolean.TrueString
+		}
+	}
+
+	for _, cp := range e.CamelCatalog.Runtime.Capabilities["logging"].RuntimeProperties {
+		if CapabilityPropertyKey(cp.Value, e.ApplicationProperties) != "" {
+			e.ApplicationProperties[CapabilityPropertyKey(cp.Key, e.ApplicationProperties)] = cp.Value
+		}
+	}
+}
+
+func (l *loggingTrait) getLevel() string {
+	if l.Level == "" {
+		return defaultLogLevel
+	}
+
+	return l.Level
 }

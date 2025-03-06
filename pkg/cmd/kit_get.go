@@ -25,7 +25,7 @@ import (
 
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
 func newKitGetCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kitGetCommandOptions) {
@@ -37,7 +37,7 @@ func newKitGetCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kitGetComman
 		Use:     "get",
 		Short:   "Get defined Integration Kit",
 		Long:    `Get defined Integration Kit.`,
-		PreRunE: decode(&options),
+		PreRunE: decode(&options, options.Flags),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(cmd, args); err != nil {
 				return err

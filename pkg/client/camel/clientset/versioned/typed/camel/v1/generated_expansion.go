@@ -28,3 +28,9 @@ type IntegrationExpansion interface{}
 type IntegrationKitExpansion interface{}
 
 type IntegrationPlatformExpansion interface{}
+
+type IntegrationProfileExpansion interface{}
+
+type KameletExpansion interface{}
+
+type PipeExpansion interface{}

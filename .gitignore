@@ -7,6 +7,7 @@
 /kamel.*
 /license-check
 /**/platform-check
+bin/
 
 # Config files
 /kamel-config.yaml
@@ -14,6 +15,7 @@
 
 # Released Packages
 *.tar.gz
+sbom.json
 
 # Release Notes
 /release-notes.md
@@ -36,15 +38,21 @@ index.Dockerfile
 .gopath
 
 # Temporary Build Files
+/api_*
 build/_output
+build/_offline
+build/camel-k-runtime-*-maven-offline.tar.gz
 build/_test
 build/_maven_output
-build/_maven_overlay
 build/_kamelets
-build/_maven_overlay/
 build/maven/target/
 build/maven
-/api_*
+build/m2
+_scratch/
+
+# YAKS test output
+.yaks-jbang/
+_output/
 
 # envrc
 .envrc
@@ -133,8 +141,9 @@ anaconda-mode/
 # Test binary, build with 'go test -c'
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
-*.out
+# Output of the go coverage tool
+coverage.out
+coverage
 
 ### Vim ###
 # swap
@@ -167,3 +176,11 @@ config/**/*.gen.yaml
 config/**/*.gen.json
 
 *-installer*
+
+# Fabric8 CRDs
+java/*/target
+pkg/resources/resources.go
+
+# MAC OS files
+.DS_Store
+

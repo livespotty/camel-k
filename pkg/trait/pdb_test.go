@@ -21,23 +21,25 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
 )
 
 func TestConfigurePdbTraitDoesSucceed(t *testing.T) {
 	pdbTrait, environment, _ := createPdbTest()
-	configured, err := pdbTrait.Configure(environment)
+	configured, condition, err := pdbTrait.Configure(environment)
 
 	assert.True(t, configured)
-	assert.Nil(t, err)
+	require.NoError(t, err)
+	assert.Nil(t, condition)
 }
 
 func TestConfigurePdbTraitDoesNotSucceed(t *testing.T) {
@@ -45,9 +47,10 @@ func TestConfigurePdbTraitDoesNotSucceed(t *testing.T) {
 
 	pdbTrait.MinAvailable = "1"
 	pdbTrait.MaxUnavailable = "2"
-	configured, err := pdbTrait.Configure(environment)
-	assert.NotNil(t, err)
+	configured, condition, err := pdbTrait.Configure(environment)
+	require.Error(t, err)
 	assert.False(t, configured)
+	assert.Nil(t, condition)
 }
 
 func TestPdbIsCreatedWithoutParametersEnabled(t *testing.T) {
@@ -73,11 +76,11 @@ func TestPdbIsCreatedWithMinAvailable(t *testing.T) {
 	assert.Equal(t, int32(2), pdb.Spec.MinAvailable.IntVal)
 }
 
-func pdbCreatedCheck(t *testing.T, pdbTrait *pdbTrait, environment *Environment) *v1beta1.PodDisruptionBudget {
+func pdbCreatedCheck(t *testing.T, pdbTrait *pdbTrait, environment *Environment) *policyv1.PodDisruptionBudget {
 	t.Helper()
 
 	err := pdbTrait.Apply(environment)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 	pdb := findPdb(environment.Resources)
 
 	assert.NotNil(t, pdb)
@@ -87,9 +90,9 @@ func pdbCreatedCheck(t *testing.T, pdbTrait *pdbTrait, environment *Environment)
 	return pdb
 }
 
-func findPdb(resources *kubernetes.Collection) *v1beta1.PodDisruptionBudget {
+func findPdb(resources *kubernetes.Collection) *policyv1.PodDisruptionBudget {
 	for _, a := range resources.Items() {
-		if pdb, ok := a.(*v1beta1.PodDisruptionBudget); ok {
+		if pdb, ok := a.(*policyv1.PodDisruptionBudget); ok {
 			return pdb
 		}
 	}
@@ -99,7 +102,7 @@ func findPdb(resources *kubernetes.Collection) *v1beta1.PodDisruptionBudget {
 // nolint: unparam
 func createPdbTest() (*pdbTrait, *Environment, *appsv1.Deployment) {
 	trait, _ := newPdbTrait().(*pdbTrait)
-	trait.Enabled = pointer.Bool(true)
+	trait.Enabled = ptr.To(true)
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

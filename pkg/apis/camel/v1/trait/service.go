@@ -20,6 +20,8 @@ package trait
 // The Service trait exposes the integration with a Service resource so that it can be accessed by other applications
 // (or integrations) in the same namespace.
 //
+// NOTE: this trait is automatically disabled if the Knative Service trait is enabled.
+//
 // It's enabled by default if the integration depends on a Camel component that can expose a HTTP endpoint.
 //
 // +camel-k:trait=service.
@@ -33,6 +35,10 @@ type ServiceTrait struct {
 	// The type of service to be used, either 'ClusterIP', 'NodePort' or 'LoadBalancer'.
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
 	Type *ServiceType `property:"type" json:"type,omitempty"`
+	// The annotations added to the Service object.
+	Annotations map[string]string `property:"annotations" json:"annotations,omitempty"`
+	// The labels added to the Service object.
+	Labels map[string]string `property:"labels" json:"labels,omitempty"`
 }
 
 type ServiceType string

@@ -25,16 +25,16 @@ import (
 	"os"
 	"time"
 
-	"github.com/apache/camel-k/pkg/util"
+	"github.com/apache/camel-k/v2/pkg/util"
 
 	"github.com/spf13/cobra"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/apache/camel-k/pkg/client"
-	"github.com/apache/camel-k/pkg/client/camel/clientset/versioned"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	"github.com/apache/camel-k/pkg/util/tar"
+	"github.com/apache/camel-k/v2/pkg/client"
+	"github.com/apache/camel-k/v2/pkg/client/camel/clientset/versioned"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	"github.com/apache/camel-k/v2/pkg/util/tar"
 )
 
 func newCmdDump(rootCmdOptions *RootCmdOptions) (*cobra.Command, *dumpCmdOptions) {
@@ -45,8 +45,11 @@ func newCmdDump(rootCmdOptions *RootCmdOptions) (*cobra.Command, *dumpCmdOptions
 		Use:     "dump [filename]",
 		Short:   "Dump the state of namespace",
 		Long:    `Dump the state of currently used namespace. If no filename will be specified, the output will be on stdout`,
-		PreRunE: decode(&options),
+		PreRunE: decode(&options, options.Flags),
 		RunE:    options.dump,
+		// Once we moved from the deprecation this should be hidden and only used internally for E2E test execution.
+		Deprecated: "no longer supported.",
+		// Hidden: true,
 	}
 
 	cmd.Flags().Int("logLines", 100, "Number of log lines to dump")
@@ -75,7 +78,7 @@ func (o *dumpCmdOptions) dump(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return err
 			}
-			tar.CreateTarFile([]string{file.Name()}, "dump."+file.Name()+"."+time.Now().Format(time.RFC3339)+".tar.gz", cmd)
+			tar.CreateTarFile([]string{file.Name()}, "dump."+file.Name()+"."+time.Now().Format(time.RFC3339)+".tar.gz", cmd.OutOrStdout())
 			return nil
 		})
 	} else {
@@ -89,20 +92,8 @@ func dumpNamespace(ctx context.Context, c client.Client, ns string, out io.Write
 	if err != nil {
 		return err
 	}
-	pls, err := camelClient.CamelV1().IntegrationPlatforms(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "Found %d platforms:\n", len(pls.Items))
-	for _, p := range pls.Items {
-		ref := p
-		pdata, err := kubernetes.ToYAML(&ref)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "---\n%s\n---\n", string(pdata))
-	}
 
+	// Integrations
 	its, err := camelClient.CamelV1().Integrations(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -117,6 +108,7 @@ func dumpNamespace(ctx context.Context, c client.Client, ns string, out io.Write
 		fmt.Fprintf(out, "---\n%s\n---\n", string(pdata))
 	}
 
+	// IntegrationKits
 	iks, err := camelClient.CamelV1().IntegrationKits(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -131,6 +123,7 @@ func dumpNamespace(ctx context.Context, c client.Client, ns string, out io.Write
 		fmt.Fprintf(out, "---\n%s\n---\n", string(pdata))
 	}
 
+	// ConfigMaps
 	cms, err := c.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -145,6 +138,7 @@ func dumpNamespace(ctx context.Context, c client.Client, ns string, out io.Write
 		fmt.Fprintf(out, "---\n%s\n---\n", string(pdata))
 	}
 
+	// Deployments
 	deployments, err := c.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -159,6 +153,37 @@ func dumpNamespace(ctx context.Context, c client.Client, ns string, out io.Write
 		fmt.Fprintf(out, "---\n%s\n---\n", string(data))
 	}
 
+	// IntegrationPlatforms
+	pls, err := camelClient.CamelV1().IntegrationPlatforms(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Found %d platforms:\n", len(pls.Items))
+	for _, p := range pls.Items {
+		ref := p
+		pdata, err := kubernetes.ToYAML(&ref)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "---\n%s\n---\n", string(pdata))
+	}
+
+	// CamelCatalogs
+	cat, err := camelClient.CamelV1().CamelCatalogs(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Found %d catalogs:\n", len(pls.Items))
+	for _, c := range cat.Items {
+		ref := c
+		cdata, err := kubernetes.ToYAML(&ref)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "---\n%s\n---\n", string(cdata))
+	}
+
+	// Pods and Logs
 	lst, err := c.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err

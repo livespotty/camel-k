@@ -18,21 +18,22 @@ limitations under the License.
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
-	camelv1 "github.com/apache/camel-k/pkg/client/camel/clientset/versioned/typed/camel/v1"
-	"github.com/apache/camel-k/pkg/util/kubernetes"
-	k8slog "github.com/apache/camel-k/pkg/util/kubernetes/log"
-	"github.com/pkg/errors"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+	camelv1 "github.com/apache/camel-k/v2/pkg/client/camel/clientset/versioned/typed/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/util/kubernetes"
+	k8slog "github.com/apache/camel-k/v2/pkg/util/kubernetes/log"
+
 	"github.com/spf13/cobra"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func newCmdDebug(rootCmdOptions *RootCmdOptions) (*cobra.Command, *debugCmdOptions) {
@@ -45,7 +46,7 @@ func newCmdDebug(rootCmdOptions *RootCmdOptions) (*cobra.Command, *debugCmdOptio
 		Short:   "Debug an integration running on Kubernetes",
 		Long:    `Set an integration running on the Kubernetes cluster in debug mode and forward ports in order to connect a remote debugger running on the local host.`,
 		Args:    options.validateArgs,
-		PreRunE: decode(&options),
+		PreRunE: decode(&options, options.Flags),
 		RunE:    options.run,
 	}
 
@@ -133,18 +134,23 @@ func (o *debugCmdOptions) run(cmd *cobra.Command, args []string) error {
 }
 
 func (o *debugCmdOptions) toggleDebug(c camelv1.IntegrationsGetter, it *v1.Integration, active bool) (*v1.Integration, error) {
+	it = o.toggle(it, active)
+	return c.Integrations(it.Namespace).Update(o.Context, it, metav1.UpdateOptions{})
+}
+
+func (o *debugCmdOptions) toggle(it *v1.Integration, active bool) *v1.Integration {
 	if it.Spec.Traits.JVM == nil {
 		it.Spec.Traits.JVM = &traitv1.JVMTrait{}
 	}
 	jvmTrait := it.Spec.Traits.JVM
 
 	if active {
-		jvmTrait.Debug = pointer.Bool(true)
-		jvmTrait.DebugSuspend = pointer.Bool(o.Suspend)
+		jvmTrait.Debug = ptr.To(true)
+		jvmTrait.DebugSuspend = ptr.To(o.Suspend)
 	} else {
 		jvmTrait.Debug = nil
 		jvmTrait.DebugSuspend = nil
 	}
 
-	return c.Integrations(it.Namespace).Update(o.Context, it, metav1.UpdateOptions{})
+	return it
 }

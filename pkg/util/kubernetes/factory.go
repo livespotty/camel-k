@@ -39,6 +39,9 @@ const ConfigMapAutogenLabel = "camel.apache.org/generated"
 // ConfigMapOriginalFileNameLabel -- .
 const ConfigMapOriginalFileNameLabel = "camel.apache.org/filename"
 
+// ConfigMapTypeLabel -- .
+const ConfigMapTypeLabel = "camel.apache.org/config.type"
+
 // NewTolerations build an array of Tolerations from an array of string.
 func NewTolerations(taints []string) ([]corev1.Toleration, error) {
 	tolerations := make([]corev1.Toleration, 0)
@@ -122,34 +125,42 @@ func NewResourceRequirements(reqs []string) (corev1.ResourceRequirements, error)
 	return resReq, nil
 }
 
-// NewConfigMap will create a ConfigMap.
-func NewConfigMap(namespace, cmName, originalFilename string, generatedKey string,
-	textData string, binaryData []byte) *corev1.ConfigMap {
-	immutable := true
-	cm := corev1.ConfigMap{
+// NewPersistentVolumeClaim will create a NewPersistentVolumeClaim based on a StorageClass.
+func NewPersistentVolumeClaim(
+	ns, name, storageClassName string, capacityStorage resource.Quantity, accessMode corev1.PersistentVolumeAccessMode) *corev1.PersistentVolumeClaim {
+	pvc := corev1.PersistentVolumeClaim{
 		TypeMeta: metav1.TypeMeta{
-			Kind:       "ConfigMap",
-			APIVersion: "v1",
+			Kind:       "PersistentVolumeClaim",
+			APIVersion: corev1.SchemeGroupVersion.String(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cmName,
-			Namespace: namespace,
-			Labels: map[string]string{
-				ConfigMapOriginalFileNameLabel: originalFilename,
-				ConfigMapAutogenLabel:          "true",
+			Namespace: ns,
+			Name:      name,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			StorageClassName: &storageClassName,
+			AccessModes: []corev1.PersistentVolumeAccessMode{
+				accessMode,
+			},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					"storage": capacityStorage,
+				},
 			},
 		},
-		Immutable: &immutable,
 	}
-	if textData != "" {
-		cm.Data = map[string]string{
-			generatedKey: textData,
+	return &pvc
+}
+
+// ConfigureResource will set a resource on the specified resource list or returns an error.
+func ConfigureResource(resourceQty string, list corev1.ResourceList, name corev1.ResourceName) (corev1.ResourceList, error) {
+	if resourceQty != "" {
+		v, err := resource.ParseQuantity(resourceQty)
+		if err != nil {
+			return list, err
 		}
+		list[name] = v
 	}
-	if binaryData != nil {
-		cm.BinaryData = map[string][]byte{
-			generatedKey: binaryData,
-		}
-	}
-	return &cm
+
+	return list, nil
 }

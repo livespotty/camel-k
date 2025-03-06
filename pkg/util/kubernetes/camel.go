@@ -24,16 +24,25 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 )
 
 const (
 	CamelCreatorLabelPrefix = "camel.apache.org/created.by"
+	CamelClonedLabelPrefix  = "camel.apache.org/cloned.from"
 
 	CamelCreatorLabelKind      = CamelCreatorLabelPrefix + ".kind"
 	CamelCreatorLabelName      = CamelCreatorLabelPrefix + ".name"
 	CamelCreatorLabelNamespace = CamelCreatorLabelPrefix + ".namespace"
 	CamelCreatorLabelVersion   = CamelCreatorLabelPrefix + ".version"
+
+	CamelClonedLabelKind      = CamelClonedLabelPrefix + ".kind"
+	CamelClonedLabelName      = CamelClonedLabelPrefix + ".name"
+	CamelClonedLabelNamespace = CamelClonedLabelPrefix + ".namespace"
+	CamelClonedLabelVersion   = CamelClonedLabelPrefix + ".version"
+
+	CamelLabelRuntimeVersion  = "camel.apache.org/runtime.version"
+	CamelLabelRuntimeProvider = "camel.apache.org/runtime.provider"
 )
 
 // FilterCamelCreatorLabels is used to inherit the creator information among resources.

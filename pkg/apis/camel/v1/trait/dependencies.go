@@ -21,6 +21,7 @@ package trait
 // integration that the user wants to run.
 //
 // +camel-k:trait=dependencies.
+// +camel-k:internal.
 type DependenciesTrait struct {
-	Trait `property:",squash" json:",inline"`
+	PlatformBaseTrait `property:",squash" json:",inline"`
 }

@@ -23,14 +23,34 @@ nameOverride: ""
 fullnameOverride: ""
 
 operator:
-  image: docker.io/apache/camel-k:1.11.0-SNAPSHOT
+  image: docker.io/apache/camel-k:2.7.0-SNAPSHOT
   global: "false"
   resources: {}
   securityContext: {}
   tolerations: []
+  nodeSelector: {}
   logLevel: "info"
 
-platform:
-  build:
-    registry: {}
-  cluster: ""
+  ## Deployment annotations
+  annotations:
+  # prometheus.io/path: /metrics
+  # prometheus.io/port: '8080'
+  # prometheus.io/scrape: 'true'
+
+  ## Optionally specify an array of imagePullSecrets.
+  ## Secrets must be manually created in the namespace.
+  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+  imagePullSecrets:
+  # - name: "image-pull-secret"
+
+  # Default operator name
+  operatorId: camel-k
+
+  serviceAccount:
+    annotations:
+
+  ## Extra environment variables.
+  ## ref: https://kubernetes.io/docs/tasks/inject-data-application/define-environment-variable-container/
+  extraEnv: []
+    # - name: MY_VAR
+      # value: my_value

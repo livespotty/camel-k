@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -52,20 +53,20 @@ func TestExpressions(t *testing.T) {
 			name: "source",
 			ref: corev1.ObjectReference{
 				Kind:       "Kamelet",
-				APIVersion: "camel.apache.org/v1alpha1",
+				APIVersion: "camel.apache.org/v1",
 				Name:       "source",
 			},
-			stringRef: "camel.apache.org/v1alpha1:Kamelet:source",
+			stringRef: "camel.apache.org/v1:Kamelet:source",
 		},
 		{
 			name: "ns1/source",
 			ref: corev1.ObjectReference{
 				Kind:       "Kamelet",
-				APIVersion: "camel.apache.org/v1alpha1",
+				APIVersion: "camel.apache.org/v1",
 				Namespace:  "ns1",
 				Name:       "source",
 			},
-			stringRef: "camel.apache.org/v1alpha1:Kamelet:ns1/source",
+			stringRef: "camel.apache.org/v1:Kamelet:ns1/source",
 		},
 		{
 			name: "v1:Secret:ns1/scr2",
@@ -145,10 +146,10 @@ func TestExpressions(t *testing.T) {
 			name: "source?a=b&b=c&d=e",
 			ref: corev1.ObjectReference{
 				Kind:       "Kamelet",
-				APIVersion: "camel.apache.org/v1alpha1",
+				APIVersion: "camel.apache.org/v1",
 				Name:       "source",
 			},
-			stringRef: "camel.apache.org/v1alpha1:Kamelet:source",
+			stringRef: "camel.apache.org/v1:Kamelet:source",
 			properties: map[string]string{
 				"a": "b",
 				"b": "c",
@@ -170,16 +171,16 @@ func TestExpressions(t *testing.T) {
 
 			ref, err := converter.FromString(tc.name)
 			if tc.error {
-				assert.Error(t, err)
+				require.Error(t, err)
 			} else {
 				asString, err2 := converter.ToString(ref)
-				assert.NoError(t, err2)
+				require.NoError(t, err2)
 
 				props, err3 := converter.PropertiesFromString(tc.name)
-				assert.NoError(t, err3)
+				require.NoError(t, err3)
 				assert.Equal(t, tc.properties, props)
 
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.Equal(t, tc.ref, ref)
 				assert.Equal(t, tc.stringRef, asString)
 			}

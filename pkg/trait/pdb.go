@@ -20,13 +20,18 @@ package trait
 import (
 	"fmt"
 
-	"k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
+)
+
+const (
+	pdbTraitID    = "pdb"
+	pdbTraitOrder = 900
 )
 
 type pdbTrait struct {
@@ -36,29 +41,29 @@ type pdbTrait struct {
 
 func newPdbTrait() Trait {
 	return &pdbTrait{
-		BaseTrait: NewBaseTrait("pdb", 900),
+		BaseTrait: NewBaseTrait(pdbTraitID, pdbTraitOrder),
 	}
 }
 
-func (t *pdbTrait) Configure(e *Environment) (bool, error) {
-	if e.Integration == nil || !pointer.BoolDeref(t.Enabled, false) {
-		return false, nil
+func (t *pdbTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
+	if e.Integration == nil || !ptr.Deref(t.Enabled, false) {
+		return false, nil, nil
 	}
 
 	strategy, err := e.DetermineControllerStrategy()
 	if err != nil {
-		return false, fmt.Errorf("unable to determine the controller stratedy")
+		return false, nil, fmt.Errorf("unable to determine the controller strategy")
 	}
 
 	if strategy == ControllerStrategyCronJob {
-		return false, fmt.Errorf("poddisruptionbudget isn't supported with cron-job controller strategy")
+		return false, nil, fmt.Errorf("poddisruptionbudget isn't supported with cron-job controller strategy")
 	}
 
 	if t.MaxUnavailable != "" && t.MinAvailable != "" {
-		return false, fmt.Errorf("both minAvailable and maxUnavailable can't be set simultaneously")
+		return false, nil, fmt.Errorf("both minAvailable and maxUnavailable can't be set simultaneously")
 	}
 
-	return e.IntegrationInRunningPhases(), nil
+	return e.IntegrationInRunningPhases(), nil, nil
 }
 
 func (t *pdbTrait) Apply(e *Environment) error {
@@ -72,18 +77,18 @@ func (t *pdbTrait) Apply(e *Environment) error {
 	return nil
 }
 
-func (t *pdbTrait) podDisruptionBudgetFor(integration *v1.Integration) *v1beta1.PodDisruptionBudget {
-	pdb := &v1beta1.PodDisruptionBudget{
+func (t *pdbTrait) podDisruptionBudgetFor(integration *v1.Integration) *policyv1.PodDisruptionBudget {
+	pdb := &policyv1.PodDisruptionBudget{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "PodDisruptionBudget",
-			APIVersion: v1beta1.SchemeGroupVersion.String(),
+			APIVersion: policyv1.SchemeGroupVersion.String(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      integration.Name,
 			Namespace: integration.Namespace,
 			Labels:    integration.Labels,
 		},
-		Spec: v1beta1.PodDisruptionBudgetSpec{
+		Spec: policyv1.PodDisruptionBudgetSpec{
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					v1.IntegrationLabel: integration.Name,
@@ -93,11 +98,11 @@ func (t *pdbTrait) podDisruptionBudgetFor(integration *v1.Integration) *v1beta1.
 	}
 
 	if t.MaxUnavailable != "" {
-		max := intstr.Parse(t.MaxUnavailable)
-		pdb.Spec.MaxUnavailable = &max
+		mx := intstr.Parse(t.MaxUnavailable)
+		pdb.Spec.MaxUnavailable = &mx
 	} else {
-		min := intstr.Parse(t.MinAvailable)
-		pdb.Spec.MinAvailable = &min
+		mn := intstr.Parse(t.MinAvailable)
+		pdb.Spec.MinAvailable = &mn
 	}
 
 	return pdb

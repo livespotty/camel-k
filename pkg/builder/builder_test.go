@@ -22,10 +22,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
-	"github.com/apache/camel-k/pkg/util/cancellable"
-	"github.com/apache/camel-k/pkg/util/test"
+	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
+	"github.com/apache/camel-k/v2/pkg/internal"
 )
 
 type errorTestSteps struct {
@@ -33,9 +33,9 @@ type errorTestSteps struct {
 	Step2 Step
 }
 
-func TestFailure(t *testing.T) {
-	c, err := test.NewFakeClient()
-	assert.Nil(t, err)
+func TestBuilderFailure(t *testing.T) {
+	c, err := internal.NewFakeClient()
+	require.NoError(t, err)
 
 	b := New(c)
 
@@ -68,8 +68,104 @@ func TestFailure(t *testing.T) {
 		},
 	}
 
-	ctx := cancellable.NewContext()
+	ctx := newContext()
 	status := b.Build(build).TaskByName("builder").Do(ctx)
 	assert.Equal(t, v1.BuildPhaseFailed, status.Phase)
 	assert.Equal(t, "an error", status.Error)
+}
+
+func TestS2IPublishingFailure(t *testing.T) {
+	c, err := internal.NewFakeClient()
+	require.NoError(t, err)
+	b := New(c)
+	build := &v1.Build{
+		Spec: v1.BuildSpec{
+			Tasks: []v1.Task{
+				{
+					S2i: &v1.S2iTask{
+						BaseTask: v1.BaseTask{
+							Name: "s2i",
+						},
+						PublishTask: v1.PublishTask{
+							BaseImage: "base-image",
+						},
+					},
+				},
+			},
+		},
+		Status: v1.BuildStatus{
+			RootImage: "root-image",
+		},
+	}
+
+	ctx := newContext()
+	status := b.Build(build).TaskByName("s2i").Do(ctx)
+	assert.Equal(t, v1.BuildPhaseFailed, status.Phase)
+	assert.NotEmpty(t, status.Error)
+	assert.Equal(t, "base-image", status.BaseImage)
+	assert.Equal(t, "root-image", status.RootImage)
+}
+
+func TestJibPublishingFailure(t *testing.T) {
+	c, err := internal.NewFakeClient()
+	require.NoError(t, err)
+	b := New(c)
+	build := &v1.Build{
+		Spec: v1.BuildSpec{
+			Tasks: []v1.Task{
+				{
+					Jib: &v1.JibTask{
+						BaseTask: v1.BaseTask{
+							Name: "jib",
+						},
+						PublishTask: v1.PublishTask{
+							BaseImage: "base-image",
+						},
+					},
+				},
+			},
+		},
+		Status: v1.BuildStatus{
+			RootImage: "root-image",
+		},
+	}
+
+	ctx := newContext()
+	status := b.Build(build).TaskByName("jib").Do(ctx)
+	assert.Equal(t, v1.BuildPhaseFailed, status.Phase)
+	assert.NotEmpty(t, status.Error)
+	assert.Equal(t, "base-image", status.BaseImage)
+	assert.Equal(t, "root-image", status.RootImage)
+}
+
+func TestSpectrumPublishingFailure(t *testing.T) {
+	c, err := internal.NewFakeClient()
+	require.NoError(t, err)
+	b := New(c)
+	build := &v1.Build{
+		Spec: v1.BuildSpec{
+			Tasks: []v1.Task{
+				{
+					Spectrum: &v1.SpectrumTask{
+						BaseTask: v1.BaseTask{
+							Name: "spectrum",
+						},
+						PublishTask: v1.PublishTask{
+							BaseImage: "base-image",
+						},
+					},
+				},
+			},
+		},
+		Status: v1.BuildStatus{
+			RootImage: "root-image",
+		},
+	}
+
+	ctx := newContext()
+	status := b.Build(build).TaskByName("spectrum").Do(ctx)
+	assert.Equal(t, v1.BuildPhaseFailed, status.Phase)
+	assert.NotEmpty(t, status.Error)
+	assert.Equal(t, "base-image", status.BaseImage)
+	assert.Equal(t, "root-image", status.RootImage)
 }
