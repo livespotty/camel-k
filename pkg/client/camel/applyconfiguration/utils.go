@@ -22,7 +22,10 @@ package applyconfiguration
 import (
 	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 	camelv1 "github.com/apache/camel-k/v2/pkg/client/camel/applyconfiguration/camel/v1"
+	internal "github.com/apache/camel-k/v2/pkg/client/camel/applyconfiguration/internal"
+	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
+	testing "k8s.io/client-go/testing"
 )
 
 // ForKind returns an apply configuration type for the given GroupVersionKind, or nil if no
@@ -102,6 +105,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &camelv1.FailureRecoveryApplyConfiguration{}
 	case v1.SchemeGroupVersion.WithKind("Flow"):
 		return &camelv1.FlowApplyConfiguration{}
+	case v1.SchemeGroupVersion.WithKind("GitConfigSpec"):
+		return &camelv1.GitConfigSpecApplyConfiguration{}
 	case v1.SchemeGroupVersion.WithKind("HeaderSpec"):
 		return &camelv1.HeaderSpecApplyConfiguration{}
 	case v1.SchemeGroupVersion.WithKind("HealthCheckResponse"):
@@ -229,4 +234,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 
 	}
 	return nil
+}
+
+func NewTypeConverter(scheme *runtime.Scheme) *testing.TypeConverter {
+	return &testing.TypeConverter{Scheme: scheme, TypeResolver: internal.Parser()}
 }

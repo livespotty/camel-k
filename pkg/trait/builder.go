@@ -32,7 +32,6 @@ import (
 	v1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1"
 	traitv1 "github.com/apache/camel-k/v2/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/v2/pkg/builder"
-	"github.com/apache/camel-k/v2/pkg/util/jib"
 	mvn "github.com/apache/camel-k/v2/pkg/util/maven"
 	"github.com/apache/camel-k/v2/pkg/util/property"
 )
@@ -89,30 +88,31 @@ func (t *builderTrait) Matches(trait Trait) bool {
 	return slices.Equal(srtThisTasks, srtOtheTasks)
 }
 
+//nolint:nestif
 func (t *builderTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
-	if e.IntegrationKit == nil {
-		return false, nil, nil
-	}
-	condition := t.adaptDeprecatedFields()
-	if e.Platform.Status.Build.PublishStrategy == v1.IntegrationPlatformBuildPublishStrategySpectrum {
-		condition = newOrAppend(condition, "Spectrum publishing strategy is deprecated and may be removed in future releases. Make sure to use any supported publishing strategy instead.")
-	}
-
-	t.setPlatform(e)
-
-	if !e.IntegrationKitInPhase(v1.IntegrationKitPhaseBuildSubmitted) {
-		return false, condition, nil
-	}
-
-	trait := e.Catalog.GetTrait(quarkusTraitID)
-	if trait != nil {
-		condition, err := t.configureForQuarkus(trait, e, condition)
-		if err != nil {
-			return false, condition, err
+	if e.IntegrationKit != nil || e.IntegrationInPhase(v1.IntegrationPhaseBuildSubmitted) {
+		condition := t.adaptDeprecatedFields()
+		if e.Platform.Status.Build.PublishStrategy == v1.IntegrationPlatformBuildPublishStrategySpectrum {
+			condition = newOrAppend(condition, "Spectrum publishing strategy is deprecated and may be removed in future releases. "+
+				"Make sure to use any supported publishing strategy instead.")
 		}
+		t.setPlatform(e)
+		if e.IntegrationKit != nil && !e.IntegrationKitInPhase(v1.IntegrationKitPhaseBuildSubmitted) {
+			return false, condition, nil
+		}
+
+		trait := e.Catalog.GetTrait(quarkusTraitID)
+		if trait != nil {
+			condition, err := t.configureForQuarkus(trait, e, condition)
+			if err != nil {
+				return false, condition, err
+			}
+		}
+
+		return true, condition, nil
 	}
 
-	return true, condition, nil
+	return false, nil, nil
 }
 
 func (t *builderTrait) configureForQuarkus(trait Trait, e *Environment, condition *TraitCondition) (*TraitCondition, error) {
@@ -262,6 +262,7 @@ func (t *builderTrait) Apply(e *Environment) error {
 	pipelineTasks = append(pipelineTasks, v1.Task{Package: packageTask})
 
 	// Publishing task
+	tag := getTag(e)
 	switch e.Platform.Status.Build.PublishStrategy {
 	case v1.IntegrationPlatformBuildPublishStrategySpectrum:
 		pipelineTasks = append(pipelineTasks, v1.Task{Spectrum: &v1.SpectrumTask{
@@ -303,7 +304,7 @@ func (t *builderTrait) Apply(e *Environment) error {
 				BaseImage: t.getBaseImage(e),
 				Image:     imageName,
 			},
-			Tag: e.IntegrationKit.ResourceVersion,
+			Tag: tag,
 		}})
 	}
 
@@ -328,13 +329,27 @@ func (t *builderTrait) Apply(e *Environment) error {
 	return nil
 }
 
+func getTag(e *Environment) string {
+	if e.IntegrationKit != nil {
+		return e.IntegrationKit.ResourceVersion
+	}
+	if e.Integration != nil {
+		return e.Integration.ResourceVersion
+	}
+
+	return ""
+}
+
 // when this trait fails, we must report the failure into the related IntegrationKit if it affects the success of the Build.
 func failIntegrationKit(e *Environment, conditionType v1.IntegrationKitConditionType, status corev1.ConditionStatus, reason, message string) error {
-	e.IntegrationKit.Status.Phase = v1.IntegrationKitPhaseError
-	e.IntegrationKit.Status.SetCondition(conditionType, status, reason, message)
-	if err := e.Client.Status().Update(e.Ctx, e.IntegrationKit); err != nil {
-		return err
+	if e.IntegrationKit != nil {
+		e.IntegrationKit.Status.Phase = v1.IntegrationKitPhaseError
+		e.IntegrationKit.Status.SetCondition(conditionType, status, reason, message)
+		if err := e.Client.Status().Update(e.Ctx, e.IntegrationKit); err != nil {
+			return err
+		}
 	}
+
 	return nil
 }
 
@@ -342,9 +357,17 @@ func (t *builderTrait) builderTask(e *Environment, taskConf *v1.BuildConfigurati
 	maven := v1.MavenBuildSpec{
 		MavenSpec: e.Platform.Status.Build.Maven,
 	}
-	// Add Maven repositories defined in the IntegrationKit
-	for _, repo := range e.IntegrationKit.Spec.Repositories {
-		maven.Repositories = append(maven.Repositories, mvn.NewRepository(repo))
+
+	// Add Maven repositories defined in the IntegrationKit or Integration
+	if e.IntegrationKit != nil {
+		for _, repo := range e.IntegrationKit.Spec.Repositories {
+			maven.Repositories = append(maven.Repositories, mvn.NewRepository(repo))
+		}
+	}
+	if e.Integration != nil {
+		for _, repo := range e.Integration.Spec.Repositories {
+			maven.Repositories = append(maven.Repositories, mvn.NewRepository(repo))
+		}
 	}
 
 	if t.Strategy != "" {
@@ -385,6 +408,8 @@ func (t *builderTrait) builderTask(e *Environment, taskConf *v1.BuildConfigurati
 		}
 	}
 
+	dependencies := getDependencies(e)
+
 	task := &v1.BuilderTask{
 		BaseTask: v1.BaseTask{
 			Name:          "builder",
@@ -392,8 +417,12 @@ func (t *builderTrait) builderTask(e *Environment, taskConf *v1.BuildConfigurati
 		},
 		BaseImage:    t.getBaseImage(e),
 		Runtime:      e.CamelCatalog.Runtime,
-		Dependencies: e.IntegrationKit.Spec.Dependencies,
+		Dependencies: dependencies,
 		Maven:        maven,
+	}
+
+	if e.Integration != nil && e.Integration.Spec.Git != nil {
+		task.Git = e.Integration.Spec.Git
 	}
 
 	if task.Maven.Properties == nil {
@@ -412,22 +441,12 @@ func (t *builderTrait) builderTask(e *Environment, taskConf *v1.BuildConfigurati
 	}
 
 	// Build time property required by master capability
-	if e.IntegrationKit.HasCapability("master") && e.CamelCatalog.Runtime.Capabilities["master"].BuildTimeProperties != nil {
+	if e.IntegrationKit != nil && e.IntegrationKit.HasCapability("master") &&
+		e.CamelCatalog.Runtime.Capabilities["master"].BuildTimeProperties != nil {
 		task.Maven.Properties["camel.k.master.enabled"] = boolean.TrueString
 		for _, cp := range e.CamelCatalog.Runtime.Capabilities["master"].BuildTimeProperties {
 			task.Maven.Properties[CapabilityPropertyKey(cp.Key, task.Maven.Properties)] = cp.Value
 		}
-	}
-
-	if e.Platform.Status.Build.PublishStrategy == v1.IntegrationPlatformBuildPublishStrategyJib {
-		profile, err := jib.JibMavenProfile(e.CamelCatalog.GetJibMavenPluginVersion(), e.CamelCatalog.GetJibLayerFilterExtensionMavenVersion())
-		if err != nil {
-			return nil, fmt.Errorf("error generating default maven jib profile: %w. ", err)
-		}
-		if err := jib.CreateProfileConfigmap(e.Ctx, e.Client, e.IntegrationKit, profile); err != nil {
-			return nil, fmt.Errorf("could not create default maven jib profile configmap: %w. ", err)
-		}
-		t.MavenProfiles = append(t.MavenProfiles, "configmap:"+e.IntegrationKit.Name+"-publish-jib-profile/profile.xml")
 	}
 
 	// User provides a maven profile
@@ -458,12 +477,26 @@ func (t *builderTrait) builderTask(e *Environment, taskConf *v1.BuildConfigurati
 	return task, nil
 }
 
+func getDependencies(e *Environment) []string {
+	if e.IntegrationKit != nil {
+		return e.IntegrationKit.Spec.Dependencies
+	}
+
+	return nil
+}
+
 func getImageName(e *Environment) string {
+	var imageName string
+	if e.IntegrationKit != nil {
+		imageName = fmt.Sprintf("%s:%s", e.IntegrationKit.Name, e.IntegrationKit.ResourceVersion)
+	} else {
+		imageName = fmt.Sprintf("%s:%s", e.Integration.Name, e.Integration.ResourceVersion)
+	}
 	organization := e.Platform.Status.Build.Registry.Organization
 	if organization == "" {
 		organization = e.Platform.Namespace
 	}
-	return e.Platform.Status.Build.Registry.Address + "/" + organization + "/camel-k-" + e.IntegrationKit.Name + ":" + e.IntegrationKit.ResourceVersion
+	return e.Platform.Status.Build.Registry.Address + "/" + organization + "/camel-k-" + imageName
 }
 
 func (t *builderTrait) getBaseImage(e *Environment) string {

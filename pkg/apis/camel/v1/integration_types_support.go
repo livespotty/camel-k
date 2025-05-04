@@ -90,10 +90,15 @@ func (in *Integration) AllSources() []SourceSpec {
 		if len(in.Status.GeneratedSources) == 0 {
 			sources = append(sources, src)
 		} else {
+			found := false
 			for _, genSrc := range in.Status.GeneratedSources {
-				if src.Name != genSrc.Name {
-					sources = append(sources, src)
+				if src.Name == genSrc.Name {
+					found = true
+					break
 				}
+			}
+			if !found {
+				sources = append(sources, src)
 			}
 		}
 	}
@@ -148,6 +153,11 @@ func (in *Integration) IsManagedBuild() bool {
 	}
 	isManagedBuild, err := regexp.MatchString("(.*)/(.*)/camel-k-kit-(.*)@sha256:(.*)", in.Spec.Traits.Container.Image)
 	return err == nil && isManagedBuild
+}
+
+// IsGitBuild returns true when the Integration requires to be built from a Git repo.
+func (in *Integration) IsGitBuild() bool {
+	return in.Spec.Git != nil
 }
 
 func (in *IntegrationSpec) AddSource(name string, content string, language Language) {

@@ -15,12 +15,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package kubernetes
 
 import (
-	"github.com/apache/camel-k/v2/pkg/controller/integrationprofile"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
-func init() {
-	addToManager = append(addToManager, integrationprofile.Add)
+// GetClusterTypeServiceURI will return the URL of the Service in the cluster type format.
+func GetClusterTypeServiceURI(svc *corev1.Service) string {
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
+loop:
+	for _, port := range svc.Spec.Ports {
+		if port.Port != 80 { // Assuming HTTP default port
+			url += fmt.Sprintf(":%d", port.Port)
+			break loop
+		}
+	}
+
+	return url
 }

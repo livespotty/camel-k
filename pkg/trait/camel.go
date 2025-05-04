@@ -91,7 +91,8 @@ func (t *camelTrait) Configure(e *Environment) (bool, *TraitCondition, error) {
 
 	var cond *TraitCondition
 	//nolint: staticcheck
-	if (e.Integration != nil && !e.Integration.IsManagedBuild()) || (e.IntegrationKit != nil && e.IntegrationKit.IsSynthetic()) {
+	if (e.Integration != nil && (!e.Integration.IsManagedBuild() || e.Integration.IsGitBuild())) ||
+		(e.IntegrationKit != nil && e.IntegrationKit.IsSynthetic()) {
 		// We set a condition to warn the user the catalog used to run the Integration
 		// may differ from the runtime version which we don't control
 		cond = NewIntegrationCondition(
@@ -120,7 +121,7 @@ func (t *camelTrait) Apply(e *Environment) error {
 	}
 
 	if e.Integration != nil {
-		if e.Integration.IsManagedBuild() {
+		if e.Integration.IsManagedBuild() && !e.Integration.IsGitBuild() {
 			// If it's not managed we don't know which is the runtime running
 			e.Integration.Status.RuntimeVersion = e.CamelCatalog.Runtime.Version
 			e.Integration.Status.RuntimeProvider = e.CamelCatalog.Runtime.Provider
@@ -148,6 +149,7 @@ func (t *camelTrait) Apply(e *Environment) error {
 	return nil
 }
 
+//nolint:nestif
 func (t *camelTrait) loadOrCreateCatalog(e *Environment) error {
 	catalogNamespace := e.DetermineCatalogNamespace()
 	if catalogNamespace == "" {
@@ -174,7 +176,16 @@ func (t *camelTrait) loadOrCreateCatalog(e *Environment) error {
 		// the required versions (camel and runtime) are not expressed as
 		// semver constraints
 		if exactVersionRegexp.MatchString(t.runtimeVersion) {
-			catalog, err = camel.CreateCatalog(e.Ctx, e.Client, catalogNamespace, e.Platform, runtime)
+			mavenSpec := e.Platform.Status.Build.Maven
+			var extraRepositories []string
+			if e.Integration != nil && e.Integration.Spec.Repositories != nil {
+				extraRepositories = append(extraRepositories, e.Integration.Spec.Repositories...)
+			}
+			if e.IntegrationKit != nil && e.IntegrationKit.Spec.Repositories != nil {
+				extraRepositories = append(extraRepositories, e.IntegrationKit.Spec.Repositories...)
+			}
+			catalog, err = camel.CreateCatalog(e.Ctx, e.Client, catalogNamespace,
+				mavenSpec, e.Platform.Status.Build.GetTimeout().Duration, runtime, extraRepositories)
 			if err != nil {
 				return err
 			}
@@ -204,8 +215,8 @@ func determineRuntimeVersion(e *Environment) (string, error) {
 	if e.IntegrationKit != nil && e.IntegrationKit.Status.RuntimeVersion != "" {
 		return e.IntegrationKit.Status.RuntimeVersion, nil
 	}
-	if e.IntegrationProfile != nil && e.IntegrationProfile.Status.Build.RuntimeVersion != "" {
-		return e.IntegrationProfile.Status.Build.RuntimeVersion, nil
+	if e.IntegrationProfile != nil && e.IntegrationProfile.Spec.Build.RuntimeVersion != "" {
+		return e.IntegrationProfile.Spec.Build.RuntimeVersion, nil
 	}
 	if e.Platform != nil && e.Platform.Status.Build.RuntimeVersion != "" {
 		return e.Platform.Status.Build.RuntimeVersion, nil
